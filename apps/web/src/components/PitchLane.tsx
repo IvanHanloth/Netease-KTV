@@ -31,10 +31,13 @@ export function PitchLane({
   lane,
   getTime,
   score,
+  compact,
 }: {
   lane: MutableRefObject<LaneData>
   getTime: () => number
   score: number
+  /** Shorter lane for MV mode. */
+  compact?: boolean
 }) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
 
@@ -173,7 +176,7 @@ export function PitchLane({
   }, [lane, getTime])
 
   return (
-    <div className="glass relative h-[120px] w-full overflow-hidden rounded-[22px]">
+    <div className={`glass relative w-full overflow-hidden ${compact ? 'h-[84px] rounded-[18px]' : 'h-[120px] rounded-[22px]'}`}>
       <canvas ref={canvasRef} aria-hidden="true" className="absolute inset-0 h-full w-full" />
       <div className="absolute top-2.5 left-4 flex items-center gap-2 text-xs tracking-[0.12em] text-muted">
         <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_8px_#FF4D7E]" aria-hidden="true" />

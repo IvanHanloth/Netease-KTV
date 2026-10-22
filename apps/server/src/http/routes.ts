@@ -29,6 +29,7 @@ export const commandSchema: z.ZodType<PlayerCommand> = z.union([
     vocalVolume: z.number().min(0).max(1).optional(),
     key: z.number().int().min(-6).max(6).optional(),
     trackMode: z.enum(['karaoke', 'original']).optional(),
+    displayMode: z.enum(['stage', 'mv']).optional(),
   }),
 ]) as z.ZodType<PlayerCommand>
 
@@ -116,7 +117,11 @@ export async function registerRoutes(app: FastifyInstance) {
   // ---------- queue ----------
   app.post('/api/queue', async (req, reply) => {
     const body = z
-      .object({ songId: id, position: z.enum(['next', 'end']).default('end'), addedBy: z.string().max(40).optional() })
+      .object({
+        songId: id,
+        position: z.enum(['end', 'next', 'now']).default('end'),
+        addedBy: z.string().max(40).optional(),
+      })
       .parse(req.body)
     const song = await ncm.getSong(body.songId, true)
     if (song.playable === 'vip') return reply.code(409).send({ error: '需要会员才能播放完整歌曲' })
@@ -124,6 +129,10 @@ export async function registerRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: '网易云暂无音源（可在设置中开启第三方音源）' })
     }
     return player.addToQueue(song, body.position, body.addedBy)
+  })
+  app.post('/api/queue/:uid/play', async (req, reply) => {
+    const { uid } = z.object({ uid: z.string() }).parse(req.params)
+    return player.playNow(uid) ? { ok: true } : reply.code(404).send({ error: '不在队列中' })
   })
   app.post('/api/queue/:uid/top', async (req, reply) => {
     const { uid } = z.object({ uid: z.string() }).parse(req.params)

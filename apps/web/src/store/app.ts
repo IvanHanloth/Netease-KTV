@@ -20,6 +20,7 @@ const defaultPlayer: PlayerState = {
   vocalVolume: 0.3,
   key: 0,
   trackMode: 'karaoke',
+  displayMode: 'stage',
   epoch: 0,
 }
 

@@ -174,6 +174,10 @@ class JobIn(BaseModel):
 jobs: dict[str, Job] = {}
 pending: "queue.Queue[str]" = queue.Queue()
 
+# Startup stage reported by /health: starting -> preparing_model -> ready (or error).
+stage = "starting"
+stage_error: Optional[str] = None
+
 _separator = None
 _loaded_model: Optional[str] = None
 _work_dir = Path(tempfile.mkdtemp(prefix="ktv-sep-"))
@@ -300,12 +304,33 @@ def run_job(job: Job) -> None:
         finish(job, str(err))
 
 
+def warmup() -> None:
+    """Download (first run only) and load the default model so the first song doesn't wait for it."""
+    global stage, stage_error
+    if os.environ.get("PRELOAD_MODEL", "1") == "0":
+        stage = "ready"
+        return
+    stage = "preparing_model"
+    log.info("preparing model %s on %s (first run downloads it into %s)", DEFAULT_MODEL, DEVICE, MODEL_DIR)
+    try:
+        get_separator(DEFAULT_MODEL)
+        stage = "ready"
+        log.info("model ready")
+    except Exception as err:
+        log.exception("model warmup failed; it will be retried on the first job")
+        stage, stage_error = "error", str(err)
+
+
 def worker() -> None:
+    global stage, stage_error
+    warmup()
     while True:
         job_id = pending.get()
         job = jobs.get(job_id)
         if job:
             run_job(job)
+            if job.stems_ready and stage == "error":
+                stage, stage_error = "ready", None
         # Forget finished jobs after an hour.
         cutoff = time.time() - 3600
         for jid in [j.id for j in jobs.values() if j.finished_at and j.finished_at < cutoff]:
@@ -324,6 +349,9 @@ def _start_worker() -> None:
 def health() -> dict:
     return {
         "ok": True,
+        "ready": stage == "ready",
+        "stage": stage,
+        "error": stage_error,
         "device": DEVICE,
         "model": _loaded_model or DEFAULT_MODEL,
         "pending": pending.qsize() + sum(1 for j in jobs.values() if j.status == "running"),

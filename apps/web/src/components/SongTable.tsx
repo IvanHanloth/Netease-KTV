@@ -1,12 +1,28 @@
 import clsx from 'clsx'
 import type { Song } from '@shared/types'
 import { artistsText, fmtMs } from '../lib/format'
-import { useEnqueue, useStatusOf } from '../lib/hooks'
+import { playQueuedNow, useEnqueue, useStatusOf } from '../lib/hooks'
+import { useApp } from '../store/app'
 import { Icon } from './icons'
 import { Cover, Eq, IconButton, StatusPill } from './ui'
 
 const cols =
-  'grid-cols-[28px_minmax(0,1fr)_auto] md:grid-cols-[36px_minmax(200px,2.2fr)_minmax(110px,1fr)_56px_140px_132px]'
+  'grid-cols-[28px_minmax(0,1fr)_auto] md:grid-cols-[36px_minmax(200px,2.2fr)_minmax(110px,1fr)_56px_140px_176px]'
+
+/** 立即唱: skip the current song and sing this one now. */
+function SingNowButton({ song, compact }: { song: Song; compact?: boolean }) {
+  const enqueue = useEnqueue()
+  const queue = useApp((s) => s.state.queue)
+  const queued = queue.find((q) => q.song.id === song.id)
+  return (
+    <IconButton
+      icon="play"
+      label={`立即唱 ${song.name}`}
+      onClick={() => (queued ? playQueuedNow(queued) : enqueue(song, 'now'))}
+      className={clsx('bg-white/6 text-fg-2 hover:text-accent-soft', compact && 'hidden sm:inline-flex')}
+    />
+  )
+}
 
 export function SongActions({ song, compact }: { song: Song; compact?: boolean }) {
   const statusOf = useStatusOf()
@@ -20,7 +36,12 @@ export function SongActions({ song, compact }: { song: Song; compact?: boolean }
       </span>
     )
   if (st.inQueue)
-    return <span className="inline-flex h-9 items-center rounded-[10px] bg-white/6 px-3.5 text-sm text-muted">已点</span>
+    return (
+      <div className="flex items-center gap-2">
+        <SingNowButton song={song} />
+        <span className="inline-flex h-9 items-center rounded-[10px] bg-white/6 px-3.5 text-sm text-muted">已点</span>
+      </div>
+    )
   if (st.kind === 'vip')
     return (
       <button
@@ -34,6 +55,7 @@ export function SongActions({ song, compact }: { song: Song; compact?: boolean }
     )
   return (
     <div className="flex items-center gap-2">
+      <SingNowButton song={song} compact={compact} />
       <IconButton
         icon="top"
         label={`插播 ${song.name}`}
@@ -114,6 +136,8 @@ export function RecCard({ song }: { song: Song }) {
   const statusOf = useStatusOf()
   const st = statusOf(song)
   const disabled = st.kind === 'vip' || st.inQueue || st.isCurrent
+  const reveal =
+    'transition-all duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100 [@media(hover:hover)]:translate-y-1.5 [@media(hover:hover)]:opacity-0'
   return (
     <div className="group flex min-w-0 flex-col gap-2.5">
       <div className="relative aspect-square overflow-hidden rounded-[18px] shadow-[0_14px_30px_rgba(0,0,0,0.35)]">
@@ -135,14 +159,25 @@ export function RecCard({ song }: { song: Song }) {
           </span>
         )}
         {!disabled && (
-          <button
-            type="button"
-            onClick={() => enqueue(song)}
-            aria-label={`点歌 ${song.name}`}
-            className="absolute right-3 bottom-3 flex h-12 w-12 items-center justify-center rounded-full bg-accent text-accent-ink shadow-[0_8px_20px_rgba(0,0,0,0.4)] transition-all duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100 [@media(hover:hover)]:translate-y-1.5 [@media(hover:hover)]:opacity-0"
-          >
-            <Icon name="plus" size={22} strokeWidth={2.2} />
-          </button>
+          <div className={clsx('absolute right-3 bottom-3 flex items-center gap-2', reveal)}>
+            <button
+              type="button"
+              onClick={() => enqueue(song, 'now')}
+              aria-label={`立即唱 ${song.name}`}
+              title="立即唱"
+              className="flex h-10 w-10 items-center justify-center rounded-full bg-ink/70 text-fg shadow-[0_8px_20px_rgba(0,0,0,0.4)] backdrop-blur hover:bg-ink/85"
+            >
+              <Icon name="play" size={18} />
+            </button>
+            <button
+              type="button"
+              onClick={() => enqueue(song)}
+              aria-label={`点歌 ${song.name}`}
+              className="flex h-12 w-12 items-center justify-center rounded-full bg-accent text-accent-ink shadow-[0_8px_20px_rgba(0,0,0,0.4)]"
+            >
+              <Icon name="plus" size={22} strokeWidth={2.2} />
+            </button>
+          </div>
         )}
       </div>
       <div className="flex min-w-0 flex-col gap-0.5 px-0.5">

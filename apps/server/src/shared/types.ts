@@ -66,7 +66,17 @@ export interface QueueItem {
   addedBy?: string
 }
 
+/**
+ * karaoke = instrumental + vocals at `vocalVolume`; original = vocals at full level.
+ * With stems both modes use the same two buffers, so switching is a gain change (seamless).
+ */
 export type TrackMode = 'karaoke' | 'original'
+
+/** TV layout: stage = immersive lyrics page; mv = full-screen MV with two lyric lines at the bottom. */
+export type DisplayMode = 'stage' | 'mv'
+
+/** Where a requested song goes: end of queue, next up, or replace the current song right away. */
+export type QueuePosition = 'end' | 'next' | 'now'
 
 export interface PlayerState {
   current: QueueItem | null
@@ -82,12 +92,15 @@ export interface PlayerState {
   /** Pitch shift in semitones, -6..6. */
   key: number
   trackMode: TrackMode
+  displayMode: DisplayMode
   /** Bumped every time the current song restarts so the TV can reload. */
   epoch: number
 }
 
 export interface SeparatorStatus {
   online: boolean
+  /** False while the separator is still downloading / loading its model (first start). */
+  ready?: boolean
   device?: string
   model?: string
   pending: number
@@ -167,6 +180,7 @@ export type PlayerCommand =
       vocalVolume?: number
       key?: number
       trackMode?: TrackMode
+      displayMode?: DisplayMode
     }
 
 export type ClientRole = 'tv' | 'desk' | 'remote'

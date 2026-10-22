@@ -50,7 +50,8 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/queue` | `{ songId, position?: 'next' \| 'end' }` → `QueueItem`。没有正在播放的歌时直接开始播放。会员歌返回 409 |
+| POST | `/queue` | `{ songId, position?: 'end' \| 'next' \| 'now' }` → `QueueItem`。`now` 表示立即切到这首（当前歌不再回到队列）。没有正在播放的歌时直接开始播放。会员歌返回 409 |
+| POST | `/queue/:uid/play` | 立即播放队列中的这首（切歌） |
 | POST | `/queue/:uid/top` | 置顶（移到下一首） |
 | POST | `/queue/reorder` | `{ uids: string[] }`，按给定顺序重排（拖拽排序用） |
 | DELETE | `/queue/:uid` | 删除 |

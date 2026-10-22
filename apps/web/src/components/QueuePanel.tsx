@@ -4,10 +4,11 @@ import clsx from 'clsx'
 import type { QueueItem } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtTime, queueStatusText } from '../lib/format'
-import { errorText, toast, useStatusOf } from '../lib/hooks'
+import { errorText, playQueuedNow, toast, useStatusOf } from '../lib/hooks'
 import { useDragReorder } from '../lib/useDragReorder'
-import { livePosition, useApp } from '../store/app'
+import { livePosition, sendCommand, useApp } from '../store/app'
 import { Icon } from './icons'
+import { DisplayModeToggle, TrackModeToggle } from './PlayerModes'
 import { Cover, dotColor, EmptyNote, Eq, IconButton, ProgressBar } from './ui'
 
 export function useNow(interval = 1000) {
@@ -43,7 +44,7 @@ export function NowSingingCard({ compact }: { compact?: boolean }) {
     <div className="relative overflow-hidden rounded-[20px] border border-white/10 bg-[linear-gradient(135deg,rgba(255,77,126,0.22)_0%,rgba(123,47,247,0.18)_100%)] p-4">
       <div className="flex items-center gap-3.5">
         <Cover song={cur.song} px={160} className={clsx('rounded-[14px]', compact ? 'h-14 w-14' : 'h-[60px] w-[60px]')} />
-        <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="flex items-center gap-2 text-xs tracking-[0.12em] text-[#FFC2D1]">
             {player.playing && <Eq color="#FFC2D1" />}
             {player.playing ? '正在演唱' : '已暂停'}
@@ -51,12 +52,29 @@ export function NowSingingCard({ compact }: { compact?: boolean }) {
           <span className="truncate text-[17px] font-bold">{cur.song.name}</span>
           <span className="truncate text-[13px] text-fg-2">{artistsText(cur.song)}</span>
         </div>
+        {!compact && (
+          <div className="flex shrink-0 items-center gap-1">
+            <IconButton
+              icon={player.playing ? 'pause' : 'play'}
+              label={player.playing ? '暂停' : '播放'}
+              onClick={() => sendCommand({ action: 'toggle' })}
+              className="bg-white/10 text-fg"
+            />
+            <IconButton icon="next" label="切歌" onClick={() => sendCommand({ action: 'next' })} className="bg-white/10 text-fg" />
+          </div>
+        )}
       </div>
       <div className="num mt-3.5 flex items-center gap-2.5 text-xs text-fg-2">
         <span>{fmtTime(pos)}</span>
         <ProgressBar value={dur ? pos / dur : 0} color="#FFFFFF" className="flex-1 bg-white/18" />
         <span>{fmtTime(dur)}</span>
       </div>
+      {!compact && (
+        <div className="mt-3.5 grid grid-cols-2 gap-2">
+          <TrackModeToggle size="sm" stretch />
+          <DisplayModeToggle size="sm" stretch />
+        </div>
+      )}
     </div>
   )
 }
@@ -124,6 +142,14 @@ function QueueRow({
           </span>
         )}
       </div>
+      <IconButton
+        icon="play"
+        label={`立即唱 ${item.song.name}`}
+        size={34}
+        iconSize={16}
+        onClick={() => playQueuedNow(item)}
+        className="hover:text-accent-soft"
+      />
       {st.kind === 'error' && (
         <IconButton icon="refresh" label={`重试 ${item.song.name}`} size={34} iconSize={16} onClick={() => safe(() => api.retryTrack(item.song.id))} />
       )}
@@ -184,7 +210,7 @@ export function SeparatorCard() {
             className="h-1.5 w-1.5 rounded-full"
             style={{ background: sep.online ? '#4ADE80' : '#8E8E99', boxShadow: sep.online ? '0 0 8px #4ADE80' : undefined }}
           />
-          {sep.online ? '在线' : '离线'}
+          {!sep.online ? '离线' : sep.ready === false ? '准备中' : '在线'}
         </span>
       </div>
       <dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3.5 gap-y-1.5 text-[13px]">
@@ -198,6 +224,9 @@ export function SeparatorCard() {
         <dd className="m-0 text-right">{sep.pending} 首待处理</dd>
       </dl>
       {!sep.online && <p className="m-0 text-xs leading-5 text-muted">分离服务未连接时，歌曲会以原曲播放。</p>}
+      {sep.online && sep.ready === false && (
+        <p className="m-0 text-xs leading-5 text-muted">首次启动正在下载分离模型（约 0.2–0.9 GB），完成后自动开始生成伴奏。</p>
+      )}
     </div>
   )
 }

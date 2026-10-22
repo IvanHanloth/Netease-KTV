@@ -333,7 +333,13 @@ function SeparatorChip() {
         className="h-2 w-2 rounded-full"
         style={{ background: ok ? '#4ADE80' : '#8E8E99', boxShadow: ok ? '0 0 10px #4ADE80' : undefined }}
       />
-      {!connected ? '正在连接主机…' : sep.online ? `分离服务在线${sep.device ? ' · ' + sep.device : ''}` : '分离服务离线 · 原曲模式'}
+      {!connected
+        ? '正在连接主机…'
+        : !sep.online
+          ? '分离服务离线 · 原曲模式'
+          : sep.ready === false
+            ? '分离模型准备中…'
+            : `分离服务在线${sep.device ? ' · ' + sep.device : ''}`}
     </div>
   )
 }

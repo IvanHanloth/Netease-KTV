@@ -1,134 +1,116 @@
 # Netease KTV
 
-基于网易云音乐的本地 KTV。用你自己登录的网易云账号点歌，取歌曲、逐字歌词和 MV；AI 去掉主唱、保留和声，生成伴奏。电视或电脑做主屏，手机扫码点歌。
+把家里的电脑或电视变成 KTV。登录你自己的网易云音乐账号点歌，系统自动用 AI 去掉原唱、保留和声，生成伴奏，配上逐字歌词和 MV 背景。手机扫码就能点歌、切歌、调音量。
 
-- **点歌台**（`/`）：搜索、日推、排行榜、我的歌单，查看已点列表和伴奏生成进度。
-- **主屏**（`/tv`）：逐字歌词、MV 或封面取色背景、导唱音量、升降调、原唱/伴奏切换、扫码点歌、麦克风实时打分。整个系统只有主屏发声。
-- **手机遥控**（`/m`）：点歌、切歌、调音量、升降调。
+> 默认只播放登录账号有权播放的完整歌曲，不含任何破解。项目依赖非官方的网易云接口，可能随时失效。生成的伴奏仅供个人本地使用，请勿分发或商用。
 
-> 默认只播放登录账号有权播放的完整歌曲。会员歌在没有会员的账号上不可点，项目不含任何破解。见下文“第三方音源”。
+## 特点
 
-## 架构
+- **网易云曲库**：搜索、每日推荐、排行榜、我的歌单。扫码登录，账号能听的歌都能点。
+- **AI 伴奏**：只去主唱、保留和声，听起来不空。点歌后在后台提前生成，唱到时直接播放。
+  - 有 NVIDIA 显卡时，一首歌约 1 分钟就能生成。
+  - 没有显卡也能用，只是慢一些。
+- **逐字歌词**：网易云逐字歌词逐字填色，支持翻译和罗马音；只有逐行歌词的歌自动按字估算时间。
+- **两种主屏模式**：
+  - 舞台模式：沉浸式暗色界面，大字歌词，背景随专辑封面变色。
+  - MV 模式：全屏播放 MV，底部只显示两行歌词，像传统 KTV 一样左右交替。MV 和歌曲版本一致时自动对齐画面。
+  - 两种模式下，控制面板都会在空闲时自动隐藏。
+- **调音**：伴奏音量、导唱（原唱人声）音量、±6 半音升降调。原唱/伴唱无缝切换，不停顿、不重新加载。
+- **切歌**：一键切歌；点歌时可以选“立即唱”，已点列表里的歌也能直接切过去。下一首提前缓冲好，切过去马上就能唱。
+- **麦克风打分**：实时显示音高轨道，每句给出评级，唱完给总分。
+- **手机遥控**：扫主屏上的二维码，手机就能点歌、插播、拖拽排序、切歌、调音。
+- **开箱即用的 Docker 部署**：一条命令启动，自动判断用 GPU 还是 CPU，自动下载分离模型。
+- **可选第三方音源**：默认关闭，只用于网易云完全没有音源的歌，会员歌不会走这条路。
 
-```
-浏览器（主屏 / 点歌台 / 手机） ──HTTP + WebSocket──▶ app（Node 24 · Fastify）
-                                                     ├─ 网易云：@neteasecloudmusicapienhanced/api（库模式）
-                                                     ├─ 点歌队列、播放状态、SQLite
-                                                     └─ HTTP 任务 ──▶ separator（Python · audio-separator）
-                                                                        两者共享 /data 卷
-```
+## 启动方式
 
-- 伴奏：`instrumental.flac` = 伴奏 + 和声，`vocals.flac` = 主唱（导唱音量用它）。
-- GPU 默认模型 `mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt`，CPU 默认模型 `UVR_MDXNET_KARA_2.onnx`。
-- 分离服务不可用时自动改播原曲。
-- 打分：分离完成后，从主唱轨提取参考音高（`pitch.json`，librosa pYIN）。主屏通过麦克风实时检测音高并比对（不区分八度），每句给出评级，唱完给总分。
-  - 麦克风只能在安全上下文中使用，所以主屏要用 `http://localhost:8686/tv`（或 HTTPS）打开，麦克风接在主屏这台电脑上。
-- 升降调由服务端 ffmpeg 渲染并缓存。
+### 1. 准备
 
-详细调研见 [docs/feasibility-study.md](docs/feasibility-study.md)，接口文档见 [docs/api.md](docs/api.md)。
+- 安装 Docker：
+  - Windows / macOS：[Docker Desktop](https://www.docker.com/products/docker-desktop/)
+  - Linux：Docker Engine + Docker Compose v2
+- 想用 NVIDIA 显卡加速（可选）：
+  - Windows：Docker Desktop 使用 WSL2 后端，并装好较新的 NVIDIA 驱动。
+  - Linux：安装 [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)。
+- 磁盘空间约 10 GB（镜像加模型）。
 
-## Docker 部署（推荐）
+### 2. 一键启动
 
-```bash
-cp .env.example .env
-```
-
-只有 CPU：
-
-```bash
-docker compose up -d
-```
-
-有 NVIDIA 显卡（Windows 需要 Docker Desktop + WSL2，Linux 需要 nvidia-container-toolkit）：
+先下载代码：
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
-```
-
-启动后：
-
-1. 打开 `http://<本机局域网 IP>:8686`，点左下角登录，用网易云 App 扫码。
-2. 主屏设备打开 `http://<本机局域网 IP>:8686/tv`，点一下“开始”（浏览器要求先有一次点击才能出声）。
-3. 手机扫主屏上的二维码点歌。
-
-说明：
-
-- 容器拿不到宿主机的局域网 IP。请在 `.env` 的 `PUBLIC_URL` 或应用设置里填写局域网地址，二维码才会正确。
-- Windows 防火墙需要放行 8686 端口，手机才能访问。
-- 模型在第一次分离时下载，存在 `ktv-models` 卷里；歌曲缓存、伴奏和数据库存在 `ktv-data` 卷里。
-- 只在局域网内使用，不要映射到公网。需要时设置 `ACCESS_TOKEN`。
-
-## 本地开发
-
-需要 Node 22.13+ 和 ffmpeg（加入 PATH，或设置 `FFMPEG_PATH` / `FFPROBE_PATH`）。
-
-```bash
-npm install
+git clone <本仓库地址> netease-ktv
 ```
 
 ```bash
-npm run dev
+cd netease-ktv
 ```
 
-后端监听 `http://localhost:8686`，前端开发服务器默认是 `http://localhost:5173`，`/api` 会代理到后端。
+Windows：双击 `start.cmd`，或者在 PowerShell 里运行：
 
-分离服务（可选，不启动时播放原曲）：
+```powershell
+.\start.ps1
+```
+
+Linux / macOS：
 
 ```bash
-cd separator
-py -3.11 -m venv .venv
-.venv\Scripts\activate
-pip install "audio-separator[gpu]" -r requirements.txt
+./start.sh
 ```
 
-`audio-separator[gpu]` 在 Windows 上会装成 CPU 版 PyTorch，需要再从 PyTorch 官方源换成 CUDA 版（版本号与已装的 torch 一致，驱动支持 CUDA 13 时用 cu130）：
+脚本会自动完成：
+
+- 检测 Docker 能否使用 NVIDIA 显卡，选择 GPU 或 CPU 版的伴奏分离服务。
+- 检测本机局域网 IP，用作手机扫码地址。
+- 构建并启动容器。
+
+第一次启动要下载基础镜像（约 4 GB），分离服务启动后还会自动下载 AI 模型（0.2–0.9 GB），视网速需要几分钟到十几分钟。之后再启动只要几秒。
+
+查看模型下载进度：
 
 ```bash
-pip install --force-reinstall --no-deps torch==2.14.1 --index-url https://download.pytorch.org/whl/cu130
+docker compose logs -f separator
 ```
+
+### 3. 开始唱歌
+
+1. 打开点歌台 `http://<本机局域网 IP>:8686`（启动脚本会打印这个地址），点左下角“登录网易云”，用网易云音乐 App 扫码。
+2. 在接电视或投影的那台电脑上打开主屏 `http://localhost:8686/tv`，点一下“开始”。
+   - 浏览器要求先点一下才能出声。
+   - 用 localhost 打开才能使用麦克风打分。
+3. 手机连同一个 Wi‑Fi，扫主屏右下角的二维码点歌。
+
+手机打不开时，检查电脑防火墙是否放行了 8686 端口。
+
+### 停止与更新
+
+停止：
 
 ```bash
-python app.py
+docker compose down
 ```
 
-- 没有 NVIDIA 显卡时，把 `[gpu]` 换成 `[cpu]`，跳过换 PyTorch 那一步。
-- 模型默认下载到 `/models`；本地运行时可以设置 `MODEL_DIR=separator/models`。
-- 在 RTX 4060 Laptop 上实测：一首 3 分钟左右的歌，分离约 45 秒，提取音高再约 10 秒。第一次运行要先下载约 900MB 的模型。
-
-生产构建：
+更新到最新版本：
 
 ```bash
-npm run build
+git pull
 ```
 
-```bash
-npm start
-```
+然后重新运行启动脚本。
 
-## 配置
+歌曲缓存、伴奏、登录状态和模型都保存在 Docker 卷里，停止或更新都不会丢失。
 
-| 变量 | 默认值 | 说明 |
+### 可选配置
+
+第一次启动后，项目目录下会生成 `.env`，改完重新运行启动脚本即可生效。常用项：
+
+| 配置 | 默认值 | 说明 |
 |---|---|---|
-| `PORT` | `8686` | 后端端口 |
-| `DATA_DIR` | `./data` | 数据目录（SQLite、音频、伴奏） |
-| `SEPARATOR_URL` | `http://127.0.0.1:9000` | 分离服务地址 |
-| `PUBLIC_URL` | 空 | 二维码使用的局域网地址 |
-| `ACCESS_TOKEN` | 空 | 访问令牌，空表示不鉴权 |
-| `AUDIO_LEVEL` | `exhigh` | 网易云音质 |
-| `SEPARATOR_MODEL` | 自动 | 分离模型文件名 |
-| `ENABLE_UNBLOCK` | `false` | 第三方音源开关 |
-| `UNBLOCK_SOURCES` | `unm` | 第三方音源，逗号分隔 |
-| `SCORING_ENABLED` | `true` | 主屏显示麦克风打分 |
+| `KTV_PORT` | `8686` | 访问端口 |
+| `PUBLIC_URL` | 自动检测 | 手机扫码地址，自动检测不准时手动填写，如 `http://192.168.1.8:8686` |
+| `ACCESS_TOKEN` | 空 | 设置后需要令牌才能访问，二维码会自动带上令牌 |
+| `AUDIO_LEVEL` | `exhigh` | 音质：`standard` / `higher` / `exhigh` / `lossless` / `hires` |
+| `ENABLE_UNBLOCK` | `false` | 第三方音源，仅用于网易云无音源的歌 |
+| `KTV_GPU` | `auto` | 设为 `on` / `off` 可强制使用或不使用 GPU |
 
-除 `PORT`、`DATA_DIR`、`SEPARATOR_URL`、`ACCESS_TOKEN` 外，其余都可以在应用设置里修改。
-
-## 第三方音源（unblock）
-
-默认关闭。打开后，**只有网易云完全没有音源的歌**才会去第三方平台匹配；会员歌、付费歌、只能试听的歌一律不走第三方音源。
-
-- 匹配到的音频时长和网易云标注相差超过 3 秒就丢弃，避免拿到 live 版或翻唱版后歌词对不上。
-- 打开后，点歌的歌曲 id 会发送给第三方站点。这些音源的授权状况不明，仅限个人本地使用。
-
-## 免责声明
-
-本项目依赖非官方的网易云接口，接口可能随时失效，账号也有被风控的可能。生成的伴奏仅供个人本地使用，请勿分发或用于商业用途。
+大部分选项也能在点歌台的“设置”里直接修改。

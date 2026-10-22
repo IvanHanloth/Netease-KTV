@@ -1,19 +1,33 @@
 /**
  * Web Audio engine for the TV page: plays an accompaniment buffer and an optional
  * lead-vocal buffer in sample-accurate sync, each with its own gain.
+ *
+ * Every play() opens a "session" (fresh gain nodes + sources). Ending a session
+ * schedules a short gain ramp and a matching source stop on the audio clock, so
+ * pause / seek / song changes never click and never race a newer session.
+ * Switching 伴唱 ⇄ 原唱 with stems is just a vocal-gain ramp: no reload, no gap.
  */
 export interface TrackUrls {
   main: string
   vocals?: string
 }
 
+interface Session {
+  music: GainNode
+  vocal: GainNode
+  sources: AudioBufferSourceNode[]
+}
+
+/** Gain time constant for volume / mode changes (~80 ms). */
+const RAMP_TC = 0.08
+/** Decoded buffers kept around: current song (2 stems) + prefetched next song (2 stems). */
+const CACHE_SIZE = 4
+
 export class AudioEngine {
   ctx: AudioContext | null = null
-  private musicGain: GainNode | null = null
-  private vocalGain: GainNode | null = null
   private main: AudioBuffer | null = null
   private vocals: AudioBuffer | null = null
-  private sources: AudioBufferSourceNode[] = []
+  private session: Session | null = null
   private startCtxTime = 0
   private startOffset = 0
   private pausedAt = 0
@@ -36,11 +50,6 @@ export class AudioEngine {
     if (!this.ctx) {
       const Ctx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext
       this.ctx = new Ctx({ latencyHint: 'playback' })
-      this.musicGain = this.ctx.createGain()
-      this.vocalGain = this.ctx.createGain()
-      this.musicGain.connect(this.ctx.destination)
-      this.vocalGain.connect(this.ctx.destination)
-      this.applyGains()
     }
     if (this.ctx.state !== 'running') await this.ctx.resume()
   }
@@ -56,13 +65,18 @@ export class AudioEngine {
   position() {
     if (!this.ctx || !this.main) return 0
     if (!this.playing) return this.pausedAt
-    return Math.min(this.main.duration, this.startOffset + (this.ctx.currentTime - this.startCtxTime))
+    return Math.max(0, Math.min(this.main.duration, this.startOffset + (this.ctx.currentTime - this.startCtxTime)))
   }
 
   // No abort signal here: the promise is cached and may be shared by a later load.
   private fetchBuffer(url: string): Promise<AudioBuffer> {
     const hit = this.cache.get(url)
-    if (hit) return hit
+    if (hit) {
+      // LRU: mark as recently used
+      this.cache.delete(url)
+      this.cache.set(url, hit)
+      return hit
+    }
     const p = (async () => {
       const res = await fetch(url)
       if (!res.ok) throw new Error(`音频加载失败（${res.status}）`)
@@ -72,12 +86,18 @@ export class AudioEngine {
     })()
     this.cache.set(url, p)
     p.catch(() => this.cache.delete(url))
-    // keep the cache small: decoded buffers are large
-    while (this.cache.size > 4) {
-      const first = this.cache.keys().next().value as string
-      this.cache.delete(first)
+    // decoded buffers are large: keep only the most recent few
+    while (this.cache.size > CACHE_SIZE) {
+      const oldest = this.cache.keys().next().value as string
+      this.cache.delete(oldest)
     }
     return p
+  }
+
+  /** Download + decode in the background so a later load() of these URLs is instant. */
+  prefetch(urls: string[]) {
+    if (!this.ctx) return
+    for (const u of urls) this.fetchBuffer(u).catch(() => {})
   }
 
   /** Load new buffers. Keeps playing state off; caller decides when to play. */
@@ -90,7 +110,7 @@ export class AudioEngine {
     if (signal?.aborted) return false
     this.lastPosition = this.position()
     this.lastPlaying = this.playing
-    this.stopSources()
+    this.endSession(0.02)
     this.playing = false
     this.main = main
     this.vocals = vocals
@@ -99,8 +119,9 @@ export class AudioEngine {
     return true
   }
 
-  unload() {
-    this.stopSources()
+  /** Stop and forget the current track, fading it out over `fadeSec`. */
+  unload(fadeSec = 0.02) {
+    this.endSession(fadeSec)
     this.playing = false
     this.main = null
     this.vocals = null
@@ -110,26 +131,38 @@ export class AudioEngine {
 
   play(offset = this.pausedAt) {
     if (!this.ctx || !this.main) return
-    this.stopSources()
+    this.endSession(0.02)
+    const ctx = this.ctx
     const at = Math.max(0, Math.min(offset, this.main.duration - 0.05))
-    const when = this.ctx.currentTime + 0.05
+    const when = ctx.currentTime + 0.05
     const gen = ++this.gen
+    const mkGain = (target: number) => {
+      const g = ctx.createGain()
+      g.gain.setValueAtTime(0, ctx.currentTime)
+      g.gain.setValueAtTime(0, when)
+      g.gain.linearRampToValueAtTime(target, when + 0.03) // tiny fade-in, no click
+      g.connect(ctx.destination)
+      return g
+    }
+    const session: Session = { music: mkGain(this.music), vocal: mkGain(this.vocal), sources: [] }
     const mk = (buf: AudioBuffer, gain: GainNode) => {
-      const src = this.ctx!.createBufferSource()
+      const src = ctx.createBufferSource()
       src.buffer = buf
       src.connect(gain)
       src.start(when, at)
       return src
     }
-    const mainSrc = mk(this.main, this.musicGain!)
-    this.sources = [mainSrc]
-    if (this.vocals) this.sources.push(mk(this.vocals, this.vocalGain!))
+    const mainSrc = mk(this.main, session.music)
+    session.sources.push(mainSrc)
+    if (this.vocals) session.sources.push(mk(this.vocals, session.vocal))
     mainSrc.onended = () => {
       if (gen !== this.gen || !this.playing) return
       this.playing = false
       this.pausedAt = this.main?.duration ?? 0
+      this.session = null
       this.onEnded?.()
     }
+    this.session = session
     this.startCtxTime = when
     this.startOffset = at
     this.playing = true
@@ -139,7 +172,7 @@ export class AudioEngine {
     if (!this.playing) return
     this.pausedAt = this.position()
     this.playing = false
-    this.stopSources()
+    this.endSession(0.03)
   }
 
   seek(sec: number) {
@@ -148,30 +181,44 @@ export class AudioEngine {
     if (wasPlaying) this.play(this.pausedAt)
   }
 
+  /** Target gains; changes ramp smoothly (no zipper noise, seamless 伴唱/原唱 switch). */
   setVolumes(music: number, vocal: number) {
     this.music = music
     this.vocal = vocal
-    this.applyGains()
-  }
-
-  private applyGains() {
-    if (!this.ctx || !this.musicGain || !this.vocalGain) return
+    const s = this.session
+    if (!this.ctx || !s) return
     const t = this.ctx.currentTime
-    this.musicGain.gain.setTargetAtTime(this.music, t, 0.04)
-    this.vocalGain.gain.setTargetAtTime(this.vocal, t, 0.04)
+    s.music.gain.setTargetAtTime(music, t, RAMP_TC)
+    s.vocal.gain.setTargetAtTime(vocal, t, RAMP_TC)
   }
 
-  private stopSources() {
+  /** Ramp the current session to silence and stop its sources, all scheduled on the audio clock. */
+  private endSession(fadeSec: number) {
+    const s = this.session
     this.gen++
-    for (const s of this.sources) {
-      try {
-        s.onended = null
-        s.stop()
-      } catch {
-        /* already stopped */
-      }
-      s.disconnect()
+    this.session = null
+    if (!s || !this.ctx) return
+    const t = this.ctx.currentTime
+    for (const g of [s.music, s.vocal]) {
+      g.gain.cancelScheduledValues(t)
+      g.gain.setValueAtTime(g.gain.value, t)
+      g.gain.linearRampToValueAtTime(0, t + fadeSec)
     }
-    this.sources = []
+    for (const src of s.sources) {
+      src.onended = null
+      try {
+        src.stop(t + fadeSec + 0.01)
+      } catch {
+        /* not started / already stopped */
+      }
+    }
+    window.setTimeout(
+      () => {
+        for (const src of s.sources) src.disconnect()
+        s.music.disconnect()
+        s.vocal.disconnect()
+      },
+      (fadeSec + 0.2) * 1000,
+    )
   }
 }

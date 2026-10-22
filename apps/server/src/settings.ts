@@ -12,7 +12,8 @@ export function getSettings(): Settings {
     unblockSources: saved.unblockSources ?? config.defaults.unblockSources,
     audioLevel: saved.audioLevel ?? config.defaults.audioLevel,
     separatorModel: saved.separatorModel ?? config.defaults.separatorModel,
-    publicUrl: saved.publicUrl ?? config.defaults.publicUrl,
+    // Empty means "not set in the UI": fall back to PUBLIC_URL (filled in by the start scripts).
+    publicUrl: saved.publicUrl || config.defaults.publicUrl,
     scoringEnabled: saved.scoringEnabled ?? config.defaults.scoringEnabled,
   }
 }

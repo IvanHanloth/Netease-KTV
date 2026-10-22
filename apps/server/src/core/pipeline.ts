@@ -211,6 +211,7 @@ async function pollSeparator(): Promise<void> {
   }).length
   hub.setSeparator({
     online: !!health?.ok,
+    ready: health ? (health.ready ?? true) : false,
     device: health?.device,
     model: health?.model,
     pending,

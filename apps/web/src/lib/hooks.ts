@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { create } from 'zustand'
-import type { Song } from '@shared/types'
+import type { QueueItem, QueuePosition, Song } from '@shared/types'
 import { useApp } from '../store/app'
 import { api, ApiError, getToken } from './api'
 import { deriveStatus, type SongStatus } from './format'
@@ -60,16 +60,28 @@ export function errorText(e: unknown) {
   return e instanceof Error ? e.message : '请求失败'
 }
 
-/** 点歌 / 插播 with feedback toasts. */
+/** 点歌 / 插播 / 立即唱 with feedback toasts. */
 export function useEnqueue() {
-  return useCallback(async (song: Song, position: 'next' | 'end' = 'end') => {
+  return useCallback(async (song: Song, position: QueuePosition = 'end') => {
     try {
       await api.enqueue(song.id, position)
-      toast(position === 'next' ? `已插播：${song.name}` : `已点：${song.name}`)
+      toast(
+        position === 'now' ? `已切换到《${song.name}》` : position === 'next' ? `已插播：${song.name}` : `已点：${song.name}`,
+      )
     } catch (e) {
       toast(errorText(e), 'error')
     }
   }, [])
+}
+
+/** Sing an already-queued song right now (skips the current one). */
+export async function playQueuedNow(item: QueueItem) {
+  try {
+    await api.queuePlay(item.uid)
+    toast(`已切换到《${item.song.name}》`)
+  } catch (e) {
+    toast(errorText(e), 'error')
+  }
 }
 
 export function useSettings() {

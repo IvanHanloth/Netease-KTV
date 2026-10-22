@@ -4,10 +4,11 @@ import clsx from 'clsx'
 import type { PlayerCommand, Song } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtMs, fmtTime } from '../lib/format'
-import { useDebounced, useStatusOf } from '../lib/hooks'
+import { playQueuedNow, useDebounced, useStatusOf } from '../lib/hooks'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
-import { Cover, EmptyNote, Eq, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
+import { Cover, EmptyNote, Eq, IconButton, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
+import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
 import { SongActions } from '../components/SongTable'
 import { QueueList, useNow } from '../components/QueuePanel'
 
@@ -137,6 +138,12 @@ function RemoteTab() {
       </section>
 
       <section aria-label="调音" className="flex flex-col gap-3.5 rounded-3xl border border-white/8 bg-white/4 p-4">
+        {cur && (
+          <div className="flex flex-col gap-2">
+            <TrackModeToggle stretch />
+            <DisplayModeToggle stretch />
+          </div>
+        )}
         <label className="flex flex-col gap-1.5">
           <span className="flex items-center justify-between text-sm">
             <span className="flex items-center gap-2">
@@ -192,29 +199,6 @@ function RemoteTab() {
             </button>
           </div>
         </div>
-        {hasStems && (
-          <div role="group" aria-label="音轨" className="grid grid-cols-2 gap-1 rounded-2xl bg-white/5 p-1">
-            {(
-              [
-                ['karaoke', '伴奏'],
-                ['original', '原唱'],
-              ] as const
-            ).map(([mode, label]) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={player.trackMode === mode}
-                onClick={() => sendCommand({ action: 'set', trackMode: mode })}
-                className={clsx(
-                  'h-10 rounded-xl text-sm',
-                  player.trackMode === mode ? 'bg-fg font-semibold text-ink' : 'text-[#C8C8D0]',
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
       </section>
 
       <section aria-label="接下来" className="flex flex-col gap-1.5">
@@ -244,6 +228,7 @@ function RemoteTab() {
                   )}
                 </div>
                 <span className="num text-[13px] text-subtle">{fmtMs(q.song.duration)}</span>
+                <IconButton icon="play" label={`立即唱 ${q.song.name}`} onClick={() => playQueuedNow(q)} className="bg-white/6 text-fg-2" />
               </div>
             )
           })

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { getDb, kv } from '../db.js'
-import type { AppState, PlayerCommand, PlayerState, QueueItem, Song } from '../shared/types.js'
+import type { AppState, PlayerCommand, PlayerState, QueueItem, QueuePosition, Song } from '../shared/types.js'
 import { hub } from './hub.js'
 
 const PLAYER_KEY = 'player'
@@ -17,6 +17,7 @@ let player: PlayerState = {
   vocalVolume: 0,
   key: 0,
   trackMode: 'karaoke',
+  displayMode: 'stage',
   epoch: 0,
 }
 
@@ -42,6 +43,7 @@ function savePlayer(): void {
     musicVolume: player.musicVolume,
     vocalVolume: player.vocalVolume,
     trackMode: player.trackMode,
+    displayMode: player.displayMode,
     position: player.position,
   })
 }
@@ -55,6 +57,7 @@ export function loadPlayer(getSong: (id: number) => Song | undefined): void {
       musicVolume: saved.musicVolume ?? player.musicVolume,
       vocalVolume: saved.vocalVolume ?? player.vocalVolume,
       trackMode: saved.trackMode ?? player.trackMode,
+      displayMode: saved.displayMode ?? player.displayMode,
       position: saved.position ?? 0,
       playing: false,
       positionAt: Date.now(),
@@ -110,9 +113,10 @@ export function priorityIds(): number[] {
 
 // ---------- queue operations ----------
 
-export function addToQueue(song: Song, position: 'next' | 'end' = 'end', addedBy?: string): QueueItem {
+export function addToQueue(song: Song, position: QueuePosition = 'end', addedBy?: string): QueueItem {
   const item: QueueItem = { uid: randomUUID(), song, addedAt: Date.now(), addedBy }
-  if (!player.current) {
+  // Nothing playing, or "sing it now": replace the current song right away.
+  if (!player.current || position === 'now') {
     startItem(item)
     hub.emit('work')
     return item
@@ -121,6 +125,17 @@ export function addToQueue(song: Song, position: 'next' | 'end' = 'end', addedBy
   else queue = [...queue, item]
   emitQueue()
   return item
+}
+
+/** Skip the current song and start this queued one immediately. */
+export function playNow(uid: string): boolean {
+  const idx = queue.findIndex((q) => q.uid === uid)
+  if (idx < 0) return false
+  const [item] = queue.splice(idx, 1)
+  queue = [...queue]
+  startItem(item!)
+  emitQueue()
+  return true
 }
 
 export function moveToTop(uid: string): boolean {
@@ -194,6 +209,7 @@ export function command(cmd: PlayerCommand): void {
       if (typeof cmd.vocalVolume === 'number') player.vocalVolume = clamp(cmd.vocalVolume, 0, 1)
       if (typeof cmd.key === 'number') player.key = clamp(Math.round(cmd.key), -6, 6)
       if (cmd.trackMode === 'karaoke' || cmd.trackMode === 'original') player.trackMode = cmd.trackMode
+      if (cmd.displayMode === 'stage' || cmd.displayMode === 'mv') player.displayMode = cmd.displayMode
       player = { ...player }
       emitPlayer()
       return

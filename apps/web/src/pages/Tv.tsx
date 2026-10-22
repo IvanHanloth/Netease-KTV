@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { AnimatePresence, motion } from 'motion/react'
 import clsx from 'clsx'
@@ -12,11 +12,14 @@ import { AudioEngine } from '../player/engine'
 import { useScoring } from '../player/useScoring'
 import type { MicError } from '../player/mic'
 import { connect, onCommand, sendCommand, sendMessage, useApp } from '../store/app'
-import { Icon } from '../components/icons'
+import { Icon, type IconName } from '../components/icons'
 import { Cover, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
 import { QrCode } from '../components/QrCode'
 import { PitchLane } from '../components/PitchLane'
 import { LineRatingPop, ScoreOverlay, type ScoreResult } from '../components/ScoreOverlay'
+import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
+
+const reduceMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
 // ---------------- Ambient background ----------------
 
@@ -60,14 +63,19 @@ function Ambient({ song }: { song: Song | null }) {
   )
 }
 
-function MvLayer({ song }: { song: Song }) {
-  const { data } = useQuery({
+function useMv(song: Song) {
+  return useQuery({
     queryKey: ['mv', song.id],
     queryFn: () => api.mv(song.id),
     enabled: song.mvId > 0,
     retry: false,
     staleTime: 10 * 60_000,
   })
+}
+
+/** Stage mode: the MV as a dimmed, free-looping backdrop. */
+function MvBackdrop({ song }: { song: Song }) {
+  const { data } = useMv(song)
   const [failed, setFailed] = useState(false)
   useEffect(() => setFailed(false), [data?.url])
   if (!data?.url || failed) return null
@@ -91,6 +99,81 @@ function MvLayer({ song }: { song: Song }) {
       />
       <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(7,7,11,0.75)_0%,rgba(7,7,11,0.35)_35%,rgba(7,7,11,0.45)_60%,rgba(7,7,11,0.92)_100%)]" />
     </motion.div>
+  )
+}
+
+/**
+ * MV mode: the video shown directly (contain, on black). When the MV is the same
+ * version as the audio (duration within ±3 s) it follows the audio clock; otherwise
+ * it loops freely. No MV → blurred cover + ambient fallback.
+ */
+function MvScreen({ song, engine, getSongDuration }: { song: Song; engine: AudioEngine; getSongDuration: () => number }) {
+  const { data, isLoading } = useMv(song)
+  const [failed, setFailed] = useState(false)
+  const [syncable, setSyncable] = useState<boolean | null>(null)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const url = data?.url
+  useEffect(() => {
+    setFailed(false)
+    setSyncable(null)
+  }, [url])
+  const hasVideo = !!url && !failed
+
+  useEffect(() => {
+    const v = videoRef.current
+    if (!v || !hasVideo || syncable === null) return
+    const tick = () => {
+      const playing = engine.playing && engine.hasTrack
+      if (syncable) {
+        const target = engine.position()
+        if (Number.isFinite(v.duration) && target >= v.duration - 0.05) {
+          if (!v.paused) v.pause()
+          return
+        }
+        if (!v.seeking && Math.abs(v.currentTime - target) > 0.3) v.currentTime = target
+      }
+      if (playing && v.paused) v.play().catch(() => {})
+      else if (!playing && !v.paused) v.pause()
+    }
+    tick()
+    const t = window.setInterval(tick, 250)
+    return () => window.clearInterval(t)
+  }, [hasVideo, syncable, engine])
+
+  if (hasVideo)
+    return (
+      <div aria-hidden="true" className="absolute inset-0 bg-black">
+        <video
+          ref={videoRef}
+          key={url}
+          src={tokenized(url!)}
+          muted
+          playsInline
+          preload="auto"
+          loop={syncable === false}
+          onLoadedMetadata={(e) => {
+            const d = e.currentTarget.duration
+            const sd = getSongDuration()
+            setSyncable(Number.isFinite(d) && sd > 0 && Math.abs(d - sd) <= 3)
+          }}
+          onError={() => setFailed(true)}
+          className="absolute inset-0 h-full w-full object-contain"
+        />
+        <div className="absolute inset-x-0 bottom-0 h-[46vh] bg-[linear-gradient(0deg,rgba(0,0,0,0.78)_0%,rgba(0,0,0,0.32)_55%,rgba(0,0,0,0)_100%)]" />
+      </div>
+    )
+
+  return (
+    <div aria-hidden="true" className="absolute inset-0 overflow-hidden bg-ink-2">
+      <Cover song={song} px={600} className="absolute inset-0 h-full w-full scale-110 opacity-50 blur-[48px]" />
+      <Ambient song={song} />
+      {!isLoading && (
+        <div className="absolute inset-x-0 top-[16vh] flex justify-center">
+          <Cover song={song} px={600} className="h-[38vh] w-[38vh] rounded-[32px] shadow-[0_40px_100px_rgba(0,0,0,0.6)]" />
+        </div>
+      )}
+      <div className="absolute inset-x-0 bottom-0 h-[46vh] bg-[linear-gradient(0deg,rgba(0,0,0,0.7)_0%,rgba(0,0,0,0)_100%)]" />
+    </div>
   )
 }
 
@@ -125,6 +208,10 @@ function useClock(getMs: () => number, active: boolean) {
     return () => cancelAnimationFrame(raf)
   }, [getMs, active])
   return ms
+}
+
+function useLyrics(songId: number) {
+  return useQuery({ queryKey: ['lyrics', songId], queryFn: () => api.lyrics(songId), staleTime: Infinity })
 }
 
 function CurrentLine({ line, ms, showTranslation }: { line: LyricLine; ms: number; showTranslation: boolean }) {
@@ -162,7 +249,7 @@ function CurrentLine({ line, ms, showTranslation }: { line: LyricLine; ms: numbe
 }
 
 function LyricsView({ songId, getMs, song }: { songId: number; getMs: () => number; song: Song }) {
-  const { data } = useQuery({ queryKey: ['lyrics', songId], queryFn: () => api.lyrics(songId), staleTime: Infinity })
+  const { data } = useLyrics(songId)
   const ms = useClock(getMs, hasLyrics(data))
   if (!data) return null
   if (!hasLyrics(data))
@@ -234,9 +321,87 @@ function LyricsView({ songId, getMs, song }: { songId: number; getMs: () => numb
   )
 }
 
+/** One KTV-style line over video: white text, pink fill as it is sung, dark outline for legibility. */
+function KtvLine({ line, ms }: { line: LyricLine; ms: number }) {
+  const words = lineWords(line)
+  const fills = wordFills(line, ms)
+  return (
+    <p
+      className="m-0 max-w-[88vw] leading-[1.22] font-black tracking-[0.03em]"
+      style={{ filter: 'drop-shadow(0 3px 12px rgba(0,0,0,0.85))' }}
+    >
+      {words.map((w, i) => {
+        const p = fills[i] ?? 0
+        return (
+          <span
+            key={i}
+            style={{
+              backgroundImage: `linear-gradient(90deg, #FF6B9A ${p}%, #FFFFFF ${p}%)`,
+              WebkitBackgroundClip: 'text',
+              backgroundClip: 'text',
+              color: 'transparent',
+              WebkitTextStroke: '0.04em rgba(8,8,12,0.88)',
+              paintOrder: 'stroke fill',
+              whiteSpace: 'pre-wrap',
+            }}
+          >
+            {w.text}
+          </span>
+        )
+      })}
+    </p>
+  )
+}
+
+/**
+ * Classic two-row KTV lyrics: even lines on the upper row (left-aligned), odd lines on
+ * the lower row (right-aligned). The row being sung fills word by word while the other
+ * row shows the upcoming line; once a line is done its row is replaced by the next-next one.
+ */
+function TwoLineLyrics({ songId, getMs, raised }: { songId: number; getMs: () => number; raised: boolean }) {
+  const { data } = useLyrics(songId)
+  const ms = useClock(getMs, hasLyrics(data))
+  if (!data || !hasLyrics(data)) return null
+  const lines = data.lines
+  const idx = currentLineIndex(lines, ms)
+  let base = Math.max(0, idx)
+  if (idx >= 0) {
+    const l = lines[idx]
+    if (ms > l.t + l.d + 400 && idx + 1 < lines.length) base = idx + 1 // finished: bring in the next pair early
+  }
+  const rows: (number | undefined)[] = [undefined, undefined]
+  for (const i of [base, base + 1]) if (i < lines.length) rows[i % 2] = i
+  return (
+    <div
+      className={clsx(
+        'pointer-events-none absolute inset-x-[5vw] flex flex-col gap-[1.4vh] text-[clamp(30px,3.5vw,76px)] transition-[bottom] duration-500 motion-reduce:transition-none',
+        raised ? 'bottom-[30vh]' : 'bottom-[12vh]',
+      )}
+    >
+      {rows.map((li, r) => (
+        <div key={r} className={clsx('flex min-h-[1.25em]', r === 0 ? 'justify-start text-left' : 'justify-end text-right')}>
+          <AnimatePresence mode="wait" initial={false}>
+            {li !== undefined && (
+              <motion.div
+                key={li}
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: reduceMotion() ? 0 : 0.25 }}
+              >
+                <KtvLine line={lines[li]} ms={ms} />
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // ---------------- Header / footer pieces ----------------
 
-function Chip({ children, icon }: { children: ReactNode; icon?: 'wave' | 'lyrics' | 'globe' | 'note' }) {
+function Chip({ children, icon }: { children: ReactNode; icon?: IconName }) {
   return (
     <span className="inline-flex h-[30px] items-center gap-1.5 rounded-full border border-white/10 bg-white/8 px-3 text-[15px] text-[#E4E4EA]">
       {icon && <Icon name={icon} size={16} />}
@@ -245,15 +410,17 @@ function Chip({ children, icon }: { children: ReactNode; icon?: 'wave' | 'lyrics
   )
 }
 
-function Header({ player, track }: { player: PlayerState; track?: TrackState }) {
+const fadeCls = (shown: boolean) =>
+  clsx(
+    'transition-[opacity,transform] duration-500 motion-reduce:transition-none',
+    shown ? 'opacity-100' : 'pointer-events-none translate-y-2 opacity-0',
+  )
+
+function Header({ player, track, auxShown }: { player: PlayerState; track?: TrackState; auxShown: boolean }) {
   const cur = player.current!
   const queue = useApp((s) => s.state.queue)
   const tracks = useApp((s) => s.state.tracks)
-  const { data: lyrics } = useQuery({
-    queryKey: ['lyrics', cur.song.id],
-    queryFn: () => api.lyrics(cur.song.id),
-    staleTime: Infinity,
-  })
+  const { data: lyrics } = useLyrics(cur.song.id)
   const next = queue[0]
   const nextStatus = next ? deriveStatus(next.song, tracks[next.song.id], true) : null
   const working = queue.find((q) => {
@@ -273,14 +440,15 @@ function Header({ player, track }: { player: PlayerState; track?: TrackState }) 
             {cur.song.album.name && ` · ${cur.song.album.name}`}
           </div>
           <div className="mt-1.5 flex flex-wrap gap-2.5">
-            {karaoke ? <Chip icon="wave">伴奏 · 保留和声</Chip> : <Chip icon="note">原唱</Chip>}
+            {karaoke ? <Chip icon="wave">伴唱 · 保留和声</Chip> : <Chip icon="note">原唱</Chip>}
             {lyrics?.kind === 'yrc' && <Chip icon="lyrics">逐字歌词</Chip>}
             {track?.source === 'unblock' && <Chip icon="globe">第三方音源</Chip>}
             {player.key !== 0 && <Chip>{player.key > 0 ? `升 ${player.key} 调` : `降 ${-player.key} 调`}</Chip>}
           </div>
         </div>
       </div>
-      <div className="flex shrink-0 flex-col items-end gap-4">
+      <div className={clsx('flex shrink-0 flex-col items-end gap-4', fadeCls(auxShown))}>
+        <QrCard />
         {next && nextStatus && (
           <div className="glass flex items-center gap-4 rounded-[20px] py-3.5 pr-5 pl-3.5">
             <Cover song={next.song} px={120} className="h-14 w-14 rounded-xl" />
@@ -311,6 +479,19 @@ function Header({ player, track }: { player: PlayerState; track?: TrackState }) 
         </div>
       </div>
     </header>
+  )
+}
+
+/** MV mode: song title in the corner, shown briefly when a song starts (and while the UI is awake). */
+function MvTitle({ song, shown }: { song: Song; shown: boolean }) {
+  return (
+    <div className={clsx('absolute top-[5.2vh] left-[3.75vw] flex max-w-[60vw] items-center gap-4', fadeCls(shown))}>
+      <Cover song={song} px={160} className="h-16 w-16 rounded-2xl shadow-[0_12px_30px_rgba(0,0,0,0.5)]" />
+      <div className="flex min-w-0 flex-col gap-1" style={{ filter: 'drop-shadow(0 2px 10px rgba(0,0,0,0.85))' }}>
+        <span className="truncate text-[30px] leading-tight font-bold">{song.name}</span>
+        <span className="truncate text-lg text-fg-2">{artistsText(song)}</span>
+      </div>
+    </div>
   )
 }
 
@@ -348,19 +529,39 @@ function Progress({ getPos, duration }: { getPos: () => number; duration: number
 }
 
 function ControlPill({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={clsx('glass flex h-16 items-center gap-3.5 rounded-[20px] px-5.5', className)}>{children}</div>
+  return <div className={clsx('glass flex h-16 items-center gap-3 rounded-[20px] px-5', className)}>{children}</div>
 }
 
 function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: boolean; extra?: ReactNode }) {
   const set = (patch: Omit<Extract<Parameters<typeof sendCommand>[0], { action: 'set' }>, 'action'>) =>
     sendCommand({ action: 'set', ...patch })
+  const karaoke = hasStems && player.trackMode === 'karaoke'
   return (
-    <div className="flex flex-wrap items-center gap-4">
-      {hasStems && player.trackMode === 'karaoke' && (
+    <div className="flex flex-wrap items-center gap-3.5">
+      <button
+        type="button"
+        onClick={() => sendCommand({ action: 'toggle' })}
+        aria-label={player.playing ? '暂停' : '播放'}
+        title={player.playing ? '暂停（空格）' : '播放（空格）'}
+        className="flex h-16 w-16 items-center justify-center rounded-full bg-accent text-accent-ink shadow-[0_10px_28px_rgba(255,77,126,0.45)] transition-transform hover:scale-105"
+      >
+        <Icon name={player.playing ? 'pause' : 'play'} size={26} />
+      </button>
+      <button
+        type="button"
+        onClick={() => sendCommand({ action: 'restart' })}
+        aria-label="重唱"
+        title="重唱"
+        className="glass flex h-16 w-16 items-center justify-center rounded-[20px] transition-colors hover:bg-white/10"
+      >
+        <Icon name="replay" size={22} />
+      </button>
+      <TrackModeToggle size="lg" />
+      {karaoke && (
         <ControlPill>
           <Icon name="mic" size={22} />
           <span className="text-lg">导唱</span>
-          <div className="w-[120px]">
+          <div className="w-[100px]">
             <Range label="导唱音量" value={Math.round(player.vocalVolume * 100)} onChange={(v) => set({ vocalVolume: v / 100 })} color="#FFFFFF" />
           </div>
           <span className="num w-11 text-lg text-[#C8C8D0]">{Math.round(player.vocalVolume * 100)}%</span>
@@ -368,9 +569,9 @@ function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: 
       )}
       <ControlPill>
         <Icon name="volume" size={22} />
-        <span className="text-lg">{player.trackMode === 'karaoke' && hasStems ? '伴奏' : '音量'}</span>
-        <div className="w-[120px]">
-          <Range label="伴奏音量" value={Math.round(player.musicVolume * 100)} onChange={(v) => set({ musicVolume: v / 100 })} color="#FFFFFF" />
+        <span className="text-lg">{karaoke ? '伴奏' : '音量'}</span>
+        <div className="w-[100px]">
+          <Range label="音量" value={Math.round(player.musicVolume * 100)} onChange={(v) => set({ musicVolume: v / 100 })} color="#FFFFFF" />
         </div>
         <span className="num w-11 text-lg text-[#C8C8D0]">{Math.round(player.musicVolume * 100)}%</span>
       </ControlPill>
@@ -398,29 +599,16 @@ function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: 
           <Icon name="plus" size={20} strokeWidth={2} />
         </button>
       </ControlPill>
-      {hasStems && (
-        <div role="group" aria-label="音轨" className="glass flex h-16 items-center gap-1 rounded-[20px] px-2.5">
-          {(
-            [
-              ['karaoke', '伴奏'],
-              ['original', '原唱'],
-            ] as const
-          ).map(([mode, label]) => (
-            <button
-              key={mode}
-              type="button"
-              aria-pressed={player.trackMode === mode}
-              onClick={() => set({ trackMode: mode })}
-              className={clsx(
-                'h-11 rounded-[14px] px-4.5 text-[17px]',
-                player.trackMode === mode ? 'bg-fg font-semibold text-ink' : 'text-[#C8C8D0] hover:text-fg',
-              )}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-      )}
+      <DisplayModeToggle size="lg" />
+      <button
+        type="button"
+        onClick={() => sendCommand({ action: 'next' })}
+        title="切歌（N）"
+        className="glass flex h-16 items-center gap-2 rounded-[20px] px-5 text-[17px] transition-colors hover:bg-white/10"
+      >
+        <Icon name="next" size={20} />
+        切歌
+      </button>
       {extra}
     </div>
   )
@@ -498,6 +686,111 @@ function QrCard({ big }: { big?: boolean }) {
       </div>
     </div>
   )
+}
+
+// ---------------- Idle auto-hide + OSD ----------------
+
+/**
+ * True after `timeout` ms without pointer / key / touch activity. Never goes idle while
+ * the pointer is over the held area or one of its controls has keyboard focus.
+ */
+function useIdle(enabled: boolean, timeout = 4000) {
+  const [idle, setIdle] = useState(false)
+  const holdRef = useRef<HTMLDivElement | null>(null)
+  const hoverRef = useRef(false)
+  useEffect(() => {
+    if (!enabled) {
+      setIdle(false)
+      return
+    }
+    let t = 0
+    const check = () => {
+      const el = holdRef.current
+      const active = document.activeElement as HTMLElement | null
+      const focused = !!el && !!active && el.contains(active) && active.matches(':focus-visible')
+      if (hoverRef.current || focused) arm()
+      else setIdle(true)
+    }
+    const arm = () => {
+      window.clearTimeout(t)
+      t = window.setTimeout(check, timeout)
+    }
+    const wake = () => {
+      setIdle(false)
+      arm()
+    }
+    const events = ['pointermove', 'pointerdown', 'keydown', 'touchstart', 'wheel'] as const
+    events.forEach((e) => window.addEventListener(e, wake, { passive: true }))
+    arm()
+    return () => {
+      window.clearTimeout(t)
+      events.forEach((e) => window.removeEventListener(e, wake))
+    }
+  }, [enabled, timeout])
+  return { idle, holdRef, hoverRef }
+}
+
+interface OsdMsg {
+  id: number
+  text: string
+  icon?: IconName
+}
+
+function Osd({ msg }: { msg: OsdMsg | null }) {
+  return (
+    <div className="pointer-events-none absolute top-[9vh] left-1/2 z-30 -translate-x-1/2" aria-live="polite">
+      <AnimatePresence>
+        {msg && (
+          <motion.div
+            key={msg.id}
+            initial={{ opacity: 0, y: -10, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -6 }}
+            transition={{ duration: reduceMotion() ? 0 : 0.2 }}
+            className="glass flex items-center gap-2.5 rounded-full px-6 py-3 text-[clamp(18px,1.3vw,26px)] font-semibold shadow-[0_16px_40px_rgba(0,0,0,0.45)]"
+          >
+            {msg.icon && <Icon name={msg.icon} size={22} className="text-accent" />}
+            {msg.text}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  )
+}
+
+const pctText = (v: number) => Math.round(v * 100) + '%'
+
+/** Turn player-state changes (usually from the phone) into short on-screen messages. */
+function useOsd(player: PlayerState) {
+  const [msg, setMsg] = useState<OsdMsg | null>(null)
+  const storeReady = useApp((s) => s.ready)
+  const prevRef = useRef<PlayerState | null>(null)
+  const show = useCallback((text: string, icon?: IconName) => setMsg({ id: Date.now() + Math.random(), text, icon }), [])
+  useEffect(() => {
+    if (!msg) return
+    const t = window.setTimeout(() => setMsg(null), 1400)
+    return () => window.clearTimeout(t)
+  }, [msg])
+  useEffect(() => {
+    if (!storeReady) {
+      prevRef.current = null
+      return
+    }
+    const prev = prevRef.current
+    prevRef.current = player
+    if (!prev) return
+    const sameSong = prev.current?.uid === player.current?.uid
+    if (!sameSong) {
+      if (prev.current && player.current) show(`切歌 · 《${player.current.song.name}》`, 'next')
+      return
+    }
+    if (prev.trackMode !== player.trackMode) show(player.trackMode === 'original' ? '原唱' : '伴唱', player.trackMode === 'original' ? 'mic' : 'wave')
+    else if (prev.displayMode !== player.displayMode) show(player.displayMode === 'mv' ? 'MV 模式' : '舞台模式', player.displayMode === 'mv' ? 'video' : 'lyrics')
+    else if (prev.key !== player.key) show(player.key === 0 ? '原调' : player.key > 0 ? `升调 +${player.key}` : `降调 ${player.key}`)
+    else if (prev.musicVolume !== player.musicVolume) show(`音量 ${pctText(player.musicVolume)}`, 'volume')
+    else if (prev.vocalVolume !== player.vocalVolume) show(`导唱 ${pctText(player.vocalVolume)}`, 'mic')
+  }, [player, storeReady, show])
+  return { msg, show }
 }
 
 // ---------------- States ----------------
@@ -582,6 +875,20 @@ function PreparingScreen({ song, track, loading, loadError }: { song: Song; trac
   )
 }
 
+/** True when `on` has stayed true for `ms` (hides flicker on fast loads). */
+function useDelayedFlag(on: boolean, ms: number) {
+  const [v, setV] = useState(false)
+  useEffect(() => {
+    if (!on) {
+      setV(false)
+      return
+    }
+    const t = window.setTimeout(() => setV(true), ms)
+    return () => window.clearTimeout(t)
+  }, [on, ms])
+  return v
+}
+
 // ---------------- Page ----------------
 
 export default function Tv() {
@@ -593,6 +900,7 @@ export default function Tv() {
   const [loadError, setLoadError] = useState('')
   const player = useApp((s) => s.state.player)
   const tracks = useApp((s) => s.state.tracks)
+  const queue = useApp((s) => s.state.queue)
   const connected = useApp((s) => s.connected)
   const { data: settings } = useSettings()
   const [scoreOn, setScoreOn] = useState(readScorePref)
@@ -623,20 +931,24 @@ export default function Tv() {
   const cur = player.current
   const track = cur ? tracks[cur.song.id] : undefined
   const ready = track?.status === 'ready'
-  const useStems = player.trackMode === 'karaoke' && !!track?.hasStems
+  const hasStems = !!track?.hasStems
+  const mvMode = (player.displayMode ?? 'stage') === 'mv'
   const songKey = cur ? `${cur.uid}|${player.epoch}|` : ''
-  const loadKey = cur && ready ? `${songKey}${player.key}|${useStems ? 'k' : 'o'}` : ''
+  // trackMode is deliberately NOT part of the key: with stems, 伴唱 ⇄ 原唱 is a gain change.
+  const loadKey = cur && ready ? `${songKey}${player.key}|${hasStems ? 's' : 'o'}` : ''
 
-  // load audio when the song / epoch / key / mode changes
+  // load audio when the song / epoch / key / stems availability changes
   useEffect(() => {
     if (!unlocked) return
     if (!loadKey || !cur) {
-      if (engine.hasTrack) engine.unload()
+      if (engine.hasTrack) engine.unload(0.15)
       setLoadState('idle')
       return
     }
     if (engine.loadedKey === loadKey) return
     const sameSong = engine.loadedKey.startsWith(songKey)
+    // a different song: fade the old one out right away instead of waiting for the download
+    if (!sameSong && engine.hasTrack) engine.unload(0.15)
     const id = cur.song.id
     const k = player.key
     const ac = new AbortController()
@@ -645,9 +957,7 @@ export default function Tv() {
     engine
       .load(
         loadKey,
-        useStems
-          ? { main: mediaUrl(id, 'instrumental', k), vocals: mediaUrl(id, 'vocals', k) }
-          : { main: mediaUrl(id, 'original', k) },
+        hasStems ? { main: mediaUrl(id, 'instrumental', k), vocals: mediaUrl(id, 'vocals', k) } : { main: mediaUrl(id, 'original', k) },
         ac.signal,
       )
       .then((ok) => {
@@ -668,10 +978,25 @@ export default function Tv() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadKey, unlocked])
 
-  // gains
+  // gains: 原唱 with stems = lead vocal at the same level as the backing track
   useEffect(() => {
-    engine.setVolumes(player.musicVolume, useStems ? player.vocalVolume : 0)
-  }, [engine, player.musicVolume, player.vocalVolume, useStems, loadState])
+    const music = player.musicVolume
+    const vocal = hasStems ? (player.trackMode === 'original' ? music : player.vocalVolume) : 0
+    engine.setVolumes(music, vocal)
+  }, [engine, player.musicVolume, player.vocalVolume, player.trackMode, hasStems, loadState])
+
+  // prefetch the next ready song so 切歌 starts without a download
+  const nextItem = queue[0]
+  const nextTrack = nextItem ? tracks[nextItem.song.id] : undefined
+  useEffect(() => {
+    if (!unlocked || loadState !== 'ready' || !nextItem || nextTrack?.status !== 'ready') return
+    const id = nextItem.song.id
+    const urls = nextTrack.hasStems ? [mediaUrl(id, 'instrumental'), mediaUrl(id, 'vocals')] : [mediaUrl(id, 'original')]
+    const t = window.setTimeout(() => engine.prefetch(urls), 1500)
+    return () => window.clearTimeout(t)
+  }, [engine, unlocked, loadState, nextItem, nextTrack?.status, nextTrack?.hasStems])
+
+  const { msg: osd, show: showOsd } = useOsd(player)
 
   // server-forwarded commands
   useEffect(
@@ -681,27 +1006,32 @@ export default function Tv() {
         switch (c.action) {
           case 'play':
             if (!engine.playing) engine.play()
+            showOsd('播放', 'play')
             break
           case 'pause':
             engine.pause()
+            showOsd('暂停', 'pause')
             break
           case 'toggle':
             if (engine.playing) engine.pause()
             else engine.play()
+            showOsd(engine.playing ? '播放' : '暂停', engine.playing ? 'play' : 'pause')
             break
           case 'seek':
             engine.seek(c.position)
+            showOsd(fmtTime(c.position))
             break
           case 'restart':
             engine.seek(0)
             if (!engine.playing) engine.play(0)
+            showOsd('重唱', 'replay')
             break
           default:
             return
         }
         report()
       }),
-    [engine, report],
+    [engine, report, showOsd],
   )
 
   // periodic report + ended
@@ -724,7 +1054,9 @@ export default function Tv() {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement | null
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return
-      const p = useApp.getState().state.player
+      if (e.ctrlKey || e.metaKey || e.altKey) return
+      const st = useApp.getState().state
+      const p = st.player
       switch (e.key) {
         case ' ':
           e.preventDefault()
@@ -748,6 +1080,16 @@ export default function Tv() {
         case 'N':
           sendCommand({ action: 'next' })
           break
+        case 'm':
+        case 'M':
+          sendCommand({ action: 'set', displayMode: p.displayMode === 'mv' ? 'stage' : 'mv' })
+          break
+        case 'v':
+        case 'V': {
+          const t = p.current ? st.tracks[p.current.song.id] : undefined
+          if (t?.hasStems) sendCommand({ action: 'set', trackMode: p.trackMode === 'original' ? 'karaoke' : 'original' })
+          break
+        }
       }
     }
     window.addEventListener('keydown', onKey)
@@ -756,7 +1098,11 @@ export default function Tv() {
 
   const getMs = useCallback(() => engine.position() * 1000, [engine])
   const getPos = useCallback(() => engine.position(), [engine])
-  const playingAudio = loadState === 'ready' && engine.hasTrack
+  // Audio of the current song is loaded (during a key change the old pitch keeps playing until the swap).
+  const playingAudio =
+    !!songKey && engine.hasTrack && engine.loadedKey.startsWith(songKey) && (loadState === 'ready' || loadState === 'loading')
+  const slowLoad = useDelayedFlag(loadState === 'loading', 500)
+  const showPreparing = !playingAudio && (!ready || loadState !== 'loading' || slowLoad)
 
   const scoringAllowed = settings?.scoringEnabled ?? true
   const { data: lyricsData } = useQuery({
@@ -780,6 +1126,19 @@ export default function Tv() {
   }
   const laneShown = scoring.status === 'on'
 
+  // idle auto-hide (only once a song is on screen and audio is unlocked)
+  const { idle, holdRef, hoverRef } = useIdle(unlocked && !!cur)
+  const uiShown = !idle
+
+  // MV mode: show the title for the first ~5 s of each song
+  const [titleShown, setTitleShown] = useState(true)
+  useEffect(() => {
+    setTitleShown(true)
+    if (!playingAudio) return
+    const t = window.setTimeout(() => setTitleShown(false), 5000)
+    return () => window.clearTimeout(t)
+  }, [songKey, playingAudio])
+
   const start = async () => {
     try {
       await engine.unlock()
@@ -791,39 +1150,74 @@ export default function Tv() {
   }
 
   const duration = useMemo(() => (playingAudio ? engine.duration : (cur?.song.duration ?? 0) / 1000), [playingAudio, engine, cur])
+  const getSongDuration = useCallback(
+    () => (engine.hasTrack ? engine.duration : (useApp.getState().state.player.current?.song.duration ?? 0) / 1000),
+    [engine],
+  )
 
   return (
-    <div className="relative h-full min-h-[560px] w-full overflow-hidden bg-ink-2 text-fg select-none">
-      <Ambient song={cur?.song ?? null} />
-      {cur && playingAudio && cur.song.mvId > 0 && <MvLayer key={cur.song.id} song={cur.song} />}
-      <Vignette />
+    <div className={clsx('relative h-full min-h-[560px] w-full overflow-hidden bg-ink-2 text-fg select-none', idle && 'cursor-none')}>
+      {mvMode && cur ? (
+        <MvScreen key={cur.uid} song={cur.song} engine={engine} getSongDuration={getSongDuration} />
+      ) : (
+        <>
+          <Ambient song={cur?.song ?? null} />
+          {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} />}
+          <Vignette />
+        </>
+      )}
 
       {!cur ? (
         <IdleScreen />
       ) : (
         <>
-          <Header player={player} track={track} />
-          {playingAudio ? (
-            <main
-              className={clsx(
-                'absolute inset-x-0 top-[27vh] flex items-center justify-center transition-[bottom] duration-500',
-                laneShown ? 'bottom-[38vh]' : 'bottom-[26vh]',
-              )}
-            >
-              <LyricsView songId={cur.song.id} getMs={getMs} song={cur.song} />
-            </main>
+          {mvMode ? (
+            <MvTitle song={cur.song} shown={titleShown || uiShown || !playingAudio} />
           ) : (
-            <PreparingScreen song={cur.song} track={track} loading={loadState === 'loading'} loadError={loadError} />
+            <Header player={player} track={track} auxShown={uiShown} />
           )}
+
+          {playingAudio ? (
+            mvMode ? (
+              <TwoLineLyrics songId={cur.song.id} getMs={getMs} raised={uiShown} />
+            ) : (
+              <main
+                className={clsx(
+                  'absolute inset-x-0 top-[27vh] flex items-center justify-center transition-[bottom] duration-500',
+                  laneShown ? 'bottom-[38vh]' : 'bottom-[26vh]',
+                )}
+              >
+                <LyricsView songId={cur.song.id} getMs={getMs} song={cur.song} />
+              </main>
+            )
+          ) : (
+            showPreparing && (
+              <PreparingScreen song={cur.song} track={track} loading={loadState === 'loading'} loadError={loadError} />
+            )
+          )}
+
           {laneShown && <LineRatingPop rating={scoring.lineRating} />}
+          {mvMode && laneShown && (
+            <div className="absolute top-[4.5vh] left-1/2 w-[36vw] -translate-x-1/2">
+              <PitchLane lane={scoring.lane} getTime={getPos} score={scoring.score} compact />
+            </div>
+          )}
+          {/* Scan-to-request QR: top right, hidden with the rest of the UI when idle. */}
+          {mvMode && (
+            <div className={clsx('absolute top-[4.5vh] right-[3.75vw]', fadeCls(uiShown))}>
+              <QrCard />
+            </div>
+          )}
+          {playingAudio && !player.playing && <PausedBadge />}
+
           <footer className="absolute right-[3.75vw] bottom-[5.2vh] left-[3.75vw] flex flex-col gap-5">
-            {laneShown && <PitchLane lane={scoring.lane} getTime={getPos} score={scoring.score} />}
-            <div className="flex items-end gap-12">
-              <div className="flex min-w-0 flex-1 flex-col gap-7">
+            {!mvMode && laneShown && <PitchLane lane={scoring.lane} getTime={getPos} score={scoring.score} />}
+            <ControlsArea holdRef={holdRef} hoverRef={hoverRef} shown={uiShown}>
+              <div className="flex min-w-0 flex-1 flex-col gap-6">
                 <Progress getPos={getPos} duration={duration} />
                 <Controls
                   player={player}
-                  hasStems={!!track?.hasStems}
+                  hasStems={hasStems}
                   extra={
                     scoringAllowed && (
                       <ScoreToggle
@@ -838,14 +1232,12 @@ export default function Tv() {
                   }
                 />
               </div>
-              <div className="hidden lg:block">
-                <QrCard />
-              </div>
-            </div>
+            </ControlsArea>
           </footer>
         </>
       )}
 
+      <Osd msg={osd} />
       <ScoreOverlay result={scoreResult} onDone={clearScoreResult} />
 
       {!connected && (
@@ -877,6 +1269,44 @@ export default function Tv() {
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  )
+}
+
+/** Stays on screen while paused (even when the controls are hidden), so a paused TV never looks frozen. */
+function PausedBadge() {
+  return (
+    <div className="pointer-events-none absolute top-1/2 left-1/2 z-20 -translate-x-1/2 -translate-y-1/2" aria-live="polite">
+      <div className="glass flex items-center gap-4 rounded-full py-4 pr-8 pl-4 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
+        <span className="flex h-14 w-14 items-center justify-center rounded-full bg-accent text-accent-ink">
+          <Icon name="pause" size={26} />
+        </span>
+        <span className="text-[28px] font-bold">已暂停</span>
+      </div>
+    </div>
+  )
+}
+
+/** Footer control bar that fades out when idle; hovering it keeps it awake. */
+function ControlsArea({
+  holdRef,
+  hoverRef,
+  shown,
+  children,
+}: {
+  holdRef: MutableRefObject<HTMLDivElement | null>
+  hoverRef: MutableRefObject<boolean>
+  shown: boolean
+  children: ReactNode
+}) {
+  return (
+    <div
+      ref={holdRef}
+      onPointerEnter={() => (hoverRef.current = true)}
+      onPointerLeave={() => (hoverRef.current = false)}
+      className={clsx('flex items-end gap-10', fadeCls(shown))}
+    >
+      {children}
     </div>
   )
 }

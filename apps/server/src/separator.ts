@@ -2,6 +2,8 @@ import { config } from './config.js'
 
 export interface SeparatorHealth {
   ok: boolean
+  ready?: boolean
+  stage?: string
   device?: string
   model?: string
   pending?: number
