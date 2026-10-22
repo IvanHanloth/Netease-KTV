@@ -50,7 +50,10 @@ export function NowSingingCard({ compact }: { compact?: boolean }) {
             {player.playing ? '正在演唱' : '已暂停'}
           </span>
           <span className="truncate text-[17px] font-bold">{cur.song.name}</span>
-          <span className="truncate text-[13px] text-fg-2">{artistsText(cur.song)}</span>
+          <span className="truncate text-[13px] text-fg-2">
+            {artistsText(cur.song)}
+            {cur.addedBy && <span className="text-muted"> · {cur.addedBy}</span>}
+          </span>
         </div>
         {!compact && (
           <div className="flex shrink-0 items-center gap-1">
@@ -138,6 +141,7 @@ function QueueRow({
             <span aria-hidden="true" className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: dotColor[st.kind] }} />
             <span className="truncate">
               {artistsText(item.song)} · {queueStatusText(st)}
+              {item.addedBy && <span className="text-subtle"> · 由 {item.addedBy} 点歌</span>}
             </span>
           </span>
         )}
@@ -192,45 +196,6 @@ export function QueueList() {
   )
 }
 
-export function SeparatorCard() {
-  const sep = useApp((s) => s.state.separator)
-  return (
-    <div className="flex flex-col gap-3 rounded-[18px] border border-white/7 bg-white/4 p-4">
-      <div className="flex items-center gap-2.5">
-        <Icon name="sparkle" size={18} className="text-accent" />
-        <span className="text-sm font-semibold">AI 伴奏分离</span>
-        <span
-          className={clsx(
-            'ml-auto inline-flex items-center gap-1.5 text-xs',
-            sep.online ? 'text-ok' : 'text-muted',
-          )}
-        >
-          <span
-            aria-hidden="true"
-            className="h-1.5 w-1.5 rounded-full"
-            style={{ background: sep.online ? '#4ADE80' : '#8E8E99', boxShadow: sep.online ? '0 0 8px #4ADE80' : undefined }}
-          />
-          {!sep.online ? '离线' : sep.ready === false ? '准备中' : '在线'}
-        </span>
-      </div>
-      <dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-3.5 gap-y-1.5 text-[13px]">
-        <dt className="text-muted">模型</dt>
-        <dd className="m-0 truncate text-right" title={sep.model}>
-          {sep.model || '—'}
-        </dd>
-        <dt className="text-muted">设备</dt>
-        <dd className="m-0 truncate text-right">{sep.device || '—'}</dd>
-        <dt className="text-muted">队列</dt>
-        <dd className="m-0 text-right">{sep.pending} 首待处理</dd>
-      </dl>
-      {!sep.online && <p className="m-0 text-xs leading-5 text-muted">分离服务未连接时，歌曲会以原曲播放。</p>}
-      {sep.online && sep.ready === false && (
-        <p className="m-0 text-xs leading-5 text-muted">首次启动正在下载分离模型（约 0.2–0.9 GB），完成后自动开始生成伴奏。</p>
-      )}
-    </div>
-  )
-}
-
 export function QueuePanel() {
   const queue = useApp((s) => s.state.queue)
   const current = useApp((s) => s.state.player.current)
@@ -256,7 +221,6 @@ export function QueuePanel() {
       <div className="min-h-0 flex-1 overflow-y-auto">
         <QueueList />
       </div>
-      <SeparatorCard />
     </div>
   )
 }

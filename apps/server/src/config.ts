@@ -36,6 +36,7 @@ export const config = {
     separatorModel: process.env.SEPARATOR_MODEL ?? '',
     publicUrl: process.env.PUBLIC_URL ?? '',
     scoringEnabled: bool(process.env.SCORING_ENABLED, true),
+    scoreTolerance: Number(process.env.SCORE_TOLERANCE ?? 1) || 1,
   },
   /** Allowed difference between NetEase duration and unblock audio duration. */
   unblockDurationTolerance: Number(process.env.UNBLOCK_DURATION_TOLERANCE ?? 3000),

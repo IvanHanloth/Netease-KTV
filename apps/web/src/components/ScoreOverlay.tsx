@@ -60,6 +60,12 @@ export interface ScoreResult {
   id: number
   score: number
   song: Song
+  tolerance: number
+  singer?: string
+  /** Filled in once the leaderboard confirms the score. */
+  rank?: number
+  best?: number
+  plays?: number
 }
 
 function CountUp({ to, run }: { to: number; run: boolean }) {
@@ -125,6 +131,23 @@ export function ScoreOverlay({ result, onDone }: { result: ScoreResult | null; o
             <div className="text-[clamp(28px,2.6vw,52px)] font-black tracking-[0.08em] italic" style={gradientText(r.tone)}>
               {r.label}
             </div>
+            {result.rank !== undefined && (
+              <motion.div
+                initial={reduce ? { opacity: 0 } : { opacity: 0, y: 10 }}
+                animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
+                transition={{ duration: 0.35 }}
+                className="flex flex-col items-center gap-2"
+              >
+                {result.rank === 1 && (result.plays ?? 0) > 1 && (
+                  <span className="rounded-full px-4 py-1 text-[clamp(14px,1.1vw,20px)] font-black tracking-[0.2em] whitespace-nowrap text-ink shadow-[0_10px_30px_rgba(255,181,71,0.45)]" style={{ backgroundImage: toneGradient.perfect }}>
+                    新纪录
+                  </span>
+                )}
+                <span className="num text-[clamp(15px,1.15vw,22px)] whitespace-nowrap text-fg-2">
+                  {result.singer ? `${result.singer} · ` : ''}本曲第 {result.rank} 名 · 最高 {Math.round(result.best ?? result.score)} 分
+                </span>
+              </motion.div>
+            )}
           </motion.div>
         </motion.div>
       )}

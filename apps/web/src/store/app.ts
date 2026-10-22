@@ -39,6 +39,8 @@ interface Store {
   ready: boolean
   /** TV pages only: whether this page is the one TV allowed to play audio (null = not told yet). */
   tvActive: boolean | null
+  /** Bumped on every `{type:'scores'}` message so leaderboard queries refetch. */
+  scoresVersion: number
   apply: (msg: ServerMessage) => void
   setConnected: (v: boolean) => void
 }
@@ -48,6 +50,7 @@ export const useApp = create<Store>((set) => ({
   connected: false,
   ready: false,
   tvActive: null,
+  scoresVersion: 0,
   setConnected: (connected) => set({ connected }),
   apply: (msg) =>
     set((s) => {
@@ -67,6 +70,8 @@ export const useApp = create<Store>((set) => ({
           return { state: { ...st, tvOnline: msg.online } }
         case 'tvRole':
           return { tvActive: msg.active }
+        case 'scores':
+          return { scoresVersion: s.scoresVersion + 1 }
         default:
           return {}
       }

@@ -76,6 +76,18 @@
 | GET | `/media/:songId/pitch` | `PitchTrack`：主唱参考音高，用于打分。`track.hasPitch` 为 true 时可用，否则 404 |
 | POST | `/tracks/:songId/retry` | 重新下载并分离 |
 
+## 打分排行榜
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/scores` | `ScoreSubmit`（`{ songId, score, tolerance, singer? }`，分数已归一化到 0–100）→ `ScoreSubmitResult`（含本次在该歌中的名次） |
+| GET | `/scores` | `{ songs: SongRanking[] }`：所有打过分的歌，按最高分排序，每首带前 10 名 |
+| GET | `/scores/:songId` | `SongRanking`，带前 50 名；没有成绩返回 404 |
+| DELETE | `/scores` | 重置整个排行榜 |
+| DELETE | `/scores/:songId` | 重置一首歌的成绩 |
+
+成绩变化时，WebSocket 会推送 `{ type: 'scores' }`。
+
 ## 设置
 
 | 方法 | 路径 | 说明 |

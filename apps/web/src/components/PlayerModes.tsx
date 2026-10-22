@@ -3,13 +3,17 @@ import type { DisplayMode, TrackMode } from '@shared/types'
 import { sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from './icons'
 
-type Size = 'sm' | 'md' | 'lg'
+type Size = 'sm' | 'md' | 'lg' | 'tv'
 
 const sizes: Record<Size, { wrap: string; btn: string; icon: number }> = {
   sm: { wrap: 'h-9 rounded-xl p-[3px]', btn: 'h-full rounded-[9px] px-3 text-[13px]', icon: 14 },
   md: { wrap: 'h-11 rounded-2xl p-1', btn: 'h-full rounded-xl px-3 text-sm', icon: 16 },
   lg: { wrap: 'h-16 rounded-[20px] px-2.5 py-2.5', btn: 'h-11 rounded-[14px] px-4.5 text-[17px]', icon: 19 },
+  /** TV control bar: same height as the other bar controls, never wraps. */
+  tv: { wrap: 'h-14 shrink-0 rounded-[18px] p-[7px]', btn: 'h-full rounded-[12px] px-3.5 text-[15px]', icon: 17 },
 }
+
+const isGlass = (size: Size) => size === 'lg' || size === 'tv'
 
 export function Segmented<T extends string>({
   label,
@@ -35,7 +39,7 @@ export function Segmented<T extends string>({
       aria-label={label}
       className={clsx(
         'inline-flex items-center gap-1',
-        size === 'lg' ? 'glass' : 'bg-white/6',
+        isGlass(size) ? 'glass' : 'bg-white/6',
         stretch && 'grid w-full grid-flow-col auto-cols-fr',
         s.wrap,
         className,
@@ -76,7 +80,7 @@ export function TrackModeToggle({ size = 'md', stretch, className }: { size?: Si
       <div
         className={clsx(
           'inline-flex items-center justify-center gap-1.5 text-subtle',
-          size === 'lg' ? 'glass px-5' : 'bg-white/4 px-3',
+          isGlass(size) ? 'glass px-5' : 'bg-white/4 px-3',
           s.wrap,
           stretch && 'w-full',
           className,
@@ -84,7 +88,9 @@ export function TrackModeToggle({ size = 'md', stretch, className }: { size?: Si
         title="这首歌没有分离出伴奏，只能播放原曲"
       >
         <Icon name="note" size={s.icon} />
-        <span className={size === 'lg' ? 'text-[17px]' : size === 'md' ? 'text-sm' : 'text-[13px]'}>仅原曲</span>
+        <span className={clsx('whitespace-nowrap', size === 'lg' ? 'text-[17px]' : size === 'tv' ? 'text-[15px]' : size === 'md' ? 'text-sm' : 'text-[13px]')}>
+          仅原曲
+        </span>
       </div>
     )
   }

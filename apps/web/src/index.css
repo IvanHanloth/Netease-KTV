@@ -179,9 +179,22 @@
 .ktv-eq > span:nth-child(3) {
   animation-delay: 0.4s;
 }
+@keyframes ktv-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.ktv-pulse {
+  animation: ktv-pulse 1.4s ease-in-out infinite;
+}
 @media (prefers-reduced-motion: reduce) {
   .ktv-drift,
   .ktv-drift-slow,
+  .ktv-pulse,
   .ktv-eq > span {
     animation: none;
   }

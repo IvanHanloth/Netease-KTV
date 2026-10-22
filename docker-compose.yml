@@ -19,6 +19,7 @@ services:
       ENABLE_UNBLOCK: ${ENABLE_UNBLOCK:-false}
       UNBLOCK_SOURCES: ${UNBLOCK_SOURCES:-unm}
       SCORING_ENABLED: ${SCORING_ENABLED:-true}
+      SCORE_TOLERANCE: ${SCORE_TOLERANCE:-1.0}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ktv-data:/data

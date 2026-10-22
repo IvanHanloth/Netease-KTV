@@ -5,7 +5,17 @@ import { api } from '../lib/api'
 import { currentLineIndex } from '../lib/lyrics'
 import type { AudioEngine } from './engine'
 import { MicPitch, type MicError } from './mic'
-import { buildNotes, foldToRef, noteAt, rating, sampleRef, ScoreKeeper, type RatingTone, type RefNote } from './scoring'
+import {
+  bestMatch,
+  buildNotes,
+  buildScoreMask,
+  DEFAULT_TOLERANCE,
+  noteAt,
+  rating,
+  ScoreKeeper,
+  type RatingTone,
+  type RefNote,
+} from './scoring'
 
 export interface TracePoint {
   t: number
@@ -28,6 +38,12 @@ export interface LineRating {
 }
 
 const FRAME_MS = 25 // ~40 detections per second
+
+/** Signed singer offset from `ref` after folding into the reference octave. */
+const foldOffset = (user: number, ref: number) => {
+  const d = user - ref
+  return d - 12 * Math.round(d / 12)
+}
 const TRACE_SECONDS = 2.2
 
 export function useScoring({
@@ -38,6 +54,7 @@ export function useScoring({
   hasPitch,
   pitchKey,
   lines,
+  tolerance = DEFAULT_TOLERANCE,
 }: {
   engine: AudioEngine
   /** Scoring switched on, allowed by settings, and audio is playing for this song. */
@@ -49,6 +66,8 @@ export function useScoring({
   /** Current key shift in semitones. */
   pitchKey: number
   lines: LyricLine[] | undefined
+  /** Semitones of error that still earn full credit (settings.scoreTolerance). */
+  tolerance?: number
 }) {
   const wanted = active && hasPitch && songId !== null
   const { data: pitch, isError: pitchError } = useQuery({
@@ -59,6 +78,9 @@ export function useScoring({
     retry: false,
   })
   const notes = useMemo(() => (pitch ? buildNotes(pitch) : []), [pitch])
+  const mask = useMemo(() => (pitch ? buildScoreMask(pitch, notes) : null), [pitch, notes])
+  const toleranceRef = useRef(tolerance)
+  toleranceRef.current = tolerance
 
   const micRef = useRef<MicPitch | null>(null)
   if (!micRef.current) micRef.current = new MicPitch()
@@ -117,19 +139,25 @@ export function useScoring({
 
   // Detection + scoring loop.
   useEffect(() => {
-    if (micState !== 'on' || !pitch) return
+    if (micState !== 'on' || !pitch || !mask) return
     const keeper = lane.current.keeper
     const tick = setInterval(() => {
       if (!engine.playing) return
       const t = engine.position()
       const user = mic.read()
-      const ref = sampleRef(pitch, t, lane.current.key)
-      const pts = keeper.add(ref, user)
-      if (pts !== null && pts >= 0.7) {
-        const idx = noteAt(lane.current.notes, t)
-        if (idx >= 0) keeper.hits.add(idx)
+      const key = lane.current.key
+      const idx = Math.round(t / pitch.hop)
+      // Best match within the timing window: singers may lead or lag the original a little.
+      const match = user === null ? null : bestMatch(pitch, idx, key, user)
+      if (mask[idx]) {
+        const pts = keeper.add(match ? match.err : null, toleranceRef.current)
+        if (pts >= 0.7) {
+          const ni = noteAt(lane.current.notes, t)
+          if (ni >= 0) keeper.hits.add(ni)
+        }
       }
-      const m = user === null ? null : ref !== null ? foldToRef(user, ref) : user
+      // Trace: draw the singer in the octave of the matched reference note.
+      const m = user === null ? null : match ? match.ref + foldOffset(user, match.ref) : user
       const trace = lane.current.trace
       trace.push({ t, m })
       // Drop old points (and points "from the future" after a backwards seek).
@@ -152,7 +180,7 @@ export function useScoring({
       clearInterval(tick)
       clearInterval(ui)
     }
-  }, [micState, pitch, engine, mic])
+  }, [micState, pitch, mask, engine, mic])
 
   /** Final result for the song, or null when too little was scored to mean anything. */
   const finish = useCallback((): number | null => {

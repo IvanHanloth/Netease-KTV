@@ -4,6 +4,7 @@ import { create } from 'zustand'
 import type { QueueItem, QueuePosition, Song } from '@shared/types'
 import { useApp } from '../store/app'
 import { api, ApiError, getToken } from './api'
+import { currentNickname } from './nickname'
 import { deriveStatus, type SongStatus } from './format'
 
 export function useDebounced<T>(value: T, ms = 250) {
@@ -64,7 +65,7 @@ export function errorText(e: unknown) {
 export function useEnqueue() {
   return useCallback(async (song: Song, position: QueuePosition = 'end') => {
     try {
-      await api.enqueue(song.id, position)
+      await api.enqueue(song.id, position, currentNickname())
       toast(
         position === 'now' ? `已切换到《${song.name}》` : position === 'next' ? `已插播：${song.name}` : `已点：${song.name}`,
       )

@@ -8,8 +8,11 @@ import type {
   QrStatus,
   QueueItem,
   QueuePosition,
+  ScoreSubmit,
+  ScoreSubmitResult,
   Settings,
   Song,
+  SongRanking,
   Stem,
 } from '@shared/types'
 
@@ -124,7 +127,8 @@ export const api = {
   mv: (id: number) => get<{ mvId: number; url: string }>(`/songs/${id}/mv`),
   pitch: (id: number) => get<PitchTrack>(`/media/${id}/pitch`),
 
-  enqueue: (songId: number, position: QueuePosition = 'end') => post<QueueItem>('/queue', { songId, position }),
+  enqueue: (songId: number, position: QueuePosition = 'end', addedBy?: string) =>
+    post<QueueItem>('/queue', { songId, position, ...(addedBy ? { addedBy } : {}) }),
   /** Skip the current song and sing this queued one right away. */
   queuePlay: (uid: string) => post<void>(`/queue/${encodeURIComponent(uid)}/play`),
   queueTop: (uid: string) => post<void>(`/queue/${encodeURIComponent(uid)}/top`),
@@ -134,6 +138,12 @@ export const api = {
 
   command: (command: PlayerCommand) => post<void>('/player/command', command),
   retryTrack: (songId: number) => post<void>(`/tracks/${songId}/retry`),
+
+  scores: () => get<{ songs: SongRanking[] }>('/scores'),
+  songScores: (songId: number) => get<SongRanking>('/scores/' + songId),
+  submitScore: (body: ScoreSubmit) => post<ScoreSubmitResult>('/scores', body),
+  resetScores: () => del<{ removed: number }>('/scores'),
+  resetSongScores: (songId: number) => del<{ removed: number }>('/scores/' + songId),
 
   settings: () => get<SettingsResponse>('/settings'),
   saveSettings: (patch: Partial<Settings>) => put<SettingsResponse>('/settings', patch),

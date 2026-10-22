@@ -10,6 +10,7 @@ import { Icon, type IconName } from '../components/icons'
 import { Cover, EmptyNote, Spinner } from '../components/ui'
 import { RecCard, SongTable } from '../components/SongTable'
 import { QueuePanel } from '../components/QueuePanel'
+import { Leaderboard } from '../components/Leaderboard'
 import { LoginDialog } from '../components/LoginDialog'
 import { SettingsDialog } from '../components/SettingsDialog'
 
@@ -33,6 +34,7 @@ type View =
   | { kind: 'recommend' }
   | { kind: 'search'; q: string }
   | { kind: 'toplists' }
+  | { kind: 'scores' }
   | { kind: 'playlist'; id: number; name: string }
 
 function useView(): [View, (v: View) => void] {
@@ -41,6 +43,7 @@ function useView(): [View, (v: View) => void] {
     const v = params.get('view')
     if (v === 'search' && params.get('q')) return { kind: 'search', q: params.get('q')! }
     if (v === 'toplists') return { kind: 'toplists' }
+    if (v === 'scores') return { kind: 'scores' }
     if (v === 'playlist' && params.get('id'))
       return { kind: 'playlist', id: Number(params.get('id')), name: params.get('name') || '歌单' }
     return { kind: 'recommend' }
@@ -180,7 +183,8 @@ function Sidebar({
       <div className="flex flex-col gap-1">
         <div className="px-3 pb-1.5 text-xs tracking-[0.12em] text-subtle">发现</div>
         <NavButton icon="compass" label="为你推荐" active={view.kind === 'recommend'} onClick={() => go({ kind: 'recommend' })} />
-        <NavButton icon="chart" label="排行榜" active={view.kind === 'toplists'} onClick={() => go({ kind: 'toplists' })} />
+        <NavButton icon="chart" label="热歌榜" active={view.kind === 'toplists'} onClick={() => go({ kind: 'toplists' })} />
+        <NavButton icon="trophy" label="K 歌排行" active={view.kind === 'scores'} onClick={() => go({ kind: 'scores' })} />
         <Link
           to="/tv"
           target="_blank"
@@ -317,29 +321,94 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (q: strin
   )
 }
 
+/** Compact status dot next to the search box; click for the separation service details. */
 function SeparatorChip() {
   const sep = useApp((s) => s.state.separator)
   const connected = useApp((s) => s.connected)
-  const ok = connected && sep.online
+  const [open, setOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: PointerEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const state: 'connecting' | 'offline' | 'preparing' | 'ready' = !connected
+    ? 'connecting'
+    : !sep.online
+      ? 'offline'
+      : sep.ready === false
+        ? 'preparing'
+        : 'ready'
+  const label = { connecting: '连接中', offline: '离线', preparing: '准备中', ready: '就绪' }[state]
+  const color = { connecting: '#8E8E99', offline: '#8E8E99', preparing: '#FBBF24', ready: '#4ADE80' }[state]
+
   return (
-    <div
-      className={clsx(
-        'flex h-10 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium',
-        ok ? 'bg-[rgba(74,222,128,0.1)] text-ok' : 'bg-white/6 text-muted',
+    <div ref={boxRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        aria-haspopup="dialog"
+        title="伴奏分离服务状态"
+        className={clsx(
+          'flex h-10 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium whitespace-nowrap transition-colors',
+          state === 'ready' ? 'bg-[rgba(74,222,128,0.1)] text-ok hover:bg-[rgba(74,222,128,0.16)]' : 'bg-white/6 text-muted hover:bg-white/10',
+        )}
+      >
+        <span
+          aria-hidden="true"
+          className={clsx('h-2 w-2 rounded-full', state === 'preparing' && 'ktv-pulse')}
+          style={{ background: color, boxShadow: state === 'ready' ? '0 0 10px #4ADE80' : undefined }}
+        />
+        {label}
+      </button>
+      {open && (
+        <div
+          role="dialog"
+          aria-label="伴奏分离服务"
+          className="glass absolute top-[48px] right-0 z-40 w-[300px] rounded-2xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
+        >
+          <div className="mb-3 flex items-center gap-2">
+            <Icon name="sparkles" size={17} className="text-accent" />
+            <span className="text-sm font-semibold">AI 伴奏分离</span>
+            <span className="ml-auto flex items-center gap-1.5 text-xs" style={{ color }}>
+              <span className="h-1.5 w-1.5 rounded-full" style={{ background: color }} />
+              {state === 'ready' ? '在线' : label}
+            </span>
+          </div>
+          <dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-[13px]">
+            <dt className="text-muted">设备</dt>
+            <dd className="m-0 truncate text-right" title={sep.device}>
+              {sep.device || '—'}
+            </dd>
+            <dt className="text-muted">模型</dt>
+            <dd className="m-0 truncate text-right" title={sep.model}>
+              {sep.model || '—'}
+            </dd>
+            <dt className="text-muted">队列</dt>
+            <dd className="m-0 text-right">{sep.pending} 首待处理</dd>
+          </dl>
+          {state === 'offline' && (
+            <p className="m-0 mt-3 text-xs leading-5 text-muted">分离服务未连接，歌曲会以原曲播放；服务恢复后会自动生成伴奏。</p>
+          )}
+          {state === 'preparing' && (
+            <p className="m-0 mt-3 text-xs leading-5 text-muted">首次启动正在下载分离模型（约 0.2–0.9 GB），完成后自动开始生成伴奏。</p>
+          )}
+          {state === 'connecting' && <p className="m-0 mt-3 text-xs leading-5 text-muted">正在连接 KTV 主机…</p>}
+        </div>
       )}
-    >
-      <span
-        aria-hidden="true"
-        className="h-2 w-2 rounded-full"
-        style={{ background: ok ? '#4ADE80' : '#8E8E99', boxShadow: ok ? '0 0 10px #4ADE80' : undefined }}
-      />
-      {!connected
-        ? '正在连接主机…'
-        : !sep.online
-          ? '分离服务离线 · 原曲模式'
-          : sep.ready === false
-            ? '分离模型准备中…'
-            : `分离服务在线${sep.device ? ' · ' + sep.device : ''}`}
     </div>
   )
 }
@@ -485,7 +554,7 @@ function PlaylistCard({ p, onOpen }: { p: PlaylistSummary; onOpen: () => void })
 function ToplistsView({ go }: { go: (v: View) => void }) {
   const q = useQuery({ queryKey: ['toplists'], queryFn: api.toplists, staleTime: 10 * 60_000 })
   return (
-    <Section title="排行榜">
+    <Section title="热歌榜">
       {q.isLoading ? (
         <Loading />
       ) : q.isError ? (
@@ -539,6 +608,11 @@ export default function Desk() {
       {view.kind === 'recommend' && <RecommendView go={go} />}
       {view.kind === 'search' && <SearchView q={view.q} />}
       {view.kind === 'toplists' && <ToplistsView go={go} />}
+      {view.kind === 'scores' && (
+        <Section title="K 歌排行">
+          <Leaderboard manage />
+        </Section>
+      )}
       {view.kind === 'playlist' && <PlaylistView id={view.id} name={view.name} back={() => window.history.back()} />}
     </>
   )
@@ -614,7 +688,8 @@ function MobileTopBar({
         {(
           [
             ['recommend', '为你推荐'],
-            ['toplists', '排行榜'],
+            ['toplists', '热歌榜'],
+            ['scores', 'K 歌排行'],
           ] as const
         ).map(([k, label]) => (
           <button

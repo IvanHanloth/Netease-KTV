@@ -7,12 +7,14 @@ import { artistsText, fmtMs, fmtTime } from '../lib/format'
 import { playQueuedNow, useDebounced, useStatusOf } from '../lib/hooks'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
-import { Cover, EmptyNote, Eq, IconButton, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
+import { Cover, Dialog, EmptyNote, Eq, IconButton, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
+import { Leaderboard } from '../components/Leaderboard'
+import { NICKNAME_MAX, useNickname } from '../lib/nickname'
 import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
 import { SongActions } from '../components/SongTable'
 import { QueueList, useNow } from '../components/QueuePanel'
 
-type Tab = 'remote' | 'search' | 'queue'
+type Tab = 'remote' | 'search' | 'queue' | 'rank'
 
 /** Local slider state that streams throttled `set` commands. */
 function useLiveValue(remote: number, toCommand: (v: number) => PlayerCommand) {
@@ -240,7 +242,7 @@ function RemoteTab() {
 
 function SongList({ songs }: { songs: Song[] }) {
   return (
-    <div className="flex flex-col">
+    <div className="@container flex flex-col">
       {songs.map((s, i) => (
         <div key={s.id + '-' + i} className="flex items-center gap-3 py-2">
           <Cover song={s} px={100} className="h-12 w-12 rounded-xl" />
@@ -335,6 +337,7 @@ export default function Remote() {
     { id: 'remote', label: '遥控', icon: 'remote' },
     { id: 'search', label: '点歌', icon: 'note' },
     { id: 'queue', label: count ? `已点 ${count}` : '已点', icon: 'list' },
+    { id: 'rank', label: '排行', icon: 'trophy' },
   ]
   return (
     <div className="relative mx-auto flex h-full max-w-[560px] flex-col overflow-hidden bg-ink text-fg">
@@ -360,6 +363,7 @@ export default function Remote() {
             {connected ? `已连接 · ${location.host}` : '正在连接…'}
           </span>
         </div>
+        <NicknameChip />
       </header>
 
       <main className="relative min-h-0 flex-1 overflow-y-auto px-5 pb-6">
@@ -371,11 +375,17 @@ export default function Remote() {
             <QueueList />
           </div>
         )}
+        {tab === 'rank' && (
+          <div className="flex flex-col gap-3">
+            <h2 className="m-0 px-0.5 text-[15px] font-semibold">K 歌排行</h2>
+            <Leaderboard />
+          </div>
+        )}
       </main>
 
       <nav
         aria-label="底部导航"
-        className="relative grid h-[74px] shrink-0 grid-cols-3 border-t border-white/8 bg-ink/85 px-3 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl"
+        className="relative grid h-[74px] shrink-0 grid-cols-4 border-t border-white/8 bg-ink/85 px-3 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl"
       >
         {tabs.map((t) => (
           <button
@@ -384,7 +394,7 @@ export default function Remote() {
             onClick={() => setTab(t.id)}
             aria-current={tab === t.id ? 'page' : undefined}
             className={clsx(
-              'flex flex-col items-center justify-center gap-1 text-xs',
+              'flex flex-col items-center justify-center gap-1 text-xs whitespace-nowrap',
               tab === t.id ? 'font-semibold text-accent' : 'text-muted',
             )}
           >
@@ -394,5 +404,68 @@ export default function Remote() {
         ))}
       </nav>
     </div>
+  )
+}
+
+/** Header chip showing the singer nickname; asks for one the first time the remote opens. */
+function NicknameChip() {
+  const nickname = useNickname((s) => s.nickname)
+  const asked = useNickname((s) => s.asked)
+  const setNickname = useNickname((s) => s.setNickname)
+  const markAsked = useNickname((s) => s.markAsked)
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState(nickname)
+
+  useEffect(() => {
+    if (!asked) setOpen(true)
+  }, [asked])
+  useEffect(() => {
+    if (open) setValue(nickname)
+  }, [open, nickname])
+
+  const close = () => {
+    markAsked()
+    setOpen(false)
+  }
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex h-10 max-w-[45%] shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3.5 text-[13px] whitespace-nowrap text-fg-2"
+        aria-label={nickname ? `昵称：${nickname}，点击修改` : '设置昵称'}
+      >
+        <Icon name={nickname ? 'user' : 'pen'} size={15} />
+        <span className="truncate">{nickname || '设置昵称'}</span>
+      </button>
+      <Dialog open={open} onClose={close} title="你的昵称" width={380}>
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={(e) => {
+            e.preventDefault()
+            setNickname(value)
+            setOpen(false)
+          }}
+        >
+          <p className="m-0 text-[13px] leading-6 text-muted">点歌时会显示这个名字，唱完的分数也会记在它名下。只保存在这台手机上。</p>
+          <input
+            autoFocus
+            value={value}
+            maxLength={NICKNAME_MAX}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="例如：小林"
+            className="h-12 w-full rounded-xl border border-white/10 bg-white/5 px-3.5 text-base text-fg outline-none placeholder:text-faint focus:border-white/25"
+          />
+          <div className="flex justify-end gap-3">
+            <button type="button" onClick={close} className="h-11 rounded-xl bg-white/8 px-5 text-sm whitespace-nowrap">
+              跳过
+            </button>
+            <button type="submit" className="h-11 rounded-xl bg-accent px-5 text-sm font-bold whitespace-nowrap text-accent-ink">
+              保存
+            </button>
+          </div>
+        </form>
+      </Dialog>
+    </>
   )
 }

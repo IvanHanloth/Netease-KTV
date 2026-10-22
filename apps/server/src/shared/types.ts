@@ -157,6 +157,49 @@ export interface Settings {
   publicUrl: string
   /** Show the mic-based pitch scoring on the TV. */
   scoringEnabled: boolean
+  /**
+   * Pitch error (semitones) that still earns full points; credit then fades to 0 at 3×.
+   * Presets: 宽松 1.5 / 标准 1.0 / 严格 0.5. Range 0.3–3.
+   */
+  scoreTolerance: number
+}
+
+/** One finished, scored performance. */
+export interface ScoreEntry {
+  id: number
+  songId: number
+  /** 0–100, already normalized on the TV. */
+  score: number
+  /** Nickname of whoever requested the song (QueueItem.addedBy), if any. */
+  singer?: string
+  /** scoreTolerance used for this performance. */
+  tolerance: number
+  /** Epoch ms. */
+  at: number
+}
+
+export interface SongRanking {
+  song: Song
+  best: number
+  average: number
+  plays: number
+  /** Best performances first (top 10 in the list view, top 50 for a single song). */
+  entries: ScoreEntry[]
+}
+
+export interface ScoreSubmit {
+  songId: number
+  score: number
+  tolerance: number
+  singer?: string
+}
+
+export interface ScoreSubmitResult {
+  entry: ScoreEntry
+  /** 1-based rank of this performance among all performances of the song. */
+  rank: number
+  plays: number
+  best: number
 }
 
 /** Reference melody of the lead vocal, extracted from the vocals stem. */
@@ -208,6 +251,8 @@ export type ServerMessage =
    * receives commands); the others must stay silent until they send `claim`.
    */
   | { type: 'tvRole'; active: boolean }
+  /** The leaderboard changed (new score or reset): refetch GET /api/scores. */
+  | { type: 'scores' }
   /** Forwarded to the TV: play / pause / seek / restart. */
   | { type: 'command'; command: PlayerCommand }
 

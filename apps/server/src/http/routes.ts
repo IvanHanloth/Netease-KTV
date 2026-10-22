@@ -10,6 +10,7 @@ import { pitchedPath, pitchPath, stemFile } from '../media/files.js'
 import { listUnblockSources } from '../media/resolve.js'
 import { NcmError } from '../ncm/client.js'
 import * as ncm from '../ncm/service.js'
+import { addScore, leaderboard, resetScores, songRanking } from '../scores.js'
 import { getSettings, updateSettings } from '../settings.js'
 import type { PlayerCommand, Stem } from '../shared/types.js'
 import { proxy, sendFile } from './stream.js'
@@ -181,6 +182,30 @@ export async function registerRoutes(app: FastifyInstance) {
     return hub.getTrack(p.id)
   })
 
+  // ---------- scores / leaderboard ----------
+  app.post('/api/scores', async (req) => {
+    const body = z
+      .object({
+        songId: id,
+        score: z.number().min(0).max(100),
+        tolerance: z.number().min(0.1).max(5),
+        singer: z.string().max(40).optional(),
+      })
+      .parse(req.body)
+    return addScore(body)
+  })
+  app.get('/api/scores', async () => ({ songs: await leaderboard() }))
+  app.get('/api/scores/:id', async (req, reply) => {
+    const p = z.object({ id }).parse(req.params)
+    const ranking = await songRanking(p.id)
+    return ranking ?? reply.code(404).send({ error: '这首歌还没有成绩' })
+  })
+  app.delete('/api/scores', async () => ({ removed: resetScores() }))
+  app.delete('/api/scores/:id', async (req) => {
+    const p = z.object({ id }).parse(req.params)
+    return { removed: resetScores(p.id) }
+  })
+
   // ---------- settings ----------
   app.get('/api/settings', async () => ({ ...getSettings(), unblockSourceOptions: listUnblockSources() }))
   app.put('/api/settings', async (req) => {
@@ -192,6 +217,7 @@ export async function registerRoutes(app: FastifyInstance) {
         separatorModel: z.string().max(200).optional(),
         publicUrl: z.string().max(200).optional(),
         scoringEnabled: z.boolean().optional(),
+        scoreTolerance: z.number().min(0.3).max(3).optional(),
       })
       .parse(req.body)
     const sources = listUnblockSources()

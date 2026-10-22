@@ -10,6 +10,7 @@ import { useIsLocalhostOrigin, useRemoteUrl, useSettings } from '../lib/hooks'
 import { currentLineIndex, hasLyrics, lineWords, wordFills } from '../lib/lyrics'
 import { AudioEngine } from '../player/engine'
 import { useScoring } from '../player/useScoring'
+import { DEFAULT_TOLERANCE } from '../player/scoring'
 import type { MicError } from '../player/mic'
 import { connect, livePosition, onCommand, sendCommand, sendMessage, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
@@ -418,7 +419,7 @@ function TwoLineLyrics({ songId, getMs, raised }: { songId: number; getMs: () =>
 
 function Chip({ children, icon }: { children: ReactNode; icon?: IconName }) {
   return (
-    <span className="inline-flex h-[30px] items-center gap-1.5 rounded-full border border-white/10 bg-white/8 px-3 text-[15px] text-[#E4E4EA]">
+    <span className="inline-flex h-[30px] items-center gap-1.5 rounded-full border border-white/10 bg-white/8 px-3 text-[15px] whitespace-nowrap text-[#E4E4EA]">
       {icon && <Icon name={icon} size={16} />}
       {children}
     </span>
@@ -543,88 +544,193 @@ function Progress({ getPos, duration }: { getPos: () => number; duration: number
   )
 }
 
+type SetPatch = Omit<Extract<Parameters<typeof sendCommand>[0], { action: 'set' }>, 'action'>
+const setPlayer = (patch: SetPatch) => sendCommand({ action: 'set', ...patch })
+
 function ControlPill({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={clsx('glass flex h-16 items-center gap-3 rounded-[20px] px-5', className)}>{children}</div>
+  return (
+    <div className={clsx('glass flex h-14 shrink-0 items-center gap-2.5 rounded-[18px] px-4 whitespace-nowrap', className)}>
+      {children}
+    </div>
+  )
 }
 
-function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: boolean; extra?: ReactNode }) {
-  const set = (patch: Omit<Extract<Parameters<typeof sendCommand>[0], { action: 'set' }>, 'action'>) =>
-    sendCommand({ action: 'set', ...patch })
-  const karaoke = hasStems && player.trackMode === 'karaoke'
+function BarButton({
+  icon,
+  label,
+  title,
+  onClick,
+  primary,
+  text,
+}: {
+  icon: IconName
+  label: string
+  title?: string
+  onClick: () => void
+  primary?: boolean
+  /** Visible label, shown from xl up. */
+  text?: string
+}) {
   return (
-    <div className="flex flex-wrap items-center gap-3.5">
-      <button
-        type="button"
-        onClick={() => sendCommand({ action: 'toggle' })}
-        aria-label={player.playing ? '暂停' : '播放'}
-        title={player.playing ? '暂停（空格）' : '播放（空格）'}
-        className="flex h-16 w-16 items-center justify-center rounded-full bg-accent text-accent-ink shadow-[0_10px_28px_rgba(255,77,126,0.45)] transition-transform hover:scale-105"
-      >
-        <Icon name={player.playing ? 'pause' : 'play'} size={26} />
-      </button>
-      <button
-        type="button"
-        onClick={() => sendCommand({ action: 'restart' })}
-        aria-label="重唱"
-        title="重唱"
-        className="glass flex h-16 w-16 items-center justify-center rounded-[20px] transition-colors hover:bg-white/10"
-      >
-        <Icon name="replay" size={22} />
-      </button>
-      <TrackModeToggle size="lg" />
-      {karaoke && (
-        <ControlPill>
-          <Icon name="mic" size={22} />
-          <span className="text-lg">导唱</span>
-          <div className="w-[100px]">
-            <Range label="导唱音量" value={Math.round(player.vocalVolume * 100)} onChange={(v) => set({ vocalVolume: v / 100 })} color="#FFFFFF" />
-          </div>
-          <span className="num w-11 text-lg text-[#C8C8D0]">{Math.round(player.vocalVolume * 100)}%</span>
-        </ControlPill>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      title={title ?? label}
+      className={clsx(
+        'flex shrink-0 items-center justify-center gap-2 whitespace-nowrap transition-[transform,background-color]',
+        primary
+          ? 'h-14 w-14 rounded-full bg-accent text-accent-ink shadow-[0_10px_28px_rgba(255,77,126,0.45)] hover:scale-105'
+          : clsx('glass h-14 rounded-[18px] hover:bg-white/10', text ? 'min-w-14 px-4 text-[15px]' : 'w-14'),
       )}
-      <ControlPill>
-        <Icon name="volume" size={22} />
-        <span className="text-lg">{karaoke ? '伴奏' : '音量'}</span>
-        <div className="w-[100px]">
-          <Range label="音量" value={Math.round(player.musicVolume * 100)} onChange={(v) => set({ musicVolume: v / 100 })} color="#FFFFFF" />
-        </div>
-        <span className="num w-11 text-lg text-[#C8C8D0]">{Math.round(player.musicVolume * 100)}%</span>
-      </ControlPill>
-      <ControlPill className="pr-3">
-        <span className="text-lg">升降调</span>
-        <button
-          type="button"
-          aria-label="降调"
-          disabled={player.key <= -6}
-          onClick={() => set({ key: player.key - 1 })}
-          className="flex h-11 w-11 items-center justify-center rounded-[14px] bg-white/8 hover:bg-white/14 disabled:opacity-40"
-        >
-          <Icon name="minus" size={20} strokeWidth={2} />
-        </button>
-        <span className="num w-10 text-center text-[22px] font-semibold text-accent">
-          {player.key > 0 ? '+' + player.key : player.key}
-        </span>
-        <button
-          type="button"
-          aria-label="升调"
-          disabled={player.key >= 6}
-          onClick={() => set({ key: player.key + 1 })}
-          className="flex h-11 w-11 items-center justify-center rounded-[14px] bg-white/8 hover:bg-white/14 disabled:opacity-40"
-        >
-          <Icon name="plus" size={20} strokeWidth={2} />
-        </button>
-      </ControlPill>
-      <DisplayModeToggle size="lg" />
+    >
+      <Icon name={icon} size={primary ? 24 : 20} />
+      {text && <span className="hidden xl:inline">{text}</span>}
+    </button>
+  )
+}
+
+/** Volume summary pill; the sliders live in a popover so the bar never grows. */
+function MixerButton({
+  player,
+  karaoke,
+  open,
+  onToggle,
+}: {
+  player: PlayerState
+  karaoke: boolean
+  open: boolean
+  onToggle: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      aria-haspopup="dialog"
+      title="音量"
+      className={clsx(
+        'glass flex h-14 shrink-0 items-center gap-2.5 rounded-[18px] px-4 text-[15px] whitespace-nowrap transition-colors hover:bg-white/10',
+        open && 'bg-white/12',
+      )}
+    >
+      <Icon name="volume" size={20} />
+      <span className="hidden xl:inline">{karaoke ? '伴奏' : '音量'}</span>
+      <span className="num text-[#E4E4EA]">{Math.round(player.musicVolume * 100)}%</span>
+      {karaoke && (
+        <>
+          <span className="h-5 w-px bg-white/12" aria-hidden="true" />
+          <Icon name="mic" size={18} />
+          <span className="num text-[#E4E4EA]">{Math.round(player.vocalVolume * 100)}%</span>
+        </>
+      )}
+    </button>
+  )
+}
+
+function MixerPopover({ player, karaoke }: { player: PlayerState; karaoke: boolean }) {
+  const row = (icon: IconName, label: string, value: number, onChange: (v: number) => void) => (
+    <div className="flex items-center gap-3">
+      <Icon name={icon} size={18} className="shrink-0 text-fg-2" />
+      <span className="w-12 shrink-0 text-[15px] whitespace-nowrap">{label}</span>
+      <div className="min-w-0 flex-1">
+        <Range label={label + '音量'} value={Math.round(value * 100)} onChange={(v) => onChange(v / 100)} color="#FFFFFF" />
+      </div>
+      <span className="num w-11 shrink-0 text-right text-[15px] text-[#C8C8D0]">{Math.round(value * 100)}%</span>
+    </div>
+  )
+  return (
+    <div
+      role="dialog"
+      aria-label="音量"
+      className="glass flex w-[340px] flex-col gap-4 rounded-[20px] p-5 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
+    >
+      {row('volume', karaoke ? '伴奏' : '音量', player.musicVolume, (v) => setPlayer({ musicVolume: v }))}
+      {karaoke && row('mic', '导唱', player.vocalVolume, (v) => setPlayer({ vocalVolume: v }))}
+      {karaoke && <span className="text-xs leading-5 text-muted">导唱是原唱人声的音量，0% 为纯伴奏。</span>}
+    </div>
+  )
+}
+
+function KeyControl({ value }: { value: number }) {
+  return (
+    <ControlPill className="pr-2 pl-4">
+      <span className="hidden text-[15px] min-[1440px]:inline">升降调</span>
       <button
         type="button"
-        onClick={() => sendCommand({ action: 'next' })}
-        title="切歌（N）"
-        className="glass flex h-16 items-center gap-2 rounded-[20px] px-5 text-[17px] transition-colors hover:bg-white/10"
+        aria-label="降调"
+        disabled={value <= -6}
+        onClick={() => setPlayer({ key: value - 1 })}
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/8 hover:bg-white/14 disabled:opacity-40"
       >
-        <Icon name="next" size={20} />
-        切歌
+        <Icon name="minus" size={18} strokeWidth={2} />
       </button>
-      {extra}
+      <span className="num w-9 text-center text-[20px] font-semibold text-accent" aria-live="polite" title="当前调">
+        {value > 0 ? '+' + value : value}
+      </span>
+      <button
+        type="button"
+        aria-label="升调"
+        disabled={value >= 6}
+        onClick={() => setPlayer({ key: value + 1 })}
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/8 hover:bg-white/14 disabled:opacity-40"
+      >
+        <Icon name="plus" size={18} strokeWidth={2} />
+      </button>
+    </ControlPill>
+  )
+}
+
+/**
+ * One-row TV control bar: transport · modes · (spacer) · mixer / key / scoring.
+ * Never wraps: labels collapse to icons below 1280 px, and below 1024 px the row scrolls
+ * sideways. Popovers render outside the scrolling row so they are never clipped.
+ */
+function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: boolean; extra?: ReactNode }) {
+  const karaoke = hasStems && player.trackMode === 'karaoke'
+  const [mixerOpen, setMixerOpen] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!mixerOpen) return
+    const onDown = (e: PointerEvent) => {
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setMixerOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMixerOpen(false)
+    }
+    document.addEventListener('pointerdown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('pointerdown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [mixerOpen])
+
+  return (
+    <div ref={boxRef} className="relative min-w-0">
+      {mixerOpen && (
+        <div className="absolute right-0 bottom-full z-20 mb-3">
+          <MixerPopover player={player} karaoke={karaoke} />
+        </div>
+      )}
+      <div className="flex min-w-0 flex-nowrap items-center gap-3 max-lg:overflow-x-auto max-lg:pb-1">
+        <BarButton
+          primary
+          icon={player.playing ? 'pause' : 'play'}
+          label={player.playing ? '暂停' : '播放'}
+          title={player.playing ? '暂停（空格）' : '播放（空格）'}
+          onClick={() => sendCommand({ action: 'toggle' })}
+        />
+        <BarButton icon="replay" label="重唱" onClick={() => sendCommand({ action: 'restart' })} />
+        <BarButton icon="next" label="切歌" title="切歌（N）" text="切歌" onClick={() => sendCommand({ action: 'next' })} />
+        <span className="mx-1 h-8 w-px shrink-0 bg-white/12" aria-hidden="true" />
+        <TrackModeToggle size="tv" />
+        <DisplayModeToggle size="tv" />
+        <span className="min-w-2 flex-1" aria-hidden="true" />
+        <MixerButton player={player} karaoke={karaoke} open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
+        <KeyControl value={player.key} />
+        {extra}
+      </div>
     </div>
   )
 }
@@ -664,20 +770,26 @@ function ScoreToggle({
     else if (status === 'loading') hint = '正在打开麦克风…'
   }
   return (
-    <div className="glass flex h-16 items-center gap-3 rounded-[20px] pr-4 pl-2.5">
+    <div className="relative shrink-0">
+      {hint && (
+        <div className="glass absolute right-0 bottom-full mb-3 w-max max-w-[300px] rounded-xl px-3.5 py-2 text-[13px] leading-5 text-warn shadow-[0_12px_30px_rgba(0,0,0,0.45)]">
+          {hint}
+        </div>
+      )}
       <button
         type="button"
         aria-pressed={on}
         onClick={onToggle}
+        title={hint ?? (on ? '关闭评分' : '打开评分')}
         className={clsx(
-          'flex h-11 items-center gap-2 rounded-[14px] px-4 text-[17px] transition-colors',
-          on ? 'bg-accent font-semibold text-accent-ink' : 'bg-white/8 text-fg hover:bg-white/14',
+          'flex h-14 shrink-0 items-center gap-2 rounded-[18px] px-4 text-[15px] whitespace-nowrap transition-colors',
+          on ? 'bg-accent font-semibold text-accent-ink' : 'glass text-fg hover:bg-white/10',
         )}
       >
         <Icon name="mic" size={20} />
         评分
+        {hint && <span className="h-2 w-2 rounded-full bg-warn" aria-hidden="true" />}
       </button>
-      {hint && <span className="max-w-[240px] text-[13px] leading-5 text-warn">{hint}</span>}
     </div>
   )
 }
@@ -690,9 +802,9 @@ function QrCard({ big }: { big?: boolean }) {
     <div className={clsx('glass flex items-center rounded-3xl', big ? 'gap-8 p-6 pr-10' : 'gap-5.5 p-4.5 pr-6.5')}>
       <QrCode value={url} size={big ? 220 : 132} label="扫码点歌二维码" />
       <div className="flex flex-col gap-1.5">
-        <div className={clsx('font-bold', big ? 'text-[34px]' : 'text-2xl')}>扫码点歌</div>
-        <div className={clsx('text-[#B4B4BE]', big ? 'text-lg' : 'text-base')}>同一 Wi‑Fi 下用手机扫描</div>
-        <div className={clsx('num mt-1.5 font-medium text-accent', big ? 'text-xl' : 'text-[17px]')}>{display}</div>
+        <div className={clsx('font-bold whitespace-nowrap', big ? 'text-[34px]' : 'text-2xl')}>扫码点歌</div>
+        <div className={clsx('whitespace-nowrap text-[#B4B4BE]', big ? 'text-lg' : 'text-base')}>同一 Wi‑Fi 下用手机扫描</div>
+        <div className={clsx('num mt-1.5 font-medium whitespace-nowrap text-accent', big ? 'text-xl' : 'text-[17px]')}>{display}</div>
         {localhost && (
           <div className="mt-1 max-w-[260px] text-[13px] leading-5 text-warn">
             当前通过 localhost 打开，手机无法访问。请在点歌台“设置”里填写局域网地址。
@@ -762,7 +874,7 @@ function Osd({ msg }: { msg: OsdMsg | null }) {
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: -6 }}
             transition={{ duration: reduceMotion() ? 0 : 0.2 }}
-            className="glass flex items-center gap-2.5 rounded-full px-6 py-3 text-[clamp(18px,1.3vw,26px)] font-semibold shadow-[0_16px_40px_rgba(0,0,0,0.45)]"
+            className="glass flex items-center gap-2.5 rounded-full px-6 py-3 text-[clamp(18px,1.3vw,26px)] font-semibold whitespace-nowrap shadow-[0_16px_40px_rgba(0,0,0,0.45)]"
           >
             {msg.icon && <Icon name={msg.icon} size={22} className="text-accent" />}
             {msg.text}
@@ -1081,7 +1193,16 @@ export default function Tv() {
   useEffect(() => {
     engine.onEnded = () => {
       const result = finishRef.current()
-      if (result) setScoreResult(result)
+      if (result) {
+        setScoreResult(result)
+        // Record it on the leaderboard, then add the rank to the overlay.
+        api
+          .submitScore({ songId: result.song.id, score: result.score, tolerance: result.tolerance, singer: result.singer })
+          .then((r) =>
+            setScoreResult((cur) => (cur?.id === result.id ? { ...cur, rank: r.rank, best: r.best, plays: r.plays } : cur)),
+          )
+          .catch(() => {})
+      }
       report()
       sendMessage({ type: 'ended' })
     }
@@ -1148,6 +1269,7 @@ export default function Tv() {
   const showPreparing = !playingAudio && (!ready || loadState !== 'loading' || slowLoad)
 
   const scoringAllowed = settings?.scoringEnabled ?? true
+  const scoreTolerance = settings?.scoreTolerance ?? DEFAULT_TOLERANCE
   const { data: lyricsData } = useQuery({
     queryKey: ['lyrics', cur?.song.id],
     queryFn: () => api.lyrics(cur!.song.id),
@@ -1162,10 +1284,13 @@ export default function Tv() {
     hasPitch: !!track?.hasPitch,
     pitchKey: player.key,
     lines: lyricsData?.lines,
+    tolerance: scoreTolerance,
   })
   finishRef.current = () => {
     const s = scoring.finish()
-    return s !== null && cur ? { id: Date.now(), score: s, song: cur.song } : null
+    return s !== null && cur
+      ? { id: Date.now(), score: s, song: cur.song, singer: cur.addedBy, tolerance: scoreTolerance }
+      : null
   }
   const laneShown = scoring.status === 'on'
 
