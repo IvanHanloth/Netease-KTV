@@ -96,6 +96,21 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
           </section>
 
           <section className="flex flex-col gap-4">
+            <h3 className="m-0 text-xs tracking-[0.12em] text-subtle">演唱</h3>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-[15px] font-semibold">KTV 打分</span>
+                <span className="text-xs text-muted">需要伴奏分离生成的主唱音高，以及主屏设备上的麦克风</span>
+              </div>
+              <Switch
+                checked={draft.scoringEnabled ?? true}
+                onChange={(v) => set('scoringEnabled', v)}
+                label="KTV 打分"
+              />
+            </div>
+          </section>
+
+          <section className="flex flex-col gap-4">
             <h3 className="m-0 text-xs tracking-[0.12em] text-subtle">无音源歌曲</h3>
             <div className="flex items-center justify-between gap-4">
               <div className="flex flex-col gap-1">

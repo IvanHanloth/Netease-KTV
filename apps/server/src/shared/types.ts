@@ -53,6 +53,8 @@ export interface TrackState {
   source?: AudioSource
   /** True when instrumental + vocals stems exist; false means only the original can play. */
   hasStems: boolean
+  /** True when a reference pitch track (for scoring) exists: GET /api/media/:id/pitch. */
+  hasPitch?: boolean
   message?: string
   updatedAt: number
 }
@@ -138,8 +140,18 @@ export interface Settings {
   unblockSources: string[]
   audioLevel: SoundLevel
   separatorModel: string
-  /** LAN address used for the phone QR code, e.g. http://192.168.1.8:8080 */
+  /** LAN address used for the phone QR code, e.g. http://192.168.1.8:8686 */
   publicUrl: string
+  /** Show the mic-based pitch scoring on the TV. */
+  scoringEnabled: boolean
+}
+
+/** Reference melody of the lead vocal, extracted from the vocals stem. */
+export interface PitchTrack {
+  /** Seconds between frames. */
+  hop: number
+  /** MIDI note per frame (float, e.g. 60.3); null where the lead vocal is silent / unvoiced. */
+  midi: (number | null)[]
 }
 
 export type PlayerCommand =

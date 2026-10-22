@@ -6,7 +6,7 @@ import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
 import { retry } from '../core/pipeline.js'
 import { renderPitch } from '../media/ffmpeg.js'
-import { pitchedPath, stemFile } from '../media/files.js'
+import { pitchedPath, pitchPath, stemFile } from '../media/files.js'
 import { listUnblockSources } from '../media/resolve.js'
 import { NcmError } from '../ncm/client.js'
 import * as ncm from '../ncm/service.js'
@@ -150,6 +150,12 @@ export async function registerRoutes(app: FastifyInstance) {
   })
 
   // ---------- media ----------
+  app.get('/api/media/:id/pitch', async (req, reply) => {
+    const p = z.object({ id }).parse(req.params)
+    const file = pitchPath(p.id)
+    if (!fs.existsSync(file)) return reply.code(404).send({ error: '还没有参考音高' })
+    return sendFile(req, reply, file)
+  })
   app.get('/api/media/:id/:stem', async (req, reply) => {
     const p = z.object({ id, stem: z.enum(['instrumental', 'vocals', 'original']) }).parse(req.params)
     const { key } = z.object({ key: z.coerce.number().int().min(-6).max(6).default(0) }).parse(req.query)
@@ -176,6 +182,7 @@ export async function registerRoutes(app: FastifyInstance) {
         audioLevel: z.enum(['standard', 'higher', 'exhigh', 'lossless', 'hires']).optional(),
         separatorModel: z.string().max(200).optional(),
         publicUrl: z.string().max(200).optional(),
+        scoringEnabled: z.boolean().optional(),
       })
       .parse(req.body)
     const sources = listUnblockSources()

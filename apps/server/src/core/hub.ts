@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { getDb } from '../db.js'
+import { hasPitch } from '../media/files.js'
 import type { SeparatorStatus, ServerMessage, TrackState } from '../shared/types.js'
 
 /** Central in-memory state + broadcast bus. WebSocket clients subscribe to 'message'. */
@@ -28,6 +29,7 @@ class Hub extends EventEmitter {
         progress: status === 'ready' ? 1 : 0,
         source: r.source ?? undefined,
         hasStems: !!r.has_stems,
+        hasPitch: hasPitch(r.song_id),
         message: r.message ?? undefined,
         updatedAt: r.updated_at,
       })

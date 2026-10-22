@@ -2,6 +2,7 @@ import type {
   Account,
   AppState,
   Lyrics,
+  PitchTrack,
   PlayerCommand,
   PlaylistSummary,
   QrStatus,
@@ -120,6 +121,7 @@ export const api = {
   song: (id: number) => get<Song>('/songs/' + id),
   lyrics: (id: number) => get<Lyrics>(`/songs/${id}/lyrics`),
   mv: (id: number) => get<{ mvId: number; url: string }>(`/songs/${id}/mv`),
+  pitch: (id: number) => get<PitchTrack>(`/media/${id}/pitch`),
 
   enqueue: (songId: number, position: 'next' | 'end' = 'end') => post<QueueItem>('/queue', { songId, position }),
   queueTop: (uid: string) => post<void>(`/queue/${encodeURIComponent(uid)}/top`),

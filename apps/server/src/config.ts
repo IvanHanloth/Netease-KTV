@@ -35,6 +35,7 @@ export const config = {
     audioLevel: (process.env.AUDIO_LEVEL ?? 'exhigh') as 'exhigh',
     separatorModel: process.env.SEPARATOR_MODEL ?? '',
     publicUrl: process.env.PUBLIC_URL ?? '',
+    scoringEnabled: bool(process.env.SCORING_ENABLED, true),
   },
   /** Allowed difference between NetEase duration and unblock audio duration. */
   unblockDurationTolerance: Number(process.env.UNBLOCK_DURATION_TOLERANCE ?? 3000),

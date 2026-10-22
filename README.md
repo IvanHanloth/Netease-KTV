@@ -3,7 +3,7 @@
 基于网易云音乐的本地 KTV。用你自己登录的网易云账号点歌，取歌曲、逐字歌词和 MV；AI 去掉主唱、保留和声，生成伴奏。电视或电脑做主屏，手机扫码点歌。
 
 - **点歌台**（`/`）：搜索、日推、排行榜、我的歌单，查看已点列表和伴奏生成进度。
-- **主屏**（`/tv`）：逐字歌词、MV 或封面取色背景、导唱音量、升降调、原唱/伴奏切换、扫码点歌。整个系统只有主屏发声。
+- **主屏**（`/tv`）：逐字歌词、MV 或封面取色背景、导唱音量、升降调、原唱/伴奏切换、扫码点歌、麦克风实时打分。整个系统只有主屏发声。
 - **手机遥控**（`/m`）：点歌、切歌、调音量、升降调。
 
 > 默认只播放登录账号有权播放的完整歌曲。会员歌在没有会员的账号上不可点，项目不含任何破解。见下文“第三方音源”。
@@ -21,6 +21,8 @@
 - 伴奏：`instrumental.flac` = 伴奏 + 和声，`vocals.flac` = 主唱（导唱音量用它）。
 - GPU 默认模型 `mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt`，CPU 默认模型 `UVR_MDXNET_KARA_2.onnx`。
 - 分离服务不可用时自动改播原曲。
+- 打分：分离完成后，从主唱轨提取参考音高（`pitch.json`，librosa pYIN）。主屏通过麦克风实时检测音高并比对（不区分八度），每句给出评级，唱完给总分。
+  - 麦克风只能在安全上下文中使用，所以主屏要用 `http://localhost:8686/tv`（或 HTTPS）打开，麦克风接在主屏这台电脑上。
 - 升降调由服务端 ffmpeg 渲染并缓存。
 
 详细调研见 [docs/feasibility-study.md](docs/feasibility-study.md)，接口文档见 [docs/api.md](docs/api.md)。
@@ -74,13 +76,24 @@ npm run dev
 
 ```bash
 cd separator
-python -m venv .venv
+py -3.11 -m venv .venv
 .venv\Scripts\activate
 pip install "audio-separator[gpu]" -r requirements.txt
+```
+
+`audio-separator[gpu]` 在 Windows 上会装成 CPU 版 PyTorch，需要再从 PyTorch 官方源换成 CUDA 版（版本号与已装的 torch 一致，驱动支持 CUDA 13 时用 cu130）：
+
+```bash
+pip install --force-reinstall --no-deps torch==2.14.1 --index-url https://download.pytorch.org/whl/cu130
+```
+
+```bash
 python app.py
 ```
 
-没有 NVIDIA 显卡时，把 `[gpu]` 换成 `[cpu]`。
+- 没有 NVIDIA 显卡时，把 `[gpu]` 换成 `[cpu]`，跳过换 PyTorch 那一步。
+- 模型默认下载到 `/models`；本地运行时可以设置 `MODEL_DIR=separator/models`。
+- 在 RTX 4060 Laptop 上实测：一首 3 分钟左右的歌，分离约 45 秒，提取音高再约 10 秒。第一次运行要先下载约 900MB 的模型。
 
 生产构建：
 
@@ -105,6 +118,7 @@ npm start
 | `SEPARATOR_MODEL` | 自动 | 分离模型文件名 |
 | `ENABLE_UNBLOCK` | `false` | 第三方音源开关 |
 | `UNBLOCK_SOURCES` | `unm` | 第三方音源，逗号分隔 |
+| `SCORING_ENABLED` | `true` | 主屏显示麦克风打分 |
 
 除 `PORT`、`DATA_DIR`、`SEPARATOR_URL`、`ACCESS_TOKEN` 外，其余都可以在应用设置里修改。
 

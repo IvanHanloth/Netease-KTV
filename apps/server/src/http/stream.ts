@@ -10,6 +10,7 @@ const TYPES: Record<string, string> = {
   '.aac': 'audio/aac',
   '.ogg': 'audio/ogg',
   '.wav': 'audio/wav',
+  '.json': 'application/json; charset=utf-8',
 }
 
 /** Send a local file with HTTP Range support. */

@@ -5,6 +5,7 @@ import type { QueueItem } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtTime, queueStatusText } from '../lib/format'
 import { errorText, toast, useStatusOf } from '../lib/hooks'
+import { useDragReorder } from '../lib/useDragReorder'
 import { livePosition, useApp } from '../store/app'
 import { Icon } from './icons'
 import { Cover, dotColor, EmptyNote, Eq, IconButton, ProgressBar } from './ui'
@@ -60,20 +61,52 @@ export function NowSingingCard({ compact }: { compact?: boolean }) {
   )
 }
 
-function QueueRow({ item, index }: { item: QueueItem; index: number }) {
+type HandleProps = ReturnType<ReturnType<typeof useDragReorder<QueueItem>>['handleProps']>
+
+function QueueRow({
+  item,
+  index,
+  dragging,
+  rowRef,
+  handle,
+}: {
+  item: QueueItem
+  index: number
+  dragging: boolean
+  rowRef: (el: HTMLElement | null) => void
+  handle: HandleProps
+}) {
   const statusOf = useStatusOf()
   const st = statusOf(item.song)
   const busy = st.kind === 'proc' || st.kind === 'download'
   return (
     <motion.li
+      ref={rowRef}
       layout
       initial={{ opacity: 0, y: 8 }}
-      animate={{ opacity: 1, y: 0 }}
+      animate={{ opacity: 1, y: 0, scale: dragging ? 1.02 : 1 }}
       exit={{ opacity: 0, x: 24 }}
       transition={{ duration: 0.2 }}
-      className="group flex items-center gap-3 rounded-[14px] px-2 py-2.5 hover:bg-white/4"
+      className={clsx(
+        'group relative flex items-center gap-2 rounded-[14px] px-1.5 py-2.5',
+        dragging
+          ? 'z-10 bg-white/10 shadow-[0_14px_34px_rgba(0,0,0,0.45)] ring-1 ring-white/15'
+          : 'hover:bg-white/4',
+      )}
     >
-      <span className="num w-5 shrink-0 text-center text-xs text-faint">{index + 1}</span>
+      <button
+        type="button"
+        {...handle}
+        aria-label={`拖动排序 ${item.song.name}（方向键上下移动）`}
+        title="拖动排序"
+        className={clsx(
+          'flex h-10 w-7 shrink-0 cursor-grab items-center justify-center rounded-lg text-faint hover:text-fg-2 focus-visible:text-fg',
+          dragging && 'cursor-grabbing text-fg',
+        )}
+      >
+        <Icon name="grip" size={16} />
+      </button>
+      <span className="num w-4 shrink-0 text-center text-xs text-faint">{index + 1}</span>
       <Cover song={item.song} px={100} className="h-[42px] w-[42px] rounded-[10px]" />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <span className="truncate text-sm font-semibold">{item.song.name}</span>
@@ -107,14 +140,26 @@ function QueueRow({ item, index }: { item: QueueItem; index: number }) {
   )
 }
 
+const queueKey = (q: QueueItem) => q.uid
+const commitOrder = (uids: string[]) => api.queueReorder(uids)
+const reorderFailed = (e: unknown) => toast(`排序失败：${errorText(e)}`, 'error')
+
 export function QueueList() {
   const queue = useApp((s) => s.state.queue)
+  const { ordered, dragKey, rowRef, handleProps } = useDragReorder(queue, queueKey, commitOrder, reorderFailed)
   if (!queue.length) return <EmptyNote>队列是空的，从曲库挑一首吧</EmptyNote>
   return (
-    <ol className="m-0 flex list-none flex-col gap-1 p-0">
+    <ol className={clsx('m-0 flex list-none flex-col gap-1 p-0', dragKey && 'select-none')}>
       <AnimatePresence initial={false}>
-        {queue.map((item, i) => (
-          <QueueRow key={item.uid} item={item} index={i} />
+        {ordered.map((item, i) => (
+          <QueueRow
+            key={item.uid}
+            item={item}
+            index={i}
+            dragging={dragKey === item.uid}
+            rowRef={rowRef(item.uid)}
+            handle={handleProps(item.uid)}
+          />
         ))}
       </AnimatePresence>
     </ol>

@@ -13,6 +13,7 @@ export function getSettings(): Settings {
     audioLevel: saved.audioLevel ?? config.defaults.audioLevel,
     separatorModel: saved.separatorModel ?? config.defaults.separatorModel,
     publicUrl: saved.publicUrl ?? config.defaults.publicUrl,
+    scoringEnabled: saved.scoringEnabled ?? config.defaults.scoringEnabled,
   }
 }
 
@@ -25,6 +26,7 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
   if (patch.audioLevel && LEVELS.includes(patch.audioLevel)) next.audioLevel = patch.audioLevel
   if (typeof patch.separatorModel === 'string') next.separatorModel = patch.separatorModel.trim()
   if (typeof patch.publicUrl === 'string') next.publicUrl = patch.publicUrl.trim().replace(/\/$/, '')
+  if (typeof patch.scoringEnabled === 'boolean') next.scoringEnabled = patch.scoringEnabled
   kv.set(KEY, next)
   return next
 }

@@ -52,7 +52,7 @@
 |---|---|---|
 | POST | `/queue` | `{ songId, position?: 'next' \| 'end' }` → `QueueItem`。没有正在播放的歌时直接开始播放。会员歌返回 409 |
 | POST | `/queue/:uid/top` | 置顶（移到下一首） |
-| POST | `/queue/reorder` | `{ uids: string[] }` |
+| POST | `/queue/reorder` | `{ uids: string[] }`，按给定顺序重排（拖拽排序用） |
 | DELETE | `/queue/:uid` | 删除 |
 | DELETE | `/queue` | 清空 |
 
@@ -67,6 +67,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/media/:songId/:stem?key=` | `stem` 取 `instrumental` / `vocals` / `original`；`key` 为升降调半音数，非 0 时服务端用 ffmpeg 渲染并缓存。支持 Range |
+| GET | `/media/:songId/pitch` | `PitchTrack`：主唱参考音高，用于打分。`track.hasPitch` 为 true 时可用，否则 404 |
 | POST | `/tracks/:songId/retry` | 重新下载并分离 |
 
 ## 设置

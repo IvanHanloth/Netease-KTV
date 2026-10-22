@@ -18,6 +18,7 @@ services:
       AUDIO_LEVEL: ${AUDIO_LEVEL:-exhigh}
       ENABLE_UNBLOCK: ${ENABLE_UNBLOCK:-false}
       UNBLOCK_SOURCES: ${UNBLOCK_SOURCES:-unm}
+      SCORING_ENABLED: ${SCORING_ENABLED:-true}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ktv-data:/data

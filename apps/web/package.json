@@ -14,6 +14,7 @@
     "clsx": "^2.1.1",
     "fast-average-color": "^9.6.0",
     "motion": "^14.6.0",
+    "pitchy": "^4.1.0",
     "qrcode": "^1.5.4",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",

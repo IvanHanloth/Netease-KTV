@@ -6,13 +6,17 @@ import type { LyricLine, PlayerState, Song, TrackState } from '@shared/types'
 import { api, imgUrl, mediaUrl, tokenized } from '../lib/api'
 import { ambientColor, companionColor } from '../lib/color'
 import { artistsText, deriveStatus, fmtTime } from '../lib/format'
-import { useIsLocalhostOrigin, useRemoteUrl } from '../lib/hooks'
+import { useIsLocalhostOrigin, useRemoteUrl, useSettings } from '../lib/hooks'
 import { currentLineIndex, hasLyrics, lineWords, wordFills } from '../lib/lyrics'
 import { AudioEngine } from '../player/engine'
+import { useScoring } from '../player/useScoring'
+import type { MicError } from '../player/mic'
 import { connect, onCommand, sendCommand, sendMessage, useApp } from '../store/app'
 import { Icon } from '../components/icons'
 import { Cover, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
 import { QrCode } from '../components/QrCode'
+import { PitchLane } from '../components/PitchLane'
+import { LineRatingPop, ScoreOverlay, type ScoreResult } from '../components/ScoreOverlay'
 
 // ---------------- Ambient background ----------------
 
@@ -347,7 +351,7 @@ function ControlPill({ children, className }: { children: ReactNode; className?:
   return <div className={clsx('glass flex h-16 items-center gap-3.5 rounded-[20px] px-5.5', className)}>{children}</div>
 }
 
-function Controls({ player, hasStems }: { player: PlayerState; hasStems: boolean }) {
+function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: boolean; extra?: ReactNode }) {
   const set = (patch: Omit<Extract<Parameters<typeof sendCommand>[0], { action: 'set' }>, 'action'>) =>
     sendCommand({ action: 'set', ...patch })
   return (
@@ -417,6 +421,60 @@ function Controls({ player, hasStems }: { player: PlayerState; hasStems: boolean
           ))}
         </div>
       )}
+      {extra}
+    </div>
+  )
+}
+
+const SCORE_PREF = 'ktv.scoring'
+
+function readScorePref() {
+  try {
+    return localStorage.getItem(SCORE_PREF) === '1'
+  } catch {
+    return false
+  }
+}
+
+function ScoreToggle({
+  on,
+  onToggle,
+  hasPitch,
+  status,
+  micError,
+  pitchError,
+}: {
+  on: boolean
+  onToggle: () => void
+  hasPitch: boolean
+  status: 'off' | 'loading' | 'on' | 'error'
+  micError: MicError | null
+  pitchError: boolean
+}) {
+  let hint: string | null = null
+  if (on) {
+    if (!window.isSecureContext || micError === 'insecure') hint = '麦克风需要通过 localhost 或 HTTPS 打开主屏'
+    else if (micError === 'denied') hint = '麦克风权限被拒绝，请在浏览器里允许'
+    else if (micError === 'unavailable') hint = '没有找到可用的麦克风'
+    else if (!hasPitch) hint = '这首歌暂无参考音高（需要伴奏分离）'
+    else if (pitchError) hint = '参考音高加载失败'
+    else if (status === 'loading') hint = '正在打开麦克风…'
+  }
+  return (
+    <div className="glass flex h-16 items-center gap-3 rounded-[20px] pr-4 pl-2.5">
+      <button
+        type="button"
+        aria-pressed={on}
+        onClick={onToggle}
+        className={clsx(
+          'flex h-11 items-center gap-2 rounded-[14px] px-4 text-[17px] transition-colors',
+          on ? 'bg-accent font-semibold text-accent-ink' : 'bg-white/8 text-fg hover:bg-white/14',
+        )}
+      >
+        <Icon name="mic" size={20} />
+        评分
+      </button>
+      {hint && <span className="max-w-[240px] text-[13px] leading-5 text-warn">{hint}</span>}
     </div>
   )
 }
@@ -536,6 +594,21 @@ export default function Tv() {
   const player = useApp((s) => s.state.player)
   const tracks = useApp((s) => s.state.tracks)
   const connected = useApp((s) => s.connected)
+  const { data: settings } = useSettings()
+  const [scoreOn, setScoreOn] = useState(readScorePref)
+  const [scoreResult, setScoreResult] = useState<ScoreResult | null>(null)
+  const finishRef = useRef<() => ScoreResult | null>(() => null)
+  const toggleScore = useCallback(() => {
+    setScoreOn((v) => {
+      try {
+        localStorage.setItem(SCORE_PREF, v ? '0' : '1')
+      } catch {
+        /* storage unavailable */
+      }
+      return !v
+    })
+  }, [])
+  const clearScoreResult = useCallback(() => setScoreResult(null), [])
 
   useEffect(() => connect('tv'), [])
   useEffect(() => {
@@ -634,6 +707,8 @@ export default function Tv() {
   // periodic report + ended
   useEffect(() => {
     engine.onEnded = () => {
+      const result = finishRef.current()
+      if (result) setScoreResult(result)
       report()
       sendMessage({ type: 'ended' })
     }
@@ -683,6 +758,28 @@ export default function Tv() {
   const getPos = useCallback(() => engine.position(), [engine])
   const playingAudio = loadState === 'ready' && engine.hasTrack
 
+  const scoringAllowed = settings?.scoringEnabled ?? true
+  const { data: lyricsData } = useQuery({
+    queryKey: ['lyrics', cur?.song.id],
+    queryFn: () => api.lyrics(cur!.song.id),
+    enabled: !!cur,
+    staleTime: Infinity,
+  })
+  const scoring = useScoring({
+    engine,
+    active: unlocked && scoreOn && scoringAllowed && playingAudio,
+    songId: cur?.song.id ?? null,
+    songKey,
+    hasPitch: !!track?.hasPitch,
+    pitchKey: player.key,
+    lines: lyricsData?.lines,
+  })
+  finishRef.current = () => {
+    const s = scoring.finish()
+    return s !== null && cur ? { id: Date.now(), score: s, song: cur.song } : null
+  }
+  const laneShown = scoring.status === 'on'
+
   const start = async () => {
     try {
       await engine.unlock()
@@ -707,23 +804,49 @@ export default function Tv() {
         <>
           <Header player={player} track={track} />
           {playingAudio ? (
-            <main className="absolute inset-x-0 top-[27vh] bottom-[26vh] flex items-center justify-center">
+            <main
+              className={clsx(
+                'absolute inset-x-0 top-[27vh] flex items-center justify-center transition-[bottom] duration-500',
+                laneShown ? 'bottom-[38vh]' : 'bottom-[26vh]',
+              )}
+            >
               <LyricsView songId={cur.song.id} getMs={getMs} song={cur.song} />
             </main>
           ) : (
             <PreparingScreen song={cur.song} track={track} loading={loadState === 'loading'} loadError={loadError} />
           )}
-          <footer className="absolute right-[3.75vw] bottom-[5.2vh] left-[3.75vw] flex items-end gap-12">
-            <div className="flex min-w-0 flex-1 flex-col gap-7">
-              <Progress getPos={getPos} duration={duration} />
-              <Controls player={player} hasStems={!!track?.hasStems} />
-            </div>
-            <div className="hidden lg:block">
-              <QrCard />
+          {laneShown && <LineRatingPop rating={scoring.lineRating} />}
+          <footer className="absolute right-[3.75vw] bottom-[5.2vh] left-[3.75vw] flex flex-col gap-5">
+            {laneShown && <PitchLane lane={scoring.lane} getTime={getPos} score={scoring.score} />}
+            <div className="flex items-end gap-12">
+              <div className="flex min-w-0 flex-1 flex-col gap-7">
+                <Progress getPos={getPos} duration={duration} />
+                <Controls
+                  player={player}
+                  hasStems={!!track?.hasStems}
+                  extra={
+                    scoringAllowed && (
+                      <ScoreToggle
+                        on={scoreOn}
+                        onToggle={toggleScore}
+                        hasPitch={!!track?.hasPitch}
+                        status={scoring.status}
+                        micError={scoring.micError}
+                        pitchError={scoring.pitchError}
+                      />
+                    )
+                  }
+                />
+              </div>
+              <div className="hidden lg:block">
+                <QrCard />
+              </div>
             </div>
           </footer>
         </>
       )}
+
+      <ScoreOverlay result={scoreResult} onDone={clearScoreResult} />
 
       {!connected && (
         <div className="glass absolute top-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full px-4 py-2 text-sm text-warn">

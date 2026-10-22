@@ -2,18 +2,28 @@
 
 A small FastAPI wrapper around python-audio-separator. The Node app posts jobs
 with absolute input/output paths on a shared volume; this service writes
-`instrumental.flac` (backing vocals kept) and `vocals.flac` (lead vocal) into
-the job's output directory. Jobs run one at a time on a single worker thread so
-the GPU is never shared, and the model is loaded once and reused.
+`instrumental.flac` (backing vocals kept), `vocals.flac` (lead vocal) and
+`pitch.json` (lead-vocal melody for scoring) into the job's output directory.
+
+- Separation runs one job at a time on a worker thread, so the GPU is never
+  shared, and the model is loaded once and reused.
+- Pitch extraction runs in a child process: it is CPU-bound pure Python/numba
+  work that would otherwise hold the GIL and freeze the HTTP API. It also lets
+  the next song start separating while the previous song's pitch is computed.
+- A job reports `stems_ready` as soon as the stems are written, so the song is
+  playable before its pitch track exists.
 """
 
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import os
 import queue
 import shutil
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -21,9 +31,6 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
-
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 
 log = logging.getLogger("separator")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -33,6 +40,73 @@ CPU_DEFAULT_MODEL = "UVR_MDXNET_KARA_2.onnx"
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 # Only paths under this root are accepted (empty = no restriction, for local dev).
 ALLOWED_ROOT = os.environ.get("ALLOWED_ROOT", "")
+
+PITCH_SR = 8000
+PITCH_HOP = 160  # 20 ms at 8 kHz
+
+
+# ---------------------------------------------------------------------------
+# Pitch extraction (also runnable as `python app.py --pitch <vocals> <dest>`)
+# ---------------------------------------------------------------------------
+
+
+def extract_pitch(vocals: Path, dest: Path) -> None:
+    """Write the lead vocal's melody as MIDI floats (null = unvoiced) for scoring."""
+    import librosa
+    import numpy as np
+
+    y, sr = librosa.load(str(vocals), sr=PITCH_SR, mono=True)
+    f0, voiced, _ = librosa.pyin(
+        y,
+        fmin=65.0,
+        fmax=1050.0,
+        sr=sr,
+        frame_length=512,
+        hop_length=PITCH_HOP,
+        resolution=0.2,  # 20-cent bins: plenty for scoring, ~4x cheaper Viterbi than the default
+    )
+    rms = librosa.feature.rms(y=y, frame_length=512, hop_length=PITCH_HOP)[0]
+    n = min(len(f0), len(rms))
+    f0, voiced, rms = f0[:n], voiced[:n], rms[:n]
+    # Drop quiet frames: separation leaves faint bleed that pyin happily tracks.
+    loud = rms > max(1e-4, float(np.max(rms)) * 0.03)
+    ok = voiced & loud & np.isfinite(f0)
+    midi = np.full(n, np.nan)
+    midi[ok] = librosa.hz_to_midi(f0[ok])
+
+    # Median-smooth inside voiced runs and remove blips shorter than 80 ms.
+    out: list = [None] * n
+    i = 0
+    while i < n:
+        if not ok[i]:
+            i += 1
+            continue
+        j = i
+        while j < n and ok[j]:
+            j += 1
+        if j - i >= 4:
+            run = midi[i:j]
+            for k in range(i, j):
+                lo, hi = max(i, k - 2), min(j, k + 3)
+                out[k] = round(float(np.median(run[lo - i : hi - i])), 2)
+        i = j
+
+    tmp = dest.with_suffix(".part")
+    tmp.write_text(json.dumps({"hop": PITCH_HOP / PITCH_SR, "midi": out}, separators=(",", ":")))
+    os.replace(tmp, dest)
+
+
+if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--pitch":
+    extract_pitch(Path(sys.argv[2]), Path(sys.argv[3]))
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+
+from fastapi import FastAPI, HTTPException  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 
 
 def detect_device() -> tuple[str, bool]:
@@ -62,7 +136,9 @@ class Job:
     output_dir: str
     duration_ms: int
     model: str
-    status: str = "queued"
+    mode: str = "separate"
+    status: str = "queued"  # queued | running | done | error
+    stems_ready: bool = False
     progress: float = 0.0
     error: Optional[str] = None
     outputs: dict = field(default_factory=dict)
@@ -72,12 +148,13 @@ class Job:
 
     def view(self) -> dict:
         progress = self.progress
-        if self.status == "running" and self.started_at and self.duration_ms > 0:
+        if self.status == "running" and not self.stems_ready and self.started_at and self.duration_ms > 0:
             expected = max(5.0, self.duration_ms / 1000 * speed_factor)
             progress = min(0.95, (time.time() - self.started_at) / expected)
         return {
             "id": self.id,
             "status": self.status,
+            "stems_ready": self.stems_ready,
             "progress": round(progress, 3),
             "outputs": self.outputs,
             "error": self.error,
@@ -90,6 +167,8 @@ class JobIn(BaseModel):
     output_dir: str
     duration_ms: int = 0
     model: Optional[str] = None
+    # "separate": stems + pitch; "pitch": only extract pitch from an existing vocals stem (input).
+    mode: str = "separate"
 
 
 jobs: dict[str, Job] = {}
@@ -139,6 +218,43 @@ def classify(name: str) -> Optional[str]:
     return None
 
 
+def finish(job: Job, error: Optional[str] = None) -> None:
+    job.finished_at = time.time()
+    if error:
+        job.status, job.error = "error", error
+    else:
+        job.status, job.progress = "done", 1.0
+
+
+def start_pitch(job: Job, vocals: Path, out_dir: Path) -> None:
+    """Extract pitch in a child process; the job finishes when it exits."""
+    dest = out_dir / "pitch.json"
+
+    def wait() -> None:
+        t0 = time.time()
+        try:
+            proc = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "--pitch", str(vocals), str(dest)],
+                capture_output=True,
+                text=True,
+                timeout=900,
+            )
+            if proc.returncode == 0 and dest.exists():
+                job.outputs["pitch"] = str(dest)
+                log.info("song %s pitch extracted in %.1fs", job.song_id, time.time() - t0)
+            else:
+                log.warning("pitch extraction failed for song %s: %s", job.song_id, proc.stderr[-500:])
+        except Exception:
+            log.exception("pitch extraction crashed for song %s", job.song_id)
+        # A missing pitch track only disables scoring; the stems are still good.
+        if job.mode == "pitch" and "pitch" not in job.outputs:
+            finish(job, "pitch extraction failed")
+        else:
+            finish(job)
+
+    threading.Thread(target=wait, daemon=True, name=f"pitch-{job.song_id}").start()
+
+
 def run_job(job: Job) -> None:
     global speed_factor
     job.status = "running"
@@ -146,9 +262,14 @@ def run_job(job: Job) -> None:
     try:
         out_dir = check_path(job.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
+        if job.mode == "pitch":
+            start_pitch(job, check_path(job.input), out_dir)
+            return
+
         sep = get_separator(job.model)
         for f in _work_dir.iterdir():
             f.unlink(missing_ok=True)
+        t0 = time.time()
         produced = sep.separate(str(check_path(job.input)))
         found: dict[str, Path] = {}
         for item in produced:
@@ -166,18 +287,17 @@ def run_job(job: Job) -> None:
             shutil.move(str(src), tmp)
             os.replace(tmp, dest)
             job.outputs[stem] = str(dest)
-        job.status = "done"
-        job.progress = 1.0
-        elapsed = time.time() - job.started_at
+
+        elapsed = time.time() - t0
         if job.duration_ms > 0:
             speed_factor = 0.7 * speed_factor + 0.3 * (elapsed / (job.duration_ms / 1000))
         log.info("song %s separated in %.1fs", job.song_id, elapsed)
+        job.stems_ready = True
+        job.progress = 1.0
+        start_pitch(job, out_dir / "vocals.flac", out_dir)
     except Exception as err:  # report any failure back to the app
         log.exception("job %s failed", job.id)
-        job.status = "error"
-        job.error = str(err)
-    finally:
-        job.finished_at = time.time()
+        finish(job, str(err))
 
 
 def worker() -> None:
@@ -192,9 +312,12 @@ def worker() -> None:
             jobs.pop(jid, None)
 
 
-threading.Thread(target=worker, daemon=True, name="separator-worker").start()
-
 app = FastAPI(title="Netease-KTV separator")
+
+
+@app.on_event("startup")
+def _start_worker() -> None:
+    threading.Thread(target=worker, daemon=True, name="separator-worker").start()
 
 
 @app.get("/health")
@@ -220,6 +343,7 @@ def create_job(body: JobIn) -> dict:
         output_dir=body.output_dir,
         duration_ms=body.duration_ms,
         model=body.model or DEFAULT_MODEL,
+        mode="pitch" if body.mode == "pitch" else "separate",
     )
     jobs[job.id] = job
     pending.put(job.id)

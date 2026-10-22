@@ -10,6 +10,8 @@ export interface SeparatorHealth {
 export interface SeparatorJob {
   id: string
   status: 'queued' | 'running' | 'done' | 'error'
+  /** Stems are written; the job may still be extracting pitch. */
+  stems_ready?: boolean
   progress: number
   outputs?: { instrumental?: string; vocals?: string }
   error?: string
@@ -43,6 +45,8 @@ export function submitJob(input: {
   outputDir: string
   durationMs: number
   model?: string
+  /** 'pitch' only extracts the reference melody from an existing vocals stem. */
+  mode?: 'separate' | 'pitch'
 }): Promise<{ id: string }> {
   return request('POST', '/jobs', {
     song_id: input.songId,
@@ -50,9 +54,37 @@ export function submitJob(input: {
     output_dir: input.outputDir,
     duration_ms: input.durationMs,
     model: input.model || undefined,
+    mode: input.mode ?? 'separate',
   })
 }
 
 export function getJob(id: string): Promise<SeparatorJob> {
   return request('GET', `/jobs/${encodeURIComponent(id)}`)
+}
+
+/**
+ * Poll a job once a second until `done(job)` is true or the job errors.
+ * Transient request failures are tolerated for up to `maxFailures` seconds in a row.
+ */
+export async function pollJob(
+  id: string,
+  done: (job: SeparatorJob) => boolean,
+  onTick?: (job: SeparatorJob) => void,
+  maxFailures = 90,
+): Promise<SeparatorJob> {
+  let failures = 0
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1000))
+    let job: SeparatorJob
+    try {
+      job = await getJob(id)
+      failures = 0
+    } catch (err) {
+      if (++failures > maxFailures) throw err
+      continue
+    }
+    if (job.status === 'error') throw new Error(job.error || '分离失败')
+    if (done(job)) return job
+    onTick?.(job)
+  }
 }

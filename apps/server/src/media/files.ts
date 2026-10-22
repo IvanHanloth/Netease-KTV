@@ -22,6 +22,14 @@ export function findOriginal(songId: number): string | null {
   return file ? path.join(dir, file) : null
 }
 
+export function pitchPath(songId: number): string {
+  return path.join(paths.media(songId), 'pitch.json')
+}
+
+export function hasPitch(songId: number): boolean {
+  return fs.existsSync(pitchPath(songId))
+}
+
 export function hasStems(songId: number): boolean {
   return fs.existsSync(stemPath(songId, 'instrumental')) && fs.existsSync(stemPath(songId, 'vocals'))
 }
