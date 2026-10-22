@@ -1,0 +1,17 @@
+# NVIDIA GPU override for the separator.
+# Windows: Docker Desktop (WSL2 backend) + a recent NVIDIA driver.
+# Linux:   nvidia-container-toolkit.
+# Usage:   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+services:
+  separator:
+    build:
+      args:
+        SEPARATOR_TAG: gpu
+    image: netease-ktv/separator:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

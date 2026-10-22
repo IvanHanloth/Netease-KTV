@@ -1,0 +1,21 @@
+{
+  "name": "netease-ktv",
+  "private": true,
+  "version": "0.1.0",
+  "description": "基于网易云音乐与 AI 人声分离的本地 KTV",
+  "type": "module",
+  "workspaces": [
+    "apps/*"
+  ],
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "npm run dev --workspaces --if-present",
+    "dev:server": "npm run dev -w @ktv/server",
+    "dev:web": "npm run dev -w @ktv/web",
+    "build": "npm run build -w @ktv/web && npm run build -w @ktv/server",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "start": "npm run start -w @ktv/server"
+  }
+}

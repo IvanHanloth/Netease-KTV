@@ -1,0 +1,42 @@
+# Netease-KTV
+#   CPU only:      docker compose up -d
+#   NVIDIA GPU:    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# Then open http://<this machine's LAN IP>:8686 (copy .env.example to .env to customize).
+name: netease-ktv
+
+services:
+  app:
+    build: .
+    image: netease-ktv/app:latest
+    restart: unless-stopped
+    ports:
+      - "${KTV_PORT:-8686}:8686"
+    environment:
+      SEPARATOR_URL: http://separator:9000
+      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      AUDIO_LEVEL: ${AUDIO_LEVEL:-exhigh}
+      ENABLE_UNBLOCK: ${ENABLE_UNBLOCK:-false}
+      UNBLOCK_SOURCES: ${UNBLOCK_SOURCES:-unm}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ktv-data:/data
+    depends_on:
+      - separator
+
+  separator:
+    build:
+      context: ./separator
+      args:
+        SEPARATOR_TAG: cpu
+    image: netease-ktv/separator:cpu
+    restart: unless-stopped
+    environment:
+      SEPARATOR_MODEL: ${SEPARATOR_MODEL:-}
+    volumes:
+      - ktv-data:/data
+      - ktv-models:/models
+
+volumes:
+  ktv-data:
+  ktv-models:
