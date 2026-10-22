@@ -37,6 +37,8 @@ interface Store {
   connected: boolean
   /** True once the first full state has arrived. */
   ready: boolean
+  /** TV pages only: whether this page is the one TV allowed to play audio (null = not told yet). */
+  tvActive: boolean | null
   apply: (msg: ServerMessage) => void
   setConnected: (v: boolean) => void
 }
@@ -45,6 +47,7 @@ export const useApp = create<Store>((set) => ({
   state: emptyState,
   connected: false,
   ready: false,
+  tvActive: null,
   setConnected: (connected) => set({ connected }),
   apply: (msg) =>
     set((s) => {
@@ -62,6 +65,8 @@ export const useApp = create<Store>((set) => ({
           return { state: { ...st, separator: msg.separator } }
         case 'tv':
           return { state: { ...st, tvOnline: msg.online } }
+        case 'tvRole':
+          return { tvActive: msg.active }
         default:
           return {}
       }

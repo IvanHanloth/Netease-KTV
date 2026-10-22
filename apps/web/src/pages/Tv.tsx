@@ -11,7 +11,7 @@ import { currentLineIndex, hasLyrics, lineWords, wordFills } from '../lib/lyrics
 import { AudioEngine } from '../player/engine'
 import { useScoring } from '../player/useScoring'
 import type { MicError } from '../player/mic'
-import { connect, onCommand, sendCommand, sendMessage, useApp } from '../store/app'
+import { connect, livePosition, onCommand, sendCommand, sendMessage, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
 import { Cover, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
 import { QrCode } from '../components/QrCode'
@@ -74,10 +74,25 @@ function useMv(song: Song) {
 }
 
 /** Stage mode: the MV as a dimmed, free-looping backdrop. */
-function MvBackdrop({ song }: { song: Song }) {
+function MvBackdrop({ song, engine }: { song: Song; engine: AudioEngine }) {
   const { data } = useMv(song)
   const [failed, setFailed] = useState(false)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
   useEffect(() => setFailed(false), [data?.url])
+  // The backdrop loops on its own, but must pause / resume together with the song.
+  useEffect(() => {
+    if (!data?.url || failed) return
+    const tick = () => {
+      const v = videoRef.current
+      if (!v) return
+      const playing = engine.playing && engine.hasTrack
+      if (playing && v.paused) v.play().catch(() => {})
+      else if (!playing && !v.paused) v.pause()
+    }
+    tick()
+    const t = window.setInterval(tick, 250)
+    return () => window.clearInterval(t)
+  }, [data?.url, failed, engine])
   if (!data?.url || failed) return null
   return (
     <motion.div
@@ -88,11 +103,11 @@ function MvBackdrop({ song }: { song: Song }) {
       className="absolute inset-0"
     >
       <video
+        ref={videoRef}
         key={data.url}
         src={tokenized(data.url)}
         muted
         loop
-        autoPlay
         playsInline
         onError={() => setFailed(true)}
         className="h-full w-full object-cover opacity-55"
@@ -902,6 +917,9 @@ export default function Tv() {
   const tracks = useApp((s) => s.state.tracks)
   const queue = useApp((s) => s.state.queue)
   const connected = useApp((s) => s.connected)
+  const tvActive = useApp((s) => s.tvActive)
+  // Only the one active TV plays audio; any other open TV page stays silent.
+  const audible = unlocked && tvActive === true
   const { data: settings } = useSettings()
   const [scoreOn, setScoreOn] = useState(readScorePref)
   const [scoreResult, setScoreResult] = useState<ScoreResult | null>(null)
@@ -924,9 +942,24 @@ export default function Tv() {
   }, [])
 
   const report = useCallback(() => {
-    if (!engine.hasTrack) return
+    if (!engine.hasTrack || useApp.getState().tvActive !== true) return
     sendMessage({ type: 'report', position: engine.position(), playing: engine.playing })
   }, [engine])
+
+  // Keep audio on this TV across a brief reconnect: if it was the active TV, claim it back.
+  const wasActive = useRef(false)
+  const connectedAt = useRef(0)
+  useEffect(() => {
+    if (!connected) return
+    connectedAt.current = Date.now()
+    if (unlocked && wasActive.current) sendMessage({ type: 'claim' })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connected])
+  useEffect(() => {
+    if (tvActive === true) wasActive.current = true
+    // Another TV took over (not just the role reset right after our reconnect).
+    else if (tvActive === false && Date.now() - connectedAt.current > 3000) wasActive.current = false
+  }, [tvActive])
 
   const cur = player.current
   const track = cur ? tracks[cur.song.id] : undefined
@@ -939,7 +972,12 @@ export default function Tv() {
 
   // load audio when the song / epoch / key / stems availability changes
   useEffect(() => {
-    if (!unlocked) return
+    if (!audible) {
+      // Not (or no longer) the active TV: make sure this page is silent.
+      if (engine.hasTrack) engine.unload(0.15)
+      setLoadState('idle')
+      return
+    }
     if (!loadKey || !cur) {
       if (engine.hasTrack) engine.unload(0.15)
       setLoadState('idle')
@@ -963,8 +1001,13 @@ export default function Tv() {
       .then((ok) => {
         if (!ok) return
         setLoadState('ready')
-        const resumeAt = sameSong ? engine.lastPosition : 0
-        const resume = sameSong ? engine.lastPlaying : true
+        // Same song (key change): continue where the old buffers were. Otherwise follow the
+        // server: a new song starts at 0, but a reloaded / taken-over TV resumes the current
+        // position and keeps a paused song paused.
+        const p = useApp.getState().state.player
+        const fromServer = p.current?.uid === cur.uid && p.epoch === player.epoch
+        const resumeAt = sameSong ? engine.lastPosition : fromServer ? livePosition(p) : 0
+        const resume = sameSong ? engine.lastPlaying : fromServer ? p.playing : true
         if (resume) engine.play(resumeAt)
         else engine.seek(resumeAt)
         report()
@@ -976,7 +1019,7 @@ export default function Tv() {
       })
     return () => ac.abort()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loadKey, unlocked])
+  }, [loadKey, audible])
 
   // gains: 原唱 with stems = lead vocal at the same level as the backing track
   useEffect(() => {
@@ -989,12 +1032,12 @@ export default function Tv() {
   const nextItem = queue[0]
   const nextTrack = nextItem ? tracks[nextItem.song.id] : undefined
   useEffect(() => {
-    if (!unlocked || loadState !== 'ready' || !nextItem || nextTrack?.status !== 'ready') return
+    if (!audible || loadState !== 'ready' || !nextItem || nextTrack?.status !== 'ready') return
     const id = nextItem.song.id
     const urls = nextTrack.hasStems ? [mediaUrl(id, 'instrumental'), mediaUrl(id, 'vocals')] : [mediaUrl(id, 'original')]
     const t = window.setTimeout(() => engine.prefetch(urls), 1500)
     return () => window.clearTimeout(t)
-  }, [engine, unlocked, loadState, nextItem, nextTrack?.status, nextTrack?.hasStems])
+  }, [engine, audible, loadState, nextItem, nextTrack?.status, nextTrack?.hasStems])
 
   const { msg: osd, show: showOsd } = useOsd(player)
 
@@ -1113,7 +1156,7 @@ export default function Tv() {
   })
   const scoring = useScoring({
     engine,
-    active: unlocked && scoreOn && scoringAllowed && playingAudio,
+    active: audible && scoreOn && scoringAllowed && playingAudio,
     songId: cur?.song.id ?? null,
     songKey,
     hasPitch: !!track?.hasPitch,
@@ -1143,10 +1186,17 @@ export default function Tv() {
     try {
       await engine.unlock()
       setUnlocked(true)
+      wasActive.current = true
+      // Starting this TV makes it the one that plays audio; any other TV goes silent.
+      sendMessage({ type: 'claim' })
       document.documentElement.requestFullscreen?.().catch(() => {})
     } catch {
       setUnlocked(false)
     }
+  }
+  const takeOver = () => {
+    wasActive.current = true
+    sendMessage({ type: 'claim' })
   }
 
   const duration = useMemo(() => (playingAudio ? engine.duration : (cur?.song.duration ?? 0) / 1000), [playingAudio, engine, cur])
@@ -1162,7 +1212,7 @@ export default function Tv() {
       ) : (
         <>
           <Ambient song={cur?.song ?? null} />
-          {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} />}
+          {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} engine={engine} />}
           <Vignette />
         </>
       )}
@@ -1266,6 +1316,34 @@ export default function Tv() {
               <span className="text-[clamp(28px,2.6vw,48px)] font-black">点击开始 KTV</span>
               <span className="text-base text-muted">浏览器需要一次点击才能播放声音 · 将自动进入全屏</span>
             </button>
+          </motion.div>
+        )}
+        {unlocked && tvActive === false && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="absolute inset-0 z-40 flex items-center justify-center bg-ink-2/85 backdrop-blur-md"
+          >
+            <div className="flex flex-col items-center gap-6 p-10 text-center">
+              <span className="flex h-24 w-24 items-center justify-center rounded-full bg-white/8 text-fg-2">
+                <Icon name="volume" size={40} />
+              </span>
+              <span className="text-[clamp(26px,2.4vw,44px)] font-black">另一个主屏正在播放</span>
+              <span className="max-w-[560px] text-base leading-7 text-muted">
+                同一时间只有一个主屏发声，避免两个声音叠在一起。这个页面已静音。
+              </span>
+              <button
+                type="button"
+                onClick={takeOver}
+                autoFocus
+                className="mt-2 flex h-14 items-center gap-2 rounded-2xl bg-accent px-7 text-lg font-bold text-accent-ink shadow-[0_14px_40px_rgba(255,77,126,0.45)] transition-transform hover:scale-105"
+              >
+                <Icon name="play" size={22} />
+                在这里播放
+              </button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

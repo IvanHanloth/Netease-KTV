@@ -192,6 +192,8 @@ export type ClientMessage =
   /** Sent only by the TV, ~1/s and on every state change. */
   | { type: 'report'; position: number; playing: boolean }
   | { type: 'ended' }
+  /** Sent by a TV when the user starts it ("点击开始" / "在这里播放"): it becomes the one TV that plays audio. */
+  | { type: 'claim' }
 
 /** Messages sent by the server over the WebSocket. */
 export type ServerMessage =
@@ -201,6 +203,11 @@ export type ServerMessage =
   | { type: 'track'; track: TrackState }
   | { type: 'separator'; separator: SeparatorStatus }
   | { type: 'tv'; online: boolean }
+  /**
+   * Sent to TV connections only. Exactly one TV is active (plays audio, reports position,
+   * receives commands); the others must stay silent until they send `claim`.
+   */
+  | { type: 'tvRole'; active: boolean }
   /** Forwarded to the TV: play / pause / seek / restart. */
   | { type: 'command'; command: PlayerCommand }
 
