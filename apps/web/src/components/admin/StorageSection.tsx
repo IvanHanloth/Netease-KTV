@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
 import type { AdminSettings, CacheGroup, CacheInfo, CachedSongInfo, CacheKind, DataCacheKind, MediaCacheKind, MvResolution } from '@shared/types'
+import { MV_RESOLUTIONS } from '@shared/constants'
 import { api, type CacheCleared } from '../../lib/api'
 import { fmtAgo, fmtBytes } from '../../lib/format'
 import { runAction, useCacheInfo, useCachedSongs, useIsPending } from '../../lib/hooks'
@@ -15,7 +16,7 @@ import { Card, Row, Segmented, type SetFn } from './parts'
  */
 
 const GB = 1024 ** 3
-const RESOLUTIONS: MvResolution[] = [480, 720, 1080]
+const RESOLUTIONS: readonly MvResolution[] = MV_RESOLUTIONS
 
 const MEDIA: Record<MediaCacheKind, { label: string; note: string; color: string; costly?: string }> = {
   stems: {

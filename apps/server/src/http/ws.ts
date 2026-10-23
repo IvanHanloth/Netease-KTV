@@ -3,7 +3,7 @@ import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
 import { serverNow } from '../clock.js'
 import type { ClientMessage, ClientRole, PlaybackSync, ServerMessage } from '../shared/types.js'
-import { commandSchema } from './routes.js'
+import { clientMessageSchema, commandSchema } from './schemas.js'
 
 /**
  * TV registry. Several TV pages may be open (another browser, a forgotten tab), but only
@@ -95,7 +95,9 @@ export async function registerWs(app: FastifyInstance) {
       alive = true
       let msg: ClientMessage
       try {
-        msg = JSON.parse(String(raw)) as ClientMessage
+        const parsed = clientMessageSchema.safeParse(JSON.parse(String(raw)))
+        if (!parsed.success) return
+        msg = parsed.data
       } catch {
         return
       }
@@ -119,7 +121,7 @@ export async function registerWs(app: FastifyInstance) {
           if (role === 'tv') {
             claim(tv)
             // The new sound screen's own 舞台 / MV mode is what remotes now show and control.
-            if (msg.displayMode === 'stage' || msg.displayMode === 'mv') player.command({ action: 'set', displayMode: msg.displayMode })
+            if (msg.displayMode) player.command({ action: 'set', displayMode: msg.displayMode })
           }
           break
         case 'command': {
@@ -128,16 +130,7 @@ export async function registerWs(app: FastifyInstance) {
           break
         }
         case 'report':
-          if (isActiveTv() && typeof msg.position === 'number') {
-            player.report(
-              msg.position,
-              !!msg.playing,
-              typeof msg.at === 'number' ? msg.at : undefined,
-              typeof msg.uid === 'string' ? msg.uid : undefined,
-              typeof msg.epoch === 'number' ? msg.epoch : undefined,
-              msg.starting === true,
-            )
-          }
+          if (isActiveTv()) player.report(msg.position, msg.playing, msg.at, msg.uid, msg.epoch, msg.starting === true)
           break
         case 'ended':
           if (isActiveTv()) player.ended()

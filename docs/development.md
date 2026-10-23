@@ -7,10 +7,15 @@
                                                      ├─ 网易云：@neteasecloudmusicapienhanced/api（库模式）
                                                      ├─ 点歌队列、播放状态、SQLite
                                                      └─ HTTP 任务 ──▶ separator（Python · audio-separator）
-                                                                        两者共享 /data 卷
+                                                                        文件通过 HTTP 上传 / 下载
 ```
 
-- `apps/server`：后端，接口文档见 [api.md](api.md)。
+- `apps/server`：后端，接口文档见 [api.md](api.md)。主要模块：
+  - `core/`：`player.ts` 队列与播放状态，`pipeline.ts` 下载与分离调度，`mvPreload.ts` MV 预载与对齐，`storage.ts` 缓存策略（哪些保留、先清什么），`hub.ts` 状态与广播。
+  - `media/`：`files.ts` 是媒体文件布局的唯一出处，`cache.ts` 扫描与删除，`busy.ts` 正在写入的文件，`ffmpeg.ts` 变调和分析音频。
+  - `http/`：`routes.ts` 前台接口，`adminRoutes.ts` 后台接口（`/api/admin` 前缀），`ws.ts` WebSocket，`schemas.ts` 请求和消息校验，`errors.ts` 错误到状态码的映射。
+  - `shared/`：`types.ts` 前后端共用的类型，`constants.ts` 共用的取值（升降调范围、设置上下限、匿名昵称、点歌规则）。
+- 前端大页面按区域拆分：`pages/tv/*`（背景、MV、歌词、控制栏、各状态画面）、`pages/desk/*`（导航、搜索、内容页）、`components/admin/*`（后台各分区）。
 - `apps/web`：前端，五个页面：`/` 点歌台、`/tv` 大屏（多块大屏中有一块是主屏）、`/m` 手机遥控、`/ear` 移动耳返、`/admin` 后台管理（运维面板，暂不鉴权）。
 - `separator`：分离服务，可以部署多台。输出三个文件：
   - `instrumental.flac`：伴奏 + 和声

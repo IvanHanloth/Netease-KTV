@@ -8,7 +8,8 @@ import { pruneApiCache } from './apiCache.js'
 import { config } from './config.js'
 import { hub } from './core/hub.js'
 import { startPipeline } from './core/pipeline.js'
-import { loadPlayer } from './core/player.js'
+import { loadPlayer, priorityIds } from './core/player.js'
+import { getSettings } from './settings.js'
 import { clearMediaKind, syncAllTracksFromDisk } from './core/storage.js'
 import { getDb } from './db.js'
 import { seedHistory } from './history.js'
@@ -83,8 +84,10 @@ async function main() {
   startPipeline()
   // Leftovers of writes that were cut off by the last shutdown.
   setTimeout(() => void clearMediaKind('temp').catch(() => {}), 30_000).unref()
-  pruneApiCache()
-  setInterval(pruneApiCache, 6 * 60 * 60 * 1000).unref()
+  // The current song and 待机音乐 aren't in any table that pruning looks at.
+  const prune = () => pruneApiCache([...priorityIds(), ...getSettings().idleSongs])
+  prune()
+  setInterval(prune, 6 * 60 * 60 * 1000).unref()
   await app.listen({ port: config.port, host: config.host })
   app.log.info(`Netease KTV ready on http://localhost:${config.port}  (data: ${config.dataDir})`)
 }

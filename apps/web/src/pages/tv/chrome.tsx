@@ -10,6 +10,7 @@ import { Cover, ProgressBar, Range, Spinner, StatusPill } from '../../components
 import { QrCode } from '../../components/QrCode'
 import { DisplayModeToggle, TrackModeToggle } from '../../components/PlayerModes'
 import { useLyrics } from './lyrics'
+import { KEY_MAX, KEY_MIN, singerName } from '@shared/constants'
 
 /** 大屏 header, control bar and the small controls in it (mixer, key, 主屏 role, scoring, QR card). */
 
@@ -28,7 +29,7 @@ export function Chip({ children, icon, accent }: { children: ReactNode; icon?: I
 }
 
 /** The requester's nickname, unless it is the anonymous default. */
-export const singerOf = (by?: string) => (by && by !== '匿名' ? by : undefined)
+export const singerOf = singerName
 
 export const fadeCls = (shown: boolean) =>
   clsx(
@@ -276,7 +277,7 @@ export function KeyControl({ value, pending }: { value: number; pending?: boolea
       <button
         type="button"
         aria-label="降调"
-        disabled={value <= -6}
+        disabled={value <= KEY_MIN}
         onClick={() => setPlayer({ key: value - 1 })}
         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/8 hover:bg-white/14 disabled:opacity-40"
       >
@@ -297,7 +298,7 @@ export function KeyControl({ value, pending }: { value: number; pending?: boolea
       <button
         type="button"
         aria-label="升调"
-        disabled={value >= 6}
+        disabled={value >= KEY_MAX}
         onClick={() => setPlayer({ key: value + 1 })}
         className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/8 hover:bg-white/14 disabled:opacity-40"
       >

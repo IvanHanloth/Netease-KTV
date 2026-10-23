@@ -1,5 +1,5 @@
 import { cached, DAY, HOUR, MIN } from '../apiCache.js'
-import { getDb } from '../db.js'
+import { getDb, stmt } from '../db.js'
 import { singleFlight, TtlCache } from '../util.js'
 import type { Account, AlbumDetail, ArtistDetail, Lyrics, PlaylistSummary, QrStatus, Song } from '../shared/types.js'
 import { call, clearCookie, getCookie, NcmError, setCookie } from './client.js'
@@ -101,15 +101,15 @@ export async function logout(): Promise<void> {
 // ---------- songs ----------
 
 function cacheSongs(songs: Song[]): void {
-  const stmt = getDb().prepare(
+  const upsert = stmt(
     'INSERT INTO songs (id, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at',
   )
   const now = Date.now()
-  for (const s of songs) stmt.run(s.id, JSON.stringify(s), now)
+  for (const s of songs) upsert.run(s.id, JSON.stringify(s), now)
 }
 
 export function getCachedSong(id: number): Song | undefined {
-  const row = getDb().prepare('SELECT data FROM songs WHERE id = ?').get(id) as { data: string } | undefined
+  const row = stmt('SELECT data FROM songs WHERE id = ?').get(id) as { data: string } | undefined
   return row ? (JSON.parse(row.data) as Song) : undefined
 }
 
@@ -139,9 +139,7 @@ export async function getSongs(ids: number[], fresh = false): Promise<Song[]> {
   const stale: number[] = []
   const rows = (
     ids.length
-      ? getDb()
-          .prepare('SELECT id, data, updated_at FROM songs WHERE id IN (SELECT value FROM json_each(?))')
-          .all(JSON.stringify(ids))
+      ? stmt('SELECT id, data, updated_at FROM songs WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(ids))
       : []
   ) as { id: number; data: string; updated_at: number }[]
   const byId = new Map(rows.map((r) => [Number(r.id), r]))

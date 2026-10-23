@@ -319,7 +319,18 @@ async function evict(): Promise<void> {
     log(`${leftovers.length} leftover files`, freed)
   }
 
-  // 2. Key-shift renders, oldest first.
+  // 2a. MVs cached at another resolution than the one now chosen (re-downloaded at the new one).
+  if (used > limit) {
+    const res = getSettings().mvResolution
+    for (const m of scan.mvs.filter((x) => x.res !== res && !keep.mvs.has(x.mvId)).sort((a, b) => a.file.mtime - b.file.mtime)) {
+      if (used <= limit) break
+      used -= await removeFiles([m.file])
+      removedMvs.add(m.mvId)
+      log(`mv ${m.mvId} at ${m.res}P`, m.file.bytes)
+    }
+  }
+
+  // 2b. Key-shift renders, oldest first.
   if (used > limit) {
     const renders = scan.songs
       .filter((s) => !keep.songs.has(s.songId))
@@ -351,7 +362,7 @@ async function evict(): Promise<void> {
           },
         })),
       ...scan.mvs
-        .filter((m) => !keep.mvs.has(m.mvId))
+        .filter((m) => !keep.mvs.has(m.mvId) && !removedMvs.has(m.mvId))
         .map((m) => ({
           lastUsed: m.file.mtime,
           bytes: m.file.bytes,

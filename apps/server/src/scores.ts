@@ -73,15 +73,29 @@ export async function leaderboard(): Promise<SongRanking[]> {
       // song details unavailable (offline / not logged in): skip those rows
     }
   }
-  return stats
-    .filter((s) => songs.has(s.song_id))
-    .map((s) => ({
-      song: songs.get(s.song_id)!,
-      best: round1(s.best),
-      average: round1(s.average),
-      plays: s.plays,
-      entries: entriesFor(s.song_id, 10),
-    }))
+  const shown = stats.filter((s) => songs.has(s.song_id))
+  // The top 10 of every song in one query instead of one per song.
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM (
+         SELECT s.*, ROW_NUMBER() OVER (PARTITION BY song_id ORDER BY score DESC, at ASC) AS rn
+         FROM scores s WHERE song_id IN (SELECT value FROM json_each(?))
+       ) WHERE rn <= 10 ORDER BY song_id, rn`,
+    )
+    .all(JSON.stringify(shown.map((s) => s.song_id))) as unknown as Row[]
+  const entries = new Map<number, ScoreEntry[]>()
+  for (const r of rows) {
+    const list = entries.get(r.song_id) ?? []
+    list.push(toEntry(r))
+    entries.set(r.song_id, list)
+  }
+  return shown.map((s) => ({
+    song: songs.get(s.song_id)!,
+    best: round1(s.best),
+    average: round1(s.average),
+    plays: s.plays,
+    entries: entries.get(s.song_id) ?? [],
+  }))
 }
 
 export async function songRanking(songId: number): Promise<SongRanking | null> {

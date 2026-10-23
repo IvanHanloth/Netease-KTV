@@ -4,11 +4,9 @@ A small FastAPI wrapper around python-audio-separator. It writes
 `instrumental.flac` (backing vocals kept), `vocals.flac` (lead vocal) and
 `pitch.json` (lead-vocal melody for scoring) for each job.
 
-Two ways to hand over files:
-- Upload (works from any machine on the LAN): `POST /files` the input, create the
-  job with `input_file`, fetch results from `GET /jobs/{id}/files/{name}`, then
-  `DELETE /jobs/{id}`. Several of these servers can work for one KTV host.
-- Shared volume (legacy): absolute `input` / `output_dir` paths under ALLOWED_ROOT.
+Files travel over HTTP, so this works from any machine on the LAN: `POST /files` the
+input, create the job with `input_file`, fetch results from `GET /jobs/{id}/files/{name}`,
+then `DELETE /jobs/{id}`. Several of these servers can work for one KTV host.
 
 Set SEPARATOR_TOKEN to require `Authorization: Bearer <token>` on the job API.
 
@@ -37,7 +35,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 log = logging.getLogger("separator")
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -45,9 +43,7 @@ logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime
 GPU_DEFAULT_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 CPU_DEFAULT_MODEL = "UVR_MDXNET_KARA_2.onnx"
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
-# Only paths under this root are accepted (empty = no restriction, for local dev).
-ALLOWED_ROOT = os.environ.get("ALLOWED_ROOT", "")
-# Uploaded inputs and the outputs of upload-mode jobs live here until the host deletes the job.
+# Uploaded inputs and job outputs live here until the host deletes the job.
 JOBS_DIR = Path(os.environ.get("JOBS_DIR") or (Path(tempfile.gettempdir()) / "ktv-jobs"))
 TOKEN = os.environ.get("SEPARATOR_TOKEN", "")
 
@@ -217,8 +213,6 @@ class Job:
     model: str
     mode: str = "separate"
     input2: Optional[str] = None
-    # Upload mode: inputs were uploaded; outputs stay in JOBS_DIR until the host deletes the job.
-    uploaded: bool = False
     # The host already asked to delete it while it was still running.
     drop_when_done: bool = False
     status: str = "queued"  # queued | running | done | error
@@ -245,19 +239,20 @@ class Job:
         }
 
 
+JobMode = Literal["separate", "pitch", "align"]
+
+
 class JobIn(BaseModel):
     song_id: int
-    # Shared-volume mode: absolute paths. Upload mode: leave empty and pass input_file (from POST /files).
-    input: str = ""
-    output_dir: str = ""
-    input_file: Optional[str] = None
+    # Ids returned by POST /files.
+    input_file: str
     input2_file: Optional[str] = None
     duration_ms: int = 0
     model: Optional[str] = None
-    # "separate": stems + pitch; "pitch": only extract pitch from an existing vocals stem (input);
-    # "align": MV offset from two WAVs (input = song, input2 = MV audio).
-    mode: str = "separate"
-    input2: Optional[str] = None
+    # "separate": stems + pitch; "pitch": only extract pitch from an uploaded vocals stem;
+    # "align": MV offset from two WAVs (input_file = song, input2_file = MV audio).
+    # Anything else is rejected (422) instead of silently separating.
+    mode: JobMode = "separate"
 
 
 jobs: dict[str, Job] = {}
@@ -272,16 +267,8 @@ _loaded_model: Optional[str] = None
 _work_dir = Path(tempfile.mkdtemp(prefix="ktv-sep-"))
 
 
-def check_path(p: str) -> Path:
-    path = Path(p).resolve()
-    if ALLOWED_ROOT and not str(path).startswith(str(Path(ALLOWED_ROOT).resolve())):
-        raise HTTPException(400, f"path outside ALLOWED_ROOT: {p}")
-    return path
-
-
-def job_path(job: Job, p: str) -> Path:
-    """Upload-mode jobs live in JOBS_DIR (ours); shared-volume paths must stay under ALLOWED_ROOT."""
-    return Path(p).resolve() if job.uploaded else check_path(p)
+def job_path(p: str) -> Path:
+    return Path(p).resolve()
 
 
 def get_separator(model: str):
@@ -328,9 +315,7 @@ def finish(job: Job, error: Optional[str] = None) -> None:
 
 
 def drop_job(job: Job) -> None:
-    """Upload mode: remove the job's inputs and outputs."""
-    if not job.uploaded:
-        return
+    """Remove the job's inputs and outputs."""
     shutil.rmtree(job.output_dir, ignore_errors=True)
     for p in (job.input, job.input2):
         if p:
@@ -411,20 +396,20 @@ def run_job(job: Job) -> None:
     job.status = "running"
     job.started_at = time.time()
     try:
-        out_dir = job_path(job, job.output_dir)
+        out_dir = job_path(job.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         if job.mode == "pitch":
-            start_pitch(job, job_path(job, job.input), out_dir)
+            start_pitch(job, job_path(job.input), out_dir)
             return
         if job.mode == "align":
-            start_align(job, job_path(job, job.input), job_path(job, job.input2 or ""), out_dir)
+            start_align(job, job_path(job.input), job_path(job.input2 or ""), out_dir)
             return
 
         sep = get_separator(job.model)
         for f in _work_dir.iterdir():
             f.unlink(missing_ok=True)
         t0 = time.time()
-        produced = sep.separate(str(job_path(job, job.input)))
+        produced = sep.separate(str(job_path(job.input)))
         found: dict[str, Path] = {}
         for item in produced:
             p = Path(item)
@@ -592,20 +577,10 @@ async def upload_file(request: Request, ext: str = "bin") -> dict:
 @app.post("/jobs", dependencies=[Depends(auth)])
 def create_job(body: JobIn) -> dict:
     job_id = uuid.uuid4().hex
-    mode = body.mode if body.mode in ("pitch", "align") else "separate"
-    if body.input_file:
-        inp = str(uploaded_path(body.input_file))
-        inp2 = str(uploaded_path(body.input2_file)) if mode == "align" else None
-        out = str(JOBS_DIR / "jobs" / job_id)
-        uploaded = True
-    else:
-        check_path(body.input)
-        check_path(body.output_dir)
-        if not Path(body.input).exists():
-            raise HTTPException(404, "input file not found")
-        if mode == "align" and (not body.input2 or not check_path(body.input2).exists()):
-            raise HTTPException(404, "input2 file not found")
-        inp, inp2, out, uploaded = body.input, body.input2, body.output_dir, False
+    mode = body.mode
+    inp = str(uploaded_path(body.input_file))
+    inp2 = str(uploaded_path(body.input2_file)) if mode == "align" else None
+    out = str(JOBS_DIR / "jobs" / job_id)
     job = Job(
         id=job_id,
         song_id=body.song_id,
@@ -615,7 +590,6 @@ def create_job(body: JobIn) -> dict:
         model=body.model or DEFAULT_MODEL,
         mode=mode,
         input2=inp2,
-        uploaded=uploaded,
     )
     jobs[job.id] = job
     pending.put(job.id)

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { getDb } from './db.js'
+import { getDb, stmt } from './db.js'
 import type { CacheGroup, DataCacheKind } from './shared/types.js'
 
 /**
@@ -43,7 +43,7 @@ interface Hit {
 }
 
 function read(key: string): Hit | null {
-  const row = getDb().prepare('SELECT value, expires_at FROM api_cache WHERE key = ?').get(key) as
+  const row = stmt('SELECT value, expires_at FROM api_cache WHERE key = ?').get(key) as
     | { value: string; expires_at: number }
     | undefined
   if (!row) return null
@@ -55,11 +55,9 @@ function read(key: string): Hit | null {
 }
 
 function write(key: string, value: unknown, ttl: number): void {
-  getDb()
-    .prepare(
-      'INSERT INTO api_cache (key, value, expires_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at',
-    )
-    .run(key, JSON.stringify(value), Date.now() + ttl)
+  stmt(
+    'INSERT INTO api_cache (key, value, expires_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, expires_at = excluded.expires_at',
+  ).run(key, JSON.stringify(value), Date.now() + ttl)
 }
 
 /** Load and store `key` (one request at a time per key); on failure fall back to `stale`. */
@@ -146,7 +144,20 @@ export function clearApiCache(): number {
   return Number(a.changes)
 }
 
-/** Drop entries too old to be served even as stale data, so the table doesn't grow forever. */
-export function pruneApiCache(): void {
-  getDb().prepare('DELETE FROM api_cache WHERE expires_at < ?').run(Date.now() - 7 * DAY)
+/**
+ * Drop entries too old to be served even as stale data, and song details (written by every
+ * list and search) that nothing refers to and nobody looked at for a month, so neither table
+ * grows forever. Songs in the queue, 点歌记录, scores, processed tracks or 待机音乐 are kept.
+ */
+export function pruneApiCache(keepSongIds: number[] = []): void {
+  const db = getDb()
+  db.prepare('DELETE FROM api_cache WHERE expires_at < ?').run(Date.now() - 7 * DAY)
+  db.prepare(
+    `DELETE FROM songs WHERE updated_at < ?
+       AND id NOT IN (SELECT song_id FROM queue)
+       AND id NOT IN (SELECT song_id FROM history)
+       AND id NOT IN (SELECT song_id FROM scores)
+       AND id NOT IN (SELECT song_id FROM tracks)
+       AND id NOT IN (SELECT value FROM json_each(?))`,
+  ).run(Date.now() - 30 * DAY, JSON.stringify(keepSongIds))
 }

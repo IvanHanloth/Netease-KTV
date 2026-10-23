@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { getDb, kv } from '../db.js'
 import { serverNow } from '../clock.js'
 import type { AppState, PlaybackSync, PlayerCommand, PlayerState, QueueItem, QueuePosition, Song } from '../shared/types.js'
+import { ANONYMOUS, KEY_MAX, KEY_MIN } from '../shared/constants.js'
 import { hub } from './hub.js'
 
 const PLAYER_KEY = 'player'
@@ -89,10 +90,6 @@ function emitPlayer(): void {
   hub.broadcast({ type: 'player', player })
 }
 
-export function getQueue(): QueueItem[] {
-  return queue
-}
-
 export function getPlayer(): PlayerState {
   return player
 }
@@ -117,7 +114,6 @@ export function priorityIds(): number[] {
 
 // ---------- queue operations ----------
 
-export const ANONYMOUS = '匿名'
 
 export function addToQueue(song: Song, position: QueuePosition = 'end', addedBy?: string): QueueItem {
   const item: QueueItem = { uid: randomUUID(), song, addedAt: Date.now(), addedBy: addedBy?.trim() || ANONYMOUS }
@@ -216,7 +212,7 @@ export function command(cmd: PlayerCommand): void {
     case 'set': {
       if (typeof cmd.musicVolume === 'number') player.musicVolume = clamp(cmd.musicVolume, 0, 1)
       if (typeof cmd.vocalVolume === 'number') player.vocalVolume = clamp(cmd.vocalVolume, 0, 1)
-      if (typeof cmd.key === 'number') player.key = clamp(Math.round(cmd.key), -6, 6)
+      if (typeof cmd.key === 'number') player.key = clamp(Math.round(cmd.key), KEY_MIN, KEY_MAX)
       if (cmd.trackMode === 'karaoke' || cmd.trackMode === 'original') player.trackMode = cmd.trackMode
       if (cmd.displayMode === 'stage' || cmd.displayMode === 'mv') player.displayMode = cmd.displayMode
       if (typeof cmd.leadVocal === 'boolean') player.leadVocal = cmd.leadVocal
@@ -246,7 +242,14 @@ export function command(cmd: PlayerCommand): void {
   }
 }
 
-let lastReportBroadcast = 0
+/**
+ * What clients last heard about the playhead. They extrapolate from it, so a report only needs
+ * broadcasting when they would now be wrong: play / pause, another song or 重唱, or a jump
+ * (seek, a stall) of more than 0.3 s. A refresh every 10 s bounds any slow drift.
+ */
+let lastBroadcast: { uid: string; epoch: number; position: number; at: number; playing: boolean; sent: number } | null = null
+const DRIFT_S = 0.3
+const REFRESH_MS = 10_000
 
 /** Position report from the TV. */
 let lastSync: PlaybackSync | null = null
@@ -268,8 +271,17 @@ export function report(position: number, playing: boolean, at?: number, uid?: st
   hub.emit('sync', lastSync)
   const now = Date.now()
   lastReportAt = now
-  if (changed || now - lastReportBroadcast > 900) {
-    lastReportBroadcast = now
+  const lb = lastBroadcast
+  const expected = lb ? lb.position + (lb.playing ? (t - lb.at) / 1000 : 0) : NaN
+  const stale =
+    !lb ||
+    lb.playing !== playing ||
+    lb.uid !== cur.uid ||
+    lb.epoch !== player.epoch ||
+    !(Math.abs(position - expected) <= DRIFT_S) ||
+    now - lb.sent > REFRESH_MS
+  if (stale) {
+    lastBroadcast = { uid: cur.uid, epoch: player.epoch, position, at: t, playing, sent: now }
     hub.broadcast({ type: 'player', player })
   }
   // Persist on play/pause changes and every few seconds, so a restart resumes near where it was.

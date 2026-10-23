@@ -155,6 +155,12 @@ export function renderPitchLater(input: string, output: string, semitones: numbe
   void renderPitch(input, output, semitones, { background: true, wanted }).catch(() => {})
 }
 
+/** 11.025 kHz mono WAV of the first 15 minutes: plenty for MV ↔ song onset / chroma matching. */
+export async function extractAnalysisWav(input: string, output: string): Promise<void> {
+  const { code, stderr } = await run(config.ffmpeg, ['-y', '-v', 'error', '-i', input, '-vn', '-ac', '1', '-ar', '11025', '-t', '900', output])
+  if (code !== 0) throw new Error(`ffmpeg: ${stderr.slice(-300)}`)
+}
+
 export async function ffmpegAvailable(): Promise<boolean> {
   try {
     const { code } = await run(config.ffmpeg, ['-version'])

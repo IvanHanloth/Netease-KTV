@@ -1,45 +1,45 @@
-import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
-import { config, paths } from '../config.js'
+import { paths } from '../config.js'
 import { mvUrl } from '../ncm/service.js'
 import { alignOnCluster } from '../separator.js'
 import { getSettings } from '../settings.js'
-import type { MvResolution, Song } from '../shared/types.js'
+import { MV_RESOLUTIONS } from '../shared/constants.js'
+import type { Song } from '../shared/types.js'
+import { singleFlight } from '../util.js'
 import { busyMv, busySong } from './busy.js'
 import { invalidateScan } from './cache.js'
+import { extractAnalysisWav } from './ffmpeg.js'
 import { alignPath, download, ensureMediaDir, findOriginal, mvPath } from './files.js'
 
 /** Best cached file: the configured resolution first, then any other one. */
 export function cachedMv(mvId: number): string | null {
   const preferred = getSettings().mvResolution
-  for (const res of [preferred, 720, 1080, 480] as MvResolution[]) {
+  for (const res of [preferred, ...MV_RESOLUTIONS.filter((r) => r !== preferred).reverse()]) {
     const p = mvPath(mvId, res)
     if (fs.existsSync(p)) return p
   }
   return null
 }
 
-const inflight = new Map<number, Promise<string>>()
+const downloads = singleFlight<number, string>()
 
 /** Download an MV into the cache (once; concurrent callers share the download). */
 export function ensureMv(mvId: number): Promise<string> {
   const existing = cachedMv(mvId)
   if (existing) return Promise.resolve(existing)
-  const running = inflight.get(mvId)
-  if (running) return running
-  const job = busyMv(
-    mvId,
-    (async () => {
-      const res = getSettings().mvResolution
-      const dest = mvPath(mvId, res)
-      await download(await mvUrl(mvId, res), dest)
-      invalidateScan()
-      return dest
-    })(),
-  ).finally(() => inflight.delete(mvId))
-  inflight.set(mvId, job)
-  return job
+  return downloads(mvId, () =>
+    busyMv(
+      mvId,
+      (async () => {
+        const res = getSettings().mvResolution
+        const dest = mvPath(mvId, res)
+        await download(await mvUrl(mvId, res), dest)
+        invalidateScan()
+        return dest
+      })(),
+    ),
+  )
 }
 
 // ---------- alignment (videoTime = audioTime + offset) ----------
@@ -57,21 +57,6 @@ export function readAlignment(songId: number, mvId: number): MvAlignment | null 
   } catch {
     return null
   }
-}
-
-function toWav(input: string, output: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    // 11.025 kHz mono, first 15 minutes: plenty for onset / chroma matching.
-    const child = spawn(
-      config.ffmpeg,
-      ['-y', '-v', 'error', '-i', input, '-vn', '-ac', '1', '-ar', '11025', '-t', '900', output],
-      { windowsHide: true },
-    )
-    let err = ''
-    child.stderr.on('data', (d) => (err += d))
-    child.on('error', reject)
-    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg: ${err.slice(-300)}`))))
-  })
 }
 
 const aligning = new Set<number>()
@@ -95,10 +80,10 @@ export async function ensureAlignment(song: Song): Promise<MvAlignment | null> {
   const songWav = path.join(tmp, `${song.id}_song.wav`)
   const mvWav = path.join(tmp, `${song.mvId}_mv.wav`)
   try {
-    await toWav(original, songWav)
-    await toWav(mv, mvWav)
+    await extractAnalysisWav(original, songWav)
+    await extractAnalysisWav(mv, mvWav)
+    const raw = await alignOnCluster(song.id, songWav, mvWav, song.duration)
     ensureMediaDir(song.id)
-    const raw = await alignOnCluster(song.id, songWav, mvWav, song.duration, alignPath(song.id))
     const result: MvAlignment = { mvId: song.mvId, offset: raw.offset, confidence: raw.confidence }
     fs.writeFileSync(alignPath(song.id), JSON.stringify(result))
     console.log(`[mv] song ${song.id} aligned: offset ${result.offset.toFixed(2)}s, confidence ${result.confidence.toFixed(2)}`)

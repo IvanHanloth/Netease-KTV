@@ -1,10 +1,12 @@
 import { config } from './config.js'
 import { hub } from './core/hub.js'
 import { kv } from './db.js'
+import { SETTING_LIMITS, SOUND_LEVELS } from './shared/constants.js'
 import type { Settings, SoundLevel } from './shared/types.js'
 
 const KEY = 'settings'
-const LEVELS: SoundLevel[] = ['standard', 'higher', 'exhigh', 'lossless', 'hires']
+const LEVELS: readonly SoundLevel[] = SOUND_LEVELS
+const clampTo = (n: number, r: { min: number; max: number }) => Math.min(r.max, Math.max(r.min, n))
 
 /** Parsed settings, kept until the next update (read on hot paths: pipeline loops, every MV lookup). */
 let current: Settings | null = null
@@ -51,19 +53,19 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
     next.mvResolution = patch.mvResolution
   }
   if (typeof patch.cacheLimitGB === 'number' && Number.isFinite(patch.cacheLimitGB)) {
-    next.cacheLimitGB = Math.round(Math.min(500, Math.max(1, patch.cacheLimitGB)))
+    next.cacheLimitGB = Math.round(clampTo(patch.cacheLimitGB, SETTING_LIMITS.cacheLimitGB))
   }
   if (typeof patch.scoreTolerance === 'number' && Number.isFinite(patch.scoreTolerance)) {
-    next.scoreTolerance = Math.round(Math.min(3, Math.max(0.3, patch.scoreTolerance)) * 10) / 10
+    next.scoreTolerance = Math.round(clampTo(patch.scoreTolerance, SETTING_LIMITS.scoreTolerance) * 10) / 10
   }
   if (typeof patch.multiScreenSync === 'boolean') next.multiScreenSync = patch.multiScreenSync
   if (typeof patch.multiScreenAudio === 'boolean') next.multiScreenAudio = patch.multiScreenAudio
   if (typeof patch.idleEnabled === 'boolean') next.idleEnabled = patch.idleEnabled
   if (typeof patch.idleVolume === 'number' && Number.isFinite(patch.idleVolume)) {
-    next.idleVolume = Math.round(Math.min(1, Math.max(0, patch.idleVolume)) * 100) / 100
+    next.idleVolume = Math.round(clampTo(patch.idleVolume, SETTING_LIMITS.idleVolume) * 100) / 100
   }
   if (Array.isArray(patch.idleSongs)) {
-    next.idleSongs = [...new Set(patch.idleSongs.filter((id) => Number.isInteger(id) && id > 0))].slice(0, 100)
+    next.idleSongs = [...new Set(patch.idleSongs.filter((id) => Number.isInteger(id) && id > 0))].slice(0, SETTING_LIMITS.idleSongs.max)
   }
   kv.set(KEY, next)
   current = null

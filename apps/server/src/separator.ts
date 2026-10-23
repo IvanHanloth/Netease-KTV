@@ -17,8 +17,9 @@ import path from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import type { ReadableStream as WebReadableStream } from 'node:stream/web'
-import { config } from './config.js'
+import { config, paths } from './config.js'
 import { kv } from './db.js'
+import { pitchPath, stemPath } from './media/files.js'
 import type { SeparatorNodeView } from './shared/types.js'
 
 export interface SeparatorNodeConfig {
@@ -458,7 +459,7 @@ const modelFor = (node: SeparatorNodeConfig, globalModel: string) => node.model 
 
 /**
  * Separate a song on `node`: upload the original, wait for the stems, download them into
- * `outDir`. Resolves once the song is playable; `pitch` resolves later, when the reference
+ * the song's media dir (media/files.ts). Resolves once the song is playable; `pitch` resolves later, when the reference
  * melody has been downloaded too (or failed).
  */
 export async function separateOnNode(
@@ -467,7 +468,6 @@ export async function separateOnNode(
     songId: number
     songName?: string
     input: string
-    outDir: string
     durationMs: number
     model: string
     onProgress: (p: number) => void
@@ -487,8 +487,8 @@ export async function separateOnNode(
           o.onProgress(j.progress ?? 0)
         })
         // The song only counts as separated once both files are in place.
-        await downloadOutput(node, id, 'vocals', path.join(o.outDir, 'vocals.flac'))
-        await downloadOutput(node, id, 'instrumental', path.join(o.outDir, 'instrumental.flac'))
+        await downloadOutput(node, id, 'vocals', stemPath(o.songId, 'vocals'))
+        await downloadOutput(node, id, 'instrumental', stemPath(o.songId, 'instrumental'))
       } catch (err) {
         dropJob(node, id)
         throw err
@@ -499,7 +499,7 @@ export async function separateOnNode(
     try {
       const job = await pollJob(node, jobId, (j) => j.status === 'done', undefined, 300)
       if (!job.outputs?.pitch) return false
-      await downloadOutput(node, jobId, 'pitch', path.join(o.outDir, 'pitch.json'))
+      await downloadOutput(node, jobId, 'pitch', pitchPath(o.songId))
       return true
     } catch (err) {
       console.warn(`[separator] pitch for ${o.songId} on ${node.name} failed:`, (err as Error).message)
@@ -527,22 +527,23 @@ export async function pitchOnCluster(songId: number, vocals: string, dest: strin
   })
 }
 
-/** MV ↔ song offset (11 kHz mono WAVs). Returns the raw result written by the node. */
+/** MV ↔ song offset (11 kHz mono WAVs). The caller stores the result (media/mv.ts). */
 export async function alignOnCluster(
   songId: number,
   songWav: string,
   mvWav: string,
   durationMs: number,
-  dest: string,
 ): Promise<{ offset: number; confidence: number }> {
   const node = chooseAuxNode()
   if (!node) throw new Error('没有在线的分离服务器')
   return runJob(node, { songId, mode: 'align', durationMs }, {}, [songWav, mvWav], async (id) => {
+    const tmp = path.join(paths.tmp(), `align-${songId}-${id}.json`)
     try {
       await pollJob(node, id, (j) => j.status === 'done', undefined, 120)
-      await downloadOutput(node, id, 'align', dest)
-      return JSON.parse(fs.readFileSync(dest, 'utf8')) as { offset: number; confidence: number }
+      await downloadOutput(node, id, 'align', tmp)
+      return JSON.parse(fs.readFileSync(tmp, 'utf8')) as { offset: number; confidence: number }
     } finally {
+      fs.rmSync(tmp, { force: true })
       dropJob(node, id)
     }
   })

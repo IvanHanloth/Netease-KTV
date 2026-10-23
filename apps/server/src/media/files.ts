@@ -126,31 +126,49 @@ export function clearMedia(songId: number): void {
 export const BROWSER_UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36'
 
+/** No answer from the source this long: give up (the download queue must not hang on one song). */
+const CONNECT_TIMEOUT_MS = 15_000
+/** No data for this long in the middle of a download: give up. */
+const STALL_TIMEOUT_MS = 20_000
+
 /** Download a URL to `dest` (through `dest.part`, renamed when complete), reporting progress 0..1. */
 export async function download(url: string, dest: string, onProgress?: (p: number) => void): Promise<void> {
-  const res = await fetch(url, { headers: { 'User-Agent': BROWSER_UA } })
-  if (!res.ok || !res.body) throw new Error(`下载失败：HTTP ${res.status}`)
-  const total = Number(res.headers.get('content-length') ?? 0)
-  let received = 0
-  let lastReport = 0
+  const ac = new AbortController()
+  let timer: NodeJS.Timeout | undefined
+  const arm = (ms: number, message: string) => {
+    clearTimeout(timer)
+    timer = setTimeout(() => ac.abort(new Error(message)), ms)
+  }
   const tmp = `${dest}.part`
-  fs.mkdirSync(path.dirname(dest), { recursive: true })
-  const body = Readable.fromWeb(res.body as any)
-  body.on('data', (chunk: Buffer) => {
-    received += chunk.length
-    const now = Date.now()
-    if (total && onProgress && now - lastReport > 300) {
-      lastReport = now
-      onProgress(Math.min(1, received / total))
-    }
-  })
   try {
-    await pipeline(body, fs.createWriteStream(tmp))
+    arm(CONNECT_TIMEOUT_MS, '下载超时：音源没有响应')
+    const res = await fetch(url, { headers: { 'User-Agent': BROWSER_UA }, signal: ac.signal })
+    if (!res.ok || !res.body) throw new Error(`下载失败：HTTP ${res.status}`)
+    const total = Number(res.headers.get('content-length') ?? 0)
+    let received = 0
+    let lastReport = 0
+    fs.mkdirSync(path.dirname(dest), { recursive: true })
+    const stalled = '下载中断：20 秒没有收到数据'
+    arm(STALL_TIMEOUT_MS, stalled)
+    const body = Readable.fromWeb(res.body as any)
+    body.on('data', (chunk: Buffer) => {
+      arm(STALL_TIMEOUT_MS, stalled)
+      received += chunk.length
+      const now = Date.now()
+      if (total && onProgress && now - lastReport > 300) {
+        lastReport = now
+        onProgress(Math.min(1, received / total))
+      }
+    })
+    await pipeline(body, fs.createWriteStream(tmp), { signal: ac.signal })
     if (received < 64 * 1024) throw new Error('下载的文件过小，可能不完整')
     fs.renameSync(tmp, dest)
   } catch (err) {
     fs.rmSync(tmp, { force: true })
-    throw err
+    // An abort surfaces as AbortError; report why it was aborted.
+    throw ac.signal.aborted && ac.signal.reason instanceof Error ? ac.signal.reason : err
+  } finally {
+    clearTimeout(timer)
   }
   onProgress?.(1)
 }

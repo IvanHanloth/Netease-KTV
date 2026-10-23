@@ -20,7 +20,7 @@ function parseCreditLine(line: string): string | null {
 const LRC_TAG = /\[(\d{1,3}):(\d{1,2})(?:[.:](\d{1,3}))?\]/g
 
 /** Parse an LRC string into timed lines (a line may carry several time tags). */
-export function parseLrc(src: string | undefined, credits?: string[]): TimedText[] {
+function parseLrc(src: string | undefined, credits?: string[]): TimedText[] {
   if (!src) return []
   const out: TimedText[] = []
   for (const rawLine of src.split(/\r?\n/)) {
@@ -52,7 +52,7 @@ const YRC_LINE = /^\[(\d+),(\d+)\](.*)$/
 const YRC_WORD = /\((\d+),(\d+),\d+\)([^(]*)/g
 
 /** Parse NetEase yrc (word-by-word) lyrics. All times are milliseconds. */
-export function parseYrc(src: string | undefined, credits?: string[]): LyricLine[] {
+function parseYrc(src: string | undefined, credits?: string[]): LyricLine[] {
   if (!src) return []
   const lines: LyricLine[] = []
   for (const rawLine of src.split(/\r?\n/)) {
@@ -81,7 +81,7 @@ export function parseYrc(src: string | undefined, credits?: string[]): LyricLine
 const TOKEN = /[぀-ヿ㐀-鿿가-힯豈-﫿]|[^\s぀-ヿ㐀-鿿가-힯豈-﫿]+\s*|\s+/g
 
 /** Split a line into karaoke tokens: one CJK char, or one latin word with its trailing space. */
-export function tokenize(text: string): string[] {
+function tokenize(text: string): string[] {
   return text.match(TOKEN) ?? []
 }
 

@@ -3,6 +3,7 @@ import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-qu
 import clsx from 'clsx'
 import { Link } from 'react-router'
 import type { PlayerCommand, Song } from '@shared/types'
+import { KEY_MAX, KEY_MIN, singerName } from '@shared/constants'
 import { api } from '../lib/api'
 import { artistsText, fmtMs, fmtTime } from '../lib/format'
 import { errorText, toast, useDebounced, useHistory, useStatusOf } from '../lib/hooks'
@@ -91,7 +92,7 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
   const pos = Math.min(livePosition(player, now), dur > 0 ? dur : Infinity)
   const hasStems = !!track?.hasStems
   const [music, setMusic] = useLiveValue(Math.round(player.musicVolume * 100), (v) => ({ action: 'set', musicVolume: v / 100 }))
-  const setKey = (k: number) => command({ action: 'set', key: Math.max(-6, Math.min(6, k)) })
+  const setKey = (k: number) => command({ action: 'set', key: Math.max(KEY_MIN, Math.min(KEY_MAX, k)) })
   const volLabel = hasStems && player.trackMode === 'karaoke' ? '伴奏音量' : '音量'
 
   return (
@@ -192,7 +193,7 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
               type="button"
               aria-label="降调"
               onClick={() => setKey(player.key - 1)}
-              disabled={player.key <= -6}
+              disabled={player.key <= KEY_MIN}
               className="flex h-11 w-11 items-center justify-center rounded-[14px] bg-white/8 active:bg-white/14 disabled:opacity-40"
             >
               <Icon name="minus" size={18} strokeWidth={2.2} />
@@ -204,7 +205,7 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
               type="button"
               aria-label="升调"
               onClick={() => setKey(player.key + 1)}
-              disabled={player.key >= 6}
+              disabled={player.key >= KEY_MAX}
               className="flex h-11 w-11 items-center justify-center rounded-[14px] bg-white/8 active:bg-white/14 disabled:opacity-40"
             >
               <Icon name="plus" size={18} strokeWidth={2.2} />
@@ -248,7 +249,7 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
                   ) : (
                     <span className="truncate text-xs text-muted">
                       {artistsText(q.song)} · {st.label}
-                      {q.addedBy && q.addedBy !== '匿名' && <span className="text-[#FFC2D1]"> · {q.addedBy}</span>}
+                      {singerName(q.addedBy) && <span className="text-[#FFC2D1]"> · {q.addedBy}</span>}
                     </span>
                   )}
                 </div>

@@ -36,7 +36,15 @@ function unblockPackageDir(): string | null {
 }
 
 /** Source module names shipped with unblockmusic-utils (e.g. unm, gdmusic, ...). */
+let unblockSources: string[] | null = null
+
+/** Third-party source modules shipped with the unblock package (read once: they don't change). */
 export function listUnblockSources(): string[] {
+  unblockSources ??= readUnblockSources()
+  return unblockSources
+}
+
+function readUnblockSources(): string[] {
   const dir = unblockPackageDir()
   if (!dir) return []
   try {

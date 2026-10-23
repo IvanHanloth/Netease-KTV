@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { paths } from './config.js'
 
 let db: DatabaseSync | null = null
@@ -60,9 +60,21 @@ export function getDb(): DatabaseSync {
   return db
 }
 
+const statements = new Map<string, StatementSync>()
+
+/** A prepared statement, prepared once (for fixed SQL on hot paths; never pass built SQL). */
+export function stmt(sql: string): StatementSync {
+  let s = statements.get(sql)
+  if (!s) {
+    s = getDb().prepare(sql)
+    statements.set(sql, s)
+  }
+  return s
+}
+
 export const kv = {
   get<T>(key: string): T | undefined {
-    const row = getDb().prepare('SELECT value FROM kv WHERE key = ?').get(key) as
+    const row = stmt('SELECT value FROM kv WHERE key = ?').get(key) as
       | { value: string }
       | undefined
     if (!row) return undefined
@@ -73,11 +85,9 @@ export const kv = {
     }
   },
   set(key: string, value: unknown): void {
-    getDb()
-      .prepare('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
-      .run(key, JSON.stringify(value))
+    stmt('INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, JSON.stringify(value))
   },
   delete(key: string): void {
-    getDb().prepare('DELETE FROM kv WHERE key = ?').run(key)
+    stmt('DELETE FROM kv WHERE key = ?').run(key)
   },
 }
