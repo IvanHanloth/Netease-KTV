@@ -67,7 +67,7 @@ export interface QueueItem {
 }
 
 /**
- * karaoke = instrumental + vocals at `vocalVolume`; original = vocals at full level.
+ * karaoke = instrumental only (plus the lead vocal inside 领唱 segments); original = instrumental + lead vocal.
  * With stems both modes use the same two buffers, so switching is a gain change (seamless).
  */
 export type TrackMode = 'karaoke' | 'original'
@@ -87,7 +87,7 @@ export interface PlayerState {
   positionAt: number
   /** 0..1 */
   musicVolume: number
-  /** Lead-vocal ("导唱") volume, 0..1. */
+  /** Unused since the 导唱 slider was removed; kept so old clients and saved state still parse. */
   vocalVolume: number
   /** Pitch shift in semitones, -6..6. */
   key: number
@@ -177,6 +177,33 @@ export interface Settings {
 
 export type MvResolution = 480 | 720 | 1080
 
+/** Settings the 点歌台 may change (PUT /api/settings). Everything else is ops-only (PUT /api/admin/settings). */
+export type DeskSettings = Pick<Settings, 'scoringEnabled' | 'scoreTolerance'>
+export type AdminSettings = Omit<Settings, keyof DeskSettings>
+
+/** GET /api/admin/status */
+export interface AdminStatus {
+  version: string
+  node: string
+  uptimeSec: number
+  dataDir: string
+  separatorUrl: string
+  separator: {
+    online: boolean
+    ready: boolean
+    /** starting / preparing_model / ready / error */
+    stage?: string
+    error?: string
+    device?: string
+    model?: string
+    pending: number
+  }
+  /** Open browser connections by page. */
+  clients: { tv: number; desk: number; remote: number; admin: number; activeTv: boolean }
+  /** ACCESS_TOKEN is set. */
+  authEnabled: boolean
+}
+
 /** GET /api/songs/:id/mv */
 export interface MvInfo {
   mvId: number
@@ -201,6 +228,9 @@ export interface CacheInfo {
   mvBytes: number
   songs: number
   mvs: number
+  /** Cached NetEase data (toplists, playlists, daily picks, search, lyrics…). */
+  dataEntries: number
+  dataBytes: number
 }
 
 /** One finished, scored performance. */
@@ -266,7 +296,7 @@ export type PlayerCommand =
       leadVocal?: boolean
     }
 
-export type ClientRole = 'tv' | 'desk' | 'remote'
+export type ClientRole = 'tv' | 'desk' | 'remote' | 'admin'
 
 /** Messages sent by browsers over the WebSocket. */
 export type ClientMessage =
@@ -293,6 +323,8 @@ export type ServerMessage =
   | { type: 'tvRole'; active: boolean }
   /** The leaderboard changed (new score or reset): refetch GET /api/scores. */
   | { type: 'scores' }
+  /** 点歌记录 changed. */
+  | { type: 'history' }
   /** Forwarded to the TV: play / pause / seek / restart. */
   | { type: 'command'; command: PlayerCommand }
 

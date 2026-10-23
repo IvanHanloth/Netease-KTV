@@ -16,6 +16,14 @@ interface TvConn {
 }
 
 const tvs: TvConn[] = []
+/** Open sockets by the role they said hello with (for the ops panel). */
+const roles = new Map<symbol, ClientRole>()
+
+export function clientCounts(): Record<ClientRole, number> & { activeTv: boolean } {
+  const out = { tv: 0, desk: 0, remote: 0, admin: 0 }
+  for (const r of roles.values()) out[r]++
+  return { ...out, activeTv: activeTv !== null }
+}
 let activeTv: number | null = null
 let nextId = 1
 
@@ -57,6 +65,7 @@ function claim(tv: TvConn): void {
 export async function registerWs(app: FastifyInstance) {
   app.get('/api/ws', { websocket: true }, (socket) => {
     let role: ClientRole | null = null
+    const key = Symbol('client')
 
     const send = (msg: ServerMessage) => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg))
@@ -84,6 +93,7 @@ export async function registerWs(app: FastifyInstance) {
           if (msg.role === 'tv') addTv(tv)
           else if (role === 'tv') removeTv(tv)
           role = msg.role
+          roles.set(key, role)
           if (role === 'tv') send({ type: 'tvRole', active: activeTv === tv.id })
           break
         case 'claim':
@@ -110,6 +120,7 @@ export async function registerWs(app: FastifyInstance) {
     socket.on('close', () => {
       clearInterval(ping)
       hub.off('message', onMessage)
+      roles.delete(key)
       if (role === 'tv') removeTv(tv)
     })
   })

@@ -58,6 +58,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/queue` | `{ songId, position?: 'end' \| 'next', addedBy? }` → `QueueItem`。`next` 为插播。`addedBy` 为空时记为“匿名”（点歌台固定为匿名，只有手机端可设昵称）。没有正在播放的歌时直接开始播放。会员歌返回 409 |
+| GET | `/history` | 点歌记录：`{ songs: Song[] }`，最近点过的 50 首（同一首只记一次，再点会回到最前），从新到旧。变化时 WebSocket 推送 `{ type: 'history' }` |
 | POST | `/queue/shuffle` | 随机打乱整个队列（当前歌不受影响） |
 | POST | `/queue/:uid/top` | 置顶（移到下一首） |
 | POST | `/queue/reorder` | `{ uids: string[] }`，按给定顺序重排（拖拽排序用） |
@@ -95,6 +96,16 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/settings` | `Settings` 加 `unblockSourceOptions: string[]` |
-| PUT | `/settings` | 部分更新 `Settings`（含 `mvPreload`、`mvResolution` 480/720/1080、`cacheLimitGB` 1–500） |
-| GET | `/cache` | `CacheInfo`：缓存占用 |
-| DELETE | `/cache` | 清空缓存（正在唱和已点的歌除外） |
+| PUT | `/settings` | 点歌台能改的设置（`DeskSettings`）：`scoringEnabled`、`scoreTolerance`。其他字段会被忽略 |
+
+## 后台管理
+
+`/admin` 页面使用的接口，全部在 `/api/admin/` 下。目前不单独鉴权（只受 `ACCESS_TOKEN` 限制）。
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/admin/status` | `AdminStatus`：版本、运行时长、分离服务状态（阶段、设备、模型、任务数、错误）、各页面在线数、是否启用令牌 |
+| PUT | `/admin/settings` | 部分更新运维设置（`AdminSettings`）：`audioLevel`、`separatorModel`、`publicUrl`、`mvPreload`、`mvResolution` 480/720/1080、`cacheLimitGB` 1–500、`unblockEnabled`、`unblockSources` |
+| GET | `/admin/cache` | `CacheInfo`：音频、MV 缓存占用，以及网易云数据缓存条数 |
+| DELETE | `/admin/cache` | 清空音频和 MV 缓存（正在唱和已点的歌除外） |
+| DELETE | `/admin/cache/data` | 清除网易云数据缓存（歌单、榜单、日推、搜索、歌词）。这些数据平时按各自的有效期缓存；网易云接口出错时先返回过期的旧数据 |

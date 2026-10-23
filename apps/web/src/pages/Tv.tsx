@@ -676,7 +676,7 @@ function Header({ player, track, auxShown }: { player: PlayerState; track?: Trac
             {cur.song.album.name && ` · ${cur.song.album.name}`}
           </div>
           <div className="mt-1.5 flex flex-wrap gap-2.5">
-            {karaoke ? <Chip icon="wave">伴唱 · 保留和声</Chip> : <Chip icon="note">原唱</Chip>}
+            {karaoke ? (player.leadVocal ? <Chip icon="note">领唱</Chip> : <Chip icon="wave">伴唱</Chip>) : <Chip icon="mic">原唱</Chip>}
             {lyrics?.kind === 'yrc' && <Chip icon="lyrics">逐字歌词</Chip>}
             {track?.source === 'unblock' && <Chip icon="globe">第三方音源</Chip>}
             {player.key !== 0 && <Chip>{player.key > 0 ? `升 ${player.key} 调` : `降 ${-player.key} 调`}</Chip>}
@@ -837,13 +837,6 @@ function MixerButton({
       <Icon name="volume" size={20} />
       <span className="hidden xl:inline">{karaoke ? '伴奏' : '音量'}</span>
       <span className="num text-[#E4E4EA]">{Math.round(player.musicVolume * 100)}%</span>
-      {karaoke && (
-        <>
-          <span className="h-5 w-px bg-white/12" aria-hidden="true" />
-          <Icon name="mic" size={18} />
-          <span className="num text-[#E4E4EA]">{Math.round(player.vocalVolume * 100)}%</span>
-        </>
-      )}
     </button>
   )
 }
@@ -866,8 +859,6 @@ function MixerPopover({ player, karaoke }: { player: PlayerState; karaoke: boole
       className="glass flex w-[340px] flex-col gap-4 rounded-[20px] p-5 shadow-[0_24px_60px_rgba(0,0,0,0.55)]"
     >
       {row('volume', karaoke ? '伴奏' : '音量', player.musicVolume, (v) => setPlayer({ musicVolume: v }))}
-      {karaoke && row('mic', '导唱', player.vocalVolume, (v) => setPlayer({ vocalVolume: v }))}
-      {karaoke && <span className="text-xs leading-5 text-muted">导唱是原唱人声的音量，0% 为纯伴奏。</span>}
     </div>
   )
 }
@@ -1139,7 +1130,6 @@ function useOsd(player: PlayerState) {
     else if (prev.displayMode !== player.displayMode) show(player.displayMode === 'mv' ? 'MV 模式' : '舞台模式', player.displayMode === 'mv' ? 'video' : 'lyrics')
     else if (prev.key !== player.key) show(player.key === 0 ? '原调' : player.key > 0 ? `升调 +${player.key}` : `降调 ${player.key}`)
     else if (prev.musicVolume !== player.musicVolume) show(`音量 ${pctText(player.musicVolume)}`, 'volume')
-    else if (prev.vocalVolume !== player.vocalVolume) show(`导唱 ${pctText(player.vocalVolume)}`, 'mic')
   }, [player, storeReady, show])
   return { msg, show }
 }
@@ -1156,7 +1146,7 @@ function IdleScreen() {
         </div>
         <h1 className="m-0 text-[clamp(40px,4.4vw,88px)] font-black tracking-[0.02em]">今晚，谁先开嗓？</h1>
         <p className="m-0 text-[clamp(16px,1.4vw,26px)] text-[#B4B4BE]">
-          {connected ? '用手机扫码点一首歌，伴奏会自动生成' : '正在连接 KTV 主机…'}
+          {connected ? '手机扫码，即刻开唱' : '正在连接 KTV 主机…'}
         </p>
       </div>
       <QrCard big />
@@ -1337,11 +1327,12 @@ export default function Tv() {
       .then((ok) => {
         if (!ok) return
         setLoadState('ready')
-        // Same song (key change): continue where the old buffers were. Otherwise follow the
-        // server: a new song starts at 0, but a reloaded / taken-over TV resumes the current
-        // position and keeps a paused song paused.
+        // Same song (key change): continue where the old buffers were. A song that has really
+        // been played already (the server holds a reported position — page reload, another TV
+        // taking over, server restart) resumes there and keeps its play/pause state. Anything
+        // else is a fresh song: it starts from 0 now that its accompaniment is ready.
         const p = useApp.getState().state.player
-        const fromServer = p.current?.uid === cur.uid && p.epoch === player.epoch
+        const fromServer = p.current?.uid === cur.uid && p.epoch === player.epoch && p.position > 0.5
         const resumeAt = sameSong ? engine.lastPosition : fromServer ? livePosition(p) : 0
         const resume = sameSong ? engine.lastPlaying : fromServer ? p.playing : true
         if (resume) engine.play(resumeAt)
@@ -1357,14 +1348,15 @@ export default function Tv() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadKey, audible])
 
-  // gains: 原唱 with stems = lead vocal at the same level as the backing track.
-  // 领唱 (karaoke only) raises the lead vocal to that same level inside its segments.
+  // gains: 伴唱 = no lead vocal at all; 原唱 = lead vocal at the backing-track level;
+  // 领唱 = silent lead vocal except inside its segments, where it plays at that same level.
   const leadOn = !!player.leadVocal && hasStems && player.trackMode === 'karaoke'
   useEffect(() => {
     const music = player.musicVolume
-    const vocal = hasStems ? (player.trackMode === 'original' ? music : player.vocalVolume) : 0
+    const vocal = hasStems && player.trackMode === 'original' ? music : 0
     engine.setVolumes(music, vocal, leadOn ? music : vocal)
-  }, [engine, player.musicVolume, player.vocalVolume, player.trackMode, hasStems, leadOn, loadState])
+  }, [engine, player.musicVolume, player.trackMode, hasStems, leadOn, loadState])
+  if (import.meta.env.DEV) (window as unknown as { __ktvEngine: AudioEngine }).__ktvEngine = engine
 
   // prefetch the next ready song so 切歌 starts without a download
   const nextItem = queue[0]
@@ -1711,7 +1703,6 @@ export default function Tv() {
                 <Icon name="play" size={48} />
               </span>
               <span className="text-[clamp(28px,2.6vw,48px)] font-black">点击开始 KTV</span>
-              <span className="text-base text-muted">浏览器需要一次点击才能播放声音 · 将自动进入全屏</span>
             </button>
           </motion.div>
         )}

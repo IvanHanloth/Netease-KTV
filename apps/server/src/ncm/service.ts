@@ -1,3 +1,4 @@
+import { cached, DAY, HOUR, MIN } from '../apiCache.js'
 import { getDb } from '../db.js'
 import type { Account, Lyrics, PlaylistSummary, QrStatus, Song } from '../shared/types.js'
 import { call, clearCookie, getCookie, NcmError, setCookie } from './client.js'
@@ -126,30 +127,43 @@ export async function getSong(id: number, fresh = false): Promise<Song> {
   return song
 }
 
+/** Cache-key scope: playability (VIP), daily picks and own playlists depend on the account. */
+async function who(): Promise<string> {
+  const account = await getAccount()
+  return account.loggedIn && account.userId ? `u${account.userId}` : 'anon'
+}
+
 export async function search(q: string, offset = 0, limit = 30): Promise<{ songs: Song[]; hasMore: boolean }> {
-  const res = await call('cloudsearch', { keywords: q, type: 1, limit, offset })
-  const result = res.body?.result ?? {}
-  const songs = mapSongs(result.songs, result.privileges)
-  cacheSongs(songs)
-  const total = Number(result.songCount ?? 0)
-  return { songs, hasMore: offset + songs.length < total }
+  const key = `search:${await who()}:${q.trim().toLowerCase()}:${offset}:${limit}`
+  return cached(key, 10 * MIN, async () => {
+    const res = await call('cloudsearch', { keywords: q, type: 1, limit, offset })
+    const result = res.body?.result ?? {}
+    const songs = mapSongs(result.songs, result.privileges)
+    cacheSongs(songs)
+    const total = Number(result.songCount ?? 0)
+    return { songs, hasMore: offset + songs.length < total }
+  })
 }
 
 export async function suggest(q: string): Promise<string[]> {
   try {
-    const res = await call('search_suggest', { keywords: q, type: 'mobile' })
-    const all = (res.body?.result?.allMatch ?? []) as { keyword?: string }[]
-    return all.map((x) => String(x.keyword ?? '')).filter(Boolean).slice(0, 8)
+    return await cached(`suggest:${q.trim().toLowerCase()}`, 30 * MIN, async () => {
+      const res = await call('search_suggest', { keywords: q, type: 'mobile' })
+      const all = (res.body?.result?.allMatch ?? []) as { keyword?: string }[]
+      return all.map((x) => String(x.keyword ?? '')).filter(Boolean).slice(0, 8)
+    })
   } catch {
     return []
   }
 }
 
 export async function playlistTracks(id: number, offset = 0, limit = 100): Promise<{ songs: Song[]; hasMore: boolean }> {
-  const res = await call('playlist_track_all', { id, limit, offset })
-  const songs = mapSongs(res.body?.songs, res.body?.privileges)
-  cacheSongs(songs)
-  return { songs, hasMore: songs.length >= limit }
+  return cached(`playlist:${await who()}:${id}:${offset}:${limit}`, 30 * MIN, async () => {
+    const res = await call('playlist_track_all', { id, limit, offset })
+    const songs = mapSongs(res.body?.songs, res.body?.privileges)
+    cacheSongs(songs)
+    return { songs, hasMore: songs.length >= limit }
+  })
 }
 
 /** Pull a playlist id out of a NetEase link, share text, or a bare id. */
@@ -183,23 +197,31 @@ export async function resolvePlaylist(text: string): Promise<PlaylistSummary> {
     }
   }
   if (!id) throw new NcmError('没有识别出歌单，请粘贴网易云歌单链接或歌单 ID', 400)
-  const res = await call('playlist_detail', { id })
-  const pl = res.body?.playlist
-  if (!pl) throw new NcmError('歌单不存在或无法访问', 404)
-  return mapPlaylist(pl)
+  const pid = id
+  const pl = await cached(`playlistDetail:${await who()}:${pid}`, DAY, async () => {
+    const res = await call('playlist_detail', { id: pid })
+    const raw = res.body?.playlist
+    if (!raw) throw new NcmError('歌单不存在或无法访问', 404)
+    return mapPlaylist(raw)
+  })
+  return (await withCovers([pl]))[0]!
 }
 
 export async function recommend(): Promise<{ songs: Song[]; daily: boolean }> {
   const account = await getAccount()
   if (account.loggedIn) {
     try {
-      const res = await call('recommend_songs')
-      const data = res.body?.data ?? {}
-      const songs = mapSongs(data.dailySongs, data.privileges)
-      if (songs.length) {
-        cacheSongs(songs)
-        return { songs, daily: true }
-      }
+      // Daily picks change once a day: key by date as well.
+      const day = new Date().toISOString().slice(0, 10)
+      const songs = await cached(`daily:${await who()}:${day}`, 2 * HOUR, async () => {
+        const res = await call('recommend_songs')
+        const data = res.body?.data ?? {}
+        const list = mapSongs(data.dailySongs, data.privileges)
+        if (!list.length) throw new NcmError('日推为空')
+        cacheSongs(list)
+        return list
+      })
+      return { songs, daily: true }
     } catch {
       // fall through to the hot list
     }
@@ -208,21 +230,48 @@ export async function recommend(): Promise<{ songs: Song[]; daily: boolean }> {
   return { songs, daily: false }
 }
 
+/**
+ * Playlists without a cover get the album cover of their first song, the way the NetEase app
+ * shows them.
+ */
+async function withCovers(list: PlaylistSummary[]): Promise<PlaylistSummary[]> {
+  return Promise.all(
+    list.map(async (p) => {
+      if (p.coverUrl || !p.trackCount) return p
+      try {
+        const { songs } = await playlistTracks(p.id, 0, 1)
+        return { ...p, coverUrl: songs[0]?.album.picUrl ?? '' }
+      } catch {
+        return p
+      }
+    }),
+  )
+}
+
 export async function userPlaylists(): Promise<PlaylistSummary[]> {
   const account = await getAccount()
   if (!account.loggedIn || !account.userId) return []
-  const res = await call('user_playlist', { uid: account.userId, limit: 100 })
-  return ((res.body?.playlist ?? []) as any[]).map(mapPlaylist)
+  const list = await cached(`userPlaylists:${await who()}`, 10 * MIN, async () => {
+    const res = await call('user_playlist', { uid: account.userId, limit: 100 })
+    return ((res.body?.playlist ?? []) as any[]).map(mapPlaylist)
+  })
+  return withCovers(list)
 }
 
 export async function toplists(): Promise<PlaylistSummary[]> {
-  const res = await call('toplist')
-  return ((res.body?.list ?? []) as any[]).map(mapPlaylist)
+  const list = await cached('toplists', 6 * HOUR, async () => {
+    const res = await call('toplist')
+    return ((res.body?.list ?? []) as any[]).map(mapPlaylist)
+  })
+  return withCovers(list)
 }
 
 export async function lyrics(id: number): Promise<Lyrics> {
-  const res = await call('lyric_new', { id })
-  return buildLyrics(res.body)
+  // Lyrics practically never change.
+  return cached(`lyrics:${id}`, 7 * DAY, async () => {
+    const res = await call('lyric_new', { id })
+    return buildLyrics(res.body)
+  })
 }
 
 export async function mvUrl(mvId: number, resolution = 1080): Promise<string> {

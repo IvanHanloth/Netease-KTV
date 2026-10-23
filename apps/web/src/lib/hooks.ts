@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { create } from 'zustand'
 import type { QueuePosition, Song } from '@shared/types'
 import { useApp } from '../store/app'
@@ -136,6 +136,12 @@ export async function shuffleQueue(count: number) {
 
 export function useSettings() {
   return useQuery({ queryKey: ['settings'], queryFn: api.settings, staleTime: 60_000 })
+}
+
+/** 点歌记录, refetched live whenever anyone queues a song. */
+export function useHistory(enabled = true) {
+  const version = useApp((s) => s.historyVersion)
+  return useQuery({ queryKey: ['history', version], queryFn: api.history, enabled, placeholderData: keepPreviousData })
 }
 
 export function useCacheInfo(enabled = true) {

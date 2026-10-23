@@ -1,5 +1,4 @@
 import type { LyricLine } from '@shared/types'
-import { INTERLUDE_MIN_GAP_MS } from './lyrics'
 
 /**
  * 领唱 (lead-in vocal): the first line of the song and the first line after every interlude are
@@ -67,12 +66,19 @@ function lineEnd(line: LyricLine): number {
   return last ? last.t + last.d : line.t + line.d
 }
 
-/** Lines that get the lead vocal: the first line, and every line after a gap ≥ INTERLUDE_MIN_GAP_MS. */
+/**
+ * A pause at least this long starts a new section that gets 领唱. Shorter than the 8 s used for
+ * the interlude countdown: most pop songs only breathe 3–5 s between verse and chorus, and with
+ * 8 s many songs got 领唱 on the first line only.
+ */
+export const LEAD_MIN_GAP_MS = 4000
+
+/** Lines that get the lead vocal: the first line, and every line after a pause ≥ LEAD_MIN_GAP_MS. */
 export function leadLineIndexes(lines: LyricLine[]): number[] {
   const out: number[] = []
   lines.forEach((line, i) => {
     const prevEnd = i > 0 ? lineEnd(lines[i - 1]!) : 0
-    if (i === 0 || line.t - prevEnd >= INTERLUDE_MIN_GAP_MS) out.push(i)
+    if (i === 0 || line.t - prevEnd >= LEAD_MIN_GAP_MS) out.push(i)
   })
   return out
 }

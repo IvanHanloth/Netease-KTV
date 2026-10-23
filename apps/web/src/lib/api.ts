@@ -1,5 +1,8 @@
 import type {
   Account,
+  AdminSettings,
+  AdminStatus,
+  DeskSettings,
   AppState,
   CacheInfo,
   Lyrics,
@@ -158,6 +161,8 @@ export const api = {
   queueRemove: (uid: string) => del<void>('/queue/' + encodeURIComponent(uid)),
   queueClear: () => del<void>('/queue'),
   queueShuffle: () => post<void>('/queue/shuffle'),
+  /** 点歌记录: latest 50 distinct songs anyone queued, newest first. */
+  history: () => get<{ songs: Song[] }>('/history'),
   resolvePlaylist: (text: string) => get<PlaylistSummary>('/playlists/resolve' + q({ q: text })),
 
   command: (command: PlayerCommand) => post<void>('/player/command', command),
@@ -170,10 +175,15 @@ export const api = {
   resetSongScores: (songId: number) => del<{ removed: number }>('/scores/' + songId),
 
   settings: () => get<SettingsResponse>('/settings'),
-  saveSettings: (patch: Partial<Settings>) => put<SettingsResponse>('/settings', patch),
+  /** Desk-level settings only (scoring); the server ignores anything else. */
+  saveSettings: (patch: Partial<DeskSettings>) => put<SettingsResponse>('/settings', patch),
 
-  cache: () => get<CacheInfo>('/cache'),
-  clearCache: () => del<{ removed?: number }>('/cache'),
+  // ---- ops panel (/admin) ----
+  adminStatus: () => get<AdminStatus>('/admin/status'),
+  saveAdminSettings: (patch: Partial<AdminSettings>) => put<SettingsResponse>('/admin/settings', patch),
+  cache: () => get<CacheInfo>('/admin/cache'),
+  clearCache: () => del<{ removed?: number }>('/admin/cache'),
+  clearDataCache: () => del<{ removed: number; cache: CacheInfo }>('/admin/cache/data'),
 }
 
 /** Low-quality audio for previewing a song on this device (never touches the TV / queue). */

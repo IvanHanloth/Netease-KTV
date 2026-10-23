@@ -4,11 +4,13 @@ import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
+import { pruneApiCache } from './apiCache.js'
 import { config } from './config.js'
 import { hub } from './core/hub.js'
 import { startPipeline } from './core/pipeline.js'
 import { loadPlayer } from './core/player.js'
 import { getDb } from './db.js'
+import { seedHistory } from './history.js'
 import { registerRoutes } from './http/routes.js'
 import { registerWs } from './http/ws.js'
 import { ffmpegAvailable } from './media/ffmpeg.js'
@@ -19,6 +21,7 @@ async function main() {
   fs.mkdirSync(config.dataDir, { recursive: true })
   getDb()
   hub.loadTracks()
+  seedHistory()
   loadPlayer(getCachedSong)
   await initNcm()
 
@@ -61,6 +64,8 @@ async function main() {
   }
 
   startPipeline()
+  pruneApiCache()
+  setInterval(pruneApiCache, 6 * 60 * 60 * 1000).unref()
   await app.listen({ port: config.port, host: config.host })
   app.log.info(`Netease KTV ready on http://localhost:${config.port}  (data: ${config.dataDir})`)
 }

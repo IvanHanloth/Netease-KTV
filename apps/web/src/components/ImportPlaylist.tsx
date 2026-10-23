@@ -10,6 +10,7 @@ import {
   type ImportedPlaylist,
 } from '../lib/importedPlaylists'
 import { Icon } from './icons'
+import { PlaylistThumb } from './PlaylistNav'
 import { Cover, Dialog, Spinner } from './ui'
 
 export const DEVICE_ONLY_NOTE = '仅保存在这台设备，不会同步到其他设备或网易云账号'
@@ -196,7 +197,7 @@ export function ImportedPlaylistsNav({
           <div
             key={p.id}
             className={clsx(
-              'group flex h-10 items-center gap-1 rounded-xl pr-1 transition-colors hover:bg-white/5',
+              'group flex h-11 items-center gap-1 rounded-xl pr-1 transition-colors hover:bg-white/5',
               activeId === p.id && 'bg-white/7',
             )}
           >
@@ -205,11 +206,11 @@ export function ImportedPlaylistsNav({
               onClick={() => onOpen(p)}
               aria-current={activeId === p.id ? 'page' : undefined}
               className={clsx(
-                'flex h-full min-w-0 flex-1 items-center gap-2.5 pl-3 text-left text-sm',
-                activeId === p.id ? 'font-semibold text-fg' : 'text-[#B4B4BE]',
+                'flex h-full min-w-0 flex-1 items-center gap-3 pl-2.5 text-left text-sm',
+                activeId === p.id ? 'font-semibold text-fg' : 'text-[#C8C8D0]',
               )}
             >
-              <Icon name="link" size={16} className={clsx('shrink-0', activeId === p.id && 'text-accent')} />
+              <PlaylistThumb p={p} />
               <span className="truncate">{p.name}</span>
             </button>
             <button

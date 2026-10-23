@@ -5,7 +5,7 @@ import clsx from 'clsx'
 import type { PlaylistSummary } from '@shared/types'
 import { api } from '../lib/api'
 import { stopPreview } from '../lib/preview'
-import { errorText, toast, useAccount, useDebounced } from '../lib/hooks'
+import { errorText, toast, useAccount, useDebounced, useHistory } from '../lib/hooks'
 import { connect, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
 import { Cover, EmptyNote, QueryError, Spinner } from '../components/ui'
@@ -14,6 +14,7 @@ import { QueuePanel } from '../components/QueuePanel'
 import { Leaderboard } from '../components/Leaderboard'
 import { LoginDialog } from '../components/LoginDialog'
 import { SettingsDialog } from '../components/SettingsDialog'
+import { PlaylistNavButton } from '../components/PlaylistNav'
 import {
   DEVICE_ONLY_NOTE,
   ImportedPlaylistChips,
@@ -43,6 +44,7 @@ type View =
   | { kind: 'search'; q: string }
   | { kind: 'toplists' }
   | { kind: 'scores' }
+  | { kind: 'history' }
   | { kind: 'playlist'; id: number; name: string }
 
 function useView(): [View, (v: View) => void] {
@@ -52,6 +54,7 @@ function useView(): [View, (v: View) => void] {
     if (v === 'search' && params.get('q')) return { kind: 'search', q: params.get('q')! }
     if (v === 'toplists') return { kind: 'toplists' }
     if (v === 'scores') return { kind: 'scores' }
+    if (v === 'history') return { kind: 'history' }
     if (v === 'playlist' && params.get('id'))
       return { kind: 'playlist', id: Number(params.get('id')), name: params.get('name') || '歌单' }
     return { kind: 'recommend' }
@@ -193,6 +196,7 @@ function Sidebar({
         <NavButton icon="compass" label="为你推荐" active={view.kind === 'recommend'} onClick={() => go({ kind: 'recommend' })} />
         <NavButton icon="chart" label="热歌榜" active={view.kind === 'toplists'} onClick={() => go({ kind: 'toplists' })} />
         <NavButton icon="trophy" label="K 歌排行" active={view.kind === 'scores'} onClick={() => go({ kind: 'scores' })} />
+        <NavButton icon="clock" label="点歌记录" active={view.kind === 'history'} onClick={() => go({ kind: 'history' })} />
         <Link
           to="/tv"
           target="_blank"
@@ -204,15 +208,15 @@ function Sidebar({
       </div>
       <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-1">
         <div className="flex flex-col gap-1">
-          <div className="px-3 pb-1.5 text-xs tracking-[0.12em] text-subtle">我的音乐</div>
+          <div className="px-3 pb-1.5 text-xs tracking-[0.12em] text-subtle">我的歌单</div>
           {!account?.loggedIn ? (
             <p className="m-0 px-3 text-[13px] leading-6 text-muted">登录后显示你的歌单</p>
           ) : (
             playlists.map((p, i) => (
-              <NavButton
+              <PlaylistNavButton
                 key={p.id}
-                icon={i === 0 ? 'heart' : undefined}
-                indent={i !== 0}
+                p={p}
+                liked={i === 0}
                 label={i === 0 ? '我喜欢的音乐' : p.name}
                 active={view.kind === 'playlist' && view.id === p.id}
                 onClick={() => go({ kind: 'playlist', id: p.id, name: i === 0 ? '我喜欢的音乐' : p.name })}
@@ -310,7 +314,7 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (q: strin
         <ul
           id="suggest-list"
           role="listbox"
-          className="glass absolute inset-x-0 top-[58px] z-30 m-0 list-none overflow-hidden rounded-2xl p-1.5 shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
+          className="absolute border border-white/10 bg-[#17171F] inset-x-0 top-[58px] z-30 m-0 list-none overflow-hidden rounded-2xl p-1.5 shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
         >
           {items.map((k, i) => (
             <li key={k} role="option" aria-selected={i === active}>
@@ -391,7 +395,7 @@ function SeparatorChip() {
         <div
           role="dialog"
           aria-label="伴奏分离服务"
-          className="glass absolute top-[48px] right-0 z-40 w-[300px] rounded-2xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
+          className="absolute border border-white/10 bg-[#17171F] top-[48px] right-0 z-40 w-[300px] rounded-2xl p-4 shadow-[0_20px_50px_rgba(0,0,0,0.5)]"
         >
           <div className="mb-3 flex items-center gap-2">
             <Icon name="sparkles" size={17} className="text-accent" />
@@ -597,6 +601,28 @@ function PlaylistView({ id, name, back }: { id: number; name: string; back: () =
   )
 }
 
+function HistoryView() {
+  const q = useHistory()
+  const songs = q.data?.songs ?? []
+  return (
+    <Section
+      title="点歌记录"
+      action={songs.length > 0 && <span className="num text-sm text-muted">最近 {songs.length} 首</span>}
+    >
+      <p className="m-0 -mt-1 text-sm text-muted">最近点过的 50 首歌，最新的在最前面。再点一次就会回到最前面。</p>
+      {q.isLoading ? (
+        <Loading />
+      ) : q.isError && !q.data ? (
+        <ErrorNote error={q.error} retry={() => q.refetch()} retrying={q.isFetching} />
+      ) : songs.length ? (
+        <SongTable songs={songs} />
+      ) : (
+        <EmptyNote>还没有点过歌</EmptyNote>
+      )}
+    </Section>
+  )
+}
+
 // ---------------- Page ----------------
 
 export default function Desk() {
@@ -630,6 +656,7 @@ export default function Desk() {
           <Leaderboard manage />
         </Section>
       )}
+      {view.kind === 'history' && <HistoryView />}
       {view.kind === 'playlist' && <PlaylistView id={view.id} name={view.name} back={() => window.history.back()} />}
     </>
   )
@@ -726,6 +753,7 @@ function MobileTopBar({
             ['recommend', '为你推荐'],
             ['toplists', '热歌榜'],
             ['scores', 'K 歌排行'],
+            ['history', '点歌记录'],
           ] as const
         ).map(([k, label]) => (
           <button

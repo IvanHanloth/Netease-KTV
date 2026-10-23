@@ -22,6 +22,7 @@ import { useApp } from './store/app'
 const Desk = lazy(() => import('./pages/Desk'))
 const Tv = lazy(() => import('./pages/Tv'))
 const Remote = lazy(() => import('./pages/Remote'))
+const Admin = lazy(() => import('./pages/Admin'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -64,6 +65,7 @@ const router = createBrowserRouter([
   { path: '/', element: page(<Desk />) },
   { path: '/tv', element: page(<Tv />) },
   { path: '/m', element: page(<Remote />) },
+  { path: '/admin', element: page(<Admin />) },
   { path: '*', element: page(<Desk />) },
 ])
 

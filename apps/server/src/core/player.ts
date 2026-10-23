@@ -185,7 +185,10 @@ function startItem(item: QueueItem | null): void {
   player = {
     ...player,
     current: item,
-    playing: !!item,
+    // Not "playing" yet: the accompaniment may still be downloading / separating. The TV starts
+    // the song from 0 once its audio is ready and then reports `playing`. Claiming playing here
+    // made remotes extrapolate a position that never happened (and the TV resumed from it).
+    playing: false,
     position: 0,
     positionAt: Date.now(),
     key: 0,

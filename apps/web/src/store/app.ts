@@ -42,6 +42,8 @@ interface Store {
   tvActive: boolean | null
   /** Bumped on every `{type:'scores'}` message so leaderboard queries refetch. */
   scoresVersion: number
+  /** Bumped on every `{type:'history'}` message so 点歌记录 refetches. */
+  historyVersion: number
   apply: (msg: ServerMessage) => void
   setConnected: (v: boolean) => void
 }
@@ -52,6 +54,7 @@ export const useApp = create<Store>((set) => ({
   ready: false,
   tvActive: null,
   scoresVersion: 0,
+  historyVersion: 0,
   setConnected: (connected) => set({ connected }),
   apply: (msg) =>
     set((s) => {
@@ -73,6 +76,8 @@ export const useApp = create<Store>((set) => ({
           return { tvActive: msg.active }
         case 'scores':
           return { scoresVersion: s.scoresVersion + 1 }
+        case 'history':
+          return { historyVersion: s.historyVersion + 1 }
         default:
           return {}
       }

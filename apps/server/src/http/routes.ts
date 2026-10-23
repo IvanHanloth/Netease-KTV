@@ -6,16 +6,20 @@ import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
 import { retry } from '../core/pipeline.js'
 import { renderPitch } from '../media/ffmpeg.js'
+import { clearApiCache } from '../apiCache.js'
 import { cacheInfo, clearCache, enforceCacheLimit, touchFile, touchSong } from '../media/cache.js'
 import { pitchedPath, pitchPath, stemFile } from '../media/files.js'
 import { cachedMv, readAlignment } from '../media/mv.js'
 import { listUnblockSources } from '../media/resolve.js'
 import { NcmError } from '../ncm/client.js'
 import * as ncm from '../ncm/service.js'
+import { listHistory, recordPick } from '../history.js'
 import { addScore, leaderboard, resetScores, songRanking } from '../scores.js'
+import { separatorHealth } from '../separator.js'
 import { getSettings, updateSettings } from '../settings.js'
-import type { MvInfo, PlayerCommand, Stem } from '../shared/types.js'
+import type { AdminStatus, MvInfo, PlayerCommand, Stem } from '../shared/types.js'
 import { proxy, sendFile } from './stream.js'
+import { clientCounts } from './ws.js'
 
 const id = z.coerce.number().int().positive()
 const page = z.object({
@@ -157,10 +161,14 @@ export async function registerRoutes(app: FastifyInstance) {
     const song = await ncm.getSong(body.songId, true)
     if (song.playable === 'vip') return reply.code(409).send({ error: '需要会员才能播放完整歌曲' })
     if (song.playable === 'no-source' && !getSettings().unblockEnabled) {
-      return reply.code(409).send({ error: '网易云暂无音源（可在设置中开启第三方音源）' })
+      return reply.code(409).send({ error: '网易云暂无音源（可在后台管理中开启第三方音源）' })
     }
-    return player.addToQueue(song, body.position, body.addedBy)
+    const item = player.addToQueue(song, body.position, body.addedBy)
+    recordPick(song.id)
+    return item
   })
+  // 点歌记录: latest 50 distinct songs, newest first.
+  app.get('/api/history', async () => listHistory())
   app.post('/api/queue/:uid/top', async (req, reply) => {
     const { uid } = z.object({ uid: z.string() }).parse(req.params)
     return player.moveToTop(uid) ? { ok: true } : reply.code(404).send({ error: '不在队列中' })
@@ -237,13 +245,47 @@ export async function registerRoutes(app: FastifyInstance) {
     return { removed: resetScores(p.id) }
   })
 
-  // ---------- cache ----------
-  app.get('/api/cache', async () => cacheInfo())
-  app.delete('/api/cache', async () => clearCache())
-
-  // ---------- settings ----------
+  // ---------- settings (desk) ----------
+  // Everyone can read the settings (TV needs scoring + LAN address). The desk may only change the
+  // singing options; everything that touches downloads, disk or the network lives under /api/admin.
   app.get('/api/settings', async () => ({ ...getSettings(), unblockSourceOptions: listUnblockSources() }))
   app.put('/api/settings', async (req) => {
+    const body = z
+      .object({
+        scoringEnabled: z.boolean().optional(),
+        scoreTolerance: z.number().min(0.3).max(3).optional(),
+      })
+      .parse(req.body)
+    return { ...updateSettings(body, listUnblockSources()), unblockSourceOptions: listUnblockSources() }
+  })
+
+  // ---------- admin (ops panel, /admin) ----------
+  // No auth yet; keeping every ops endpoint under one prefix makes adding it a one-line hook.
+  app.get('/api/admin/status', async (): Promise<AdminStatus> => {
+    const health = await separatorHealth()
+    return {
+      version: config.version,
+      node: process.version,
+      uptimeSec: Math.round(process.uptime()),
+      dataDir: config.dataDir,
+      separatorUrl: config.separatorUrl,
+      separator: health
+        ? {
+            online: true,
+            ready: health.ready ?? true,
+            stage: health.stage,
+            error: (health as { error?: string | null }).error ?? undefined,
+            device: health.device,
+            model: health.model,
+            pending: health.pending ?? 0,
+          }
+        : { online: false, ready: false, pending: 0 },
+      clients: clientCounts(),
+      authEnabled: !!config.accessToken,
+    }
+  })
+
+  app.put('/api/admin/settings', async (req) => {
     const body = z
       .object({
         unblockEnabled: z.boolean().optional(),
@@ -251,8 +293,6 @@ export async function registerRoutes(app: FastifyInstance) {
         audioLevel: z.enum(['standard', 'higher', 'exhigh', 'lossless', 'hires']).optional(),
         separatorModel: z.string().max(200).optional(),
         publicUrl: z.string().max(200).optional(),
-        scoringEnabled: z.boolean().optional(),
-        scoreTolerance: z.number().min(0.3).max(3).optional(),
         mvPreload: z.boolean().optional(),
         mvResolution: z.union([z.literal(480), z.literal(720), z.literal(1080)]).optional(),
         cacheLimitGB: z.number().min(1).max(500).optional(),
@@ -263,5 +303,13 @@ export async function registerRoutes(app: FastifyInstance) {
     if (body.cacheLimitGB !== undefined) enforceCacheLimit()
     if (body.mvPreload) hub.emit('work-mv')
     return { ...saved, unblockSourceOptions: sources }
+  })
+
+  app.get('/api/admin/cache', async () => cacheInfo())
+  app.delete('/api/admin/cache', async () => clearCache())
+  // NetEase data cache only (lists, search, lyrics…); audio, stems and MVs are untouched.
+  app.delete('/api/admin/cache/data', async () => {
+    const removed = clearApiCache()
+    return { removed, cache: cacheInfo() }
   })
 }

@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { apiCacheStats } from '../apiCache.js'
 import { paths } from '../config.js'
 import { hub } from '../core/hub.js'
 import { priorityIds } from '../core/player.js'
@@ -122,6 +123,7 @@ export function cacheInfo(): CacheInfo {
   const entries = scan()
   const audioBytes = entries.filter((e) => e.kind === 'song').reduce((a, e) => a + e.bytes, 0)
   const mvBytes = entries.filter((e) => e.kind === 'mv').reduce((a, e) => a + e.bytes, 0)
+  const data = apiCacheStats()
   return {
     usedBytes: audioBytes + mvBytes,
     limitBytes: getSettings().cacheLimitGB * GB,
@@ -129,6 +131,8 @@ export function cacheInfo(): CacheInfo {
     mvBytes,
     songs: entries.filter((e) => e.kind === 'song').length,
     mvs: entries.filter((e) => e.kind === 'mv').length,
+    dataEntries: data.entries,
+    dataBytes: data.bytes,
   }
 }
 

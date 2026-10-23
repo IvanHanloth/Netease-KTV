@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import type { PlayerCommand, Song } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtMs, fmtTime } from '../lib/format'
-import { errorText, useDebounced, useStatusOf } from '../lib/hooks'
+import { errorText, useDebounced, useHistory, useStatusOf } from '../lib/hooks'
 import { stopPreview } from '../lib/preview'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
@@ -84,7 +84,6 @@ function RemoteTab() {
   const dur = cur ? cur.song.duration / 1000 : 0
   const hasStems = !!track?.hasStems
   const [music, setMusic] = useLiveValue(Math.round(player.musicVolume * 100), (v) => ({ action: 'set', musicVolume: v / 100 }))
-  const [vocal, setVocal] = useLiveValue(Math.round(player.vocalVolume * 100), (v) => ({ action: 'set', vocalVolume: v / 100 }))
   const setKey = (k: number) => sendCommand({ action: 'set', key: Math.max(-6, Math.min(6, k)) })
 
   return (
@@ -159,18 +158,6 @@ function RemoteTab() {
           </span>
           <Range label="伴奏音量" value={music} onChange={setMusic} />
         </label>
-        {hasStems && player.trackMode === 'karaoke' && (
-          <label className="flex flex-col gap-1.5">
-            <span className="flex items-center justify-between text-sm">
-              <span className="flex items-center gap-2">
-                <Icon name="mic" size={18} />
-                导唱（原唱人声）
-              </span>
-              <span className="num text-[#C8C8D0]">{vocal}%</span>
-            </span>
-            <Range label="导唱音量" value={vocal} onChange={setVocal} />
-          </label>
-        )}
         <div className="flex items-center justify-between">
           <span className="text-sm">升降调</span>
           <div className="flex items-center gap-2">
@@ -317,11 +304,27 @@ function ImportedPlaylistTracks({ playlist, onBack }: { playlist: ImportedPlayli
   )
 }
 
+/** 点歌记录 on the phone: same shared list as the desk. */
+function HistoryList() {
+  const q = useHistory()
+  if (q.isLoading)
+    return (
+      <div className="flex justify-center py-10 text-muted">
+        <Spinner />
+      </div>
+    )
+  if (q.isError && !q.data)
+    return <QueryError compact error={new Error(errorText(q.error))} onRetry={() => q.refetch()} retrying={q.isFetching} />
+  const songs = q.data?.songs ?? []
+  return songs.length ? <SongList songs={songs} /> : <EmptyNote>还没有点过歌</EmptyNote>
+}
+
 function SearchTab() {
   const [value, setValue] = useState('')
   const q = useDebounced(value.trim(), 350)
   const [openPl, setOpenPl] = useState<ImportedPlaylist | null>(null)
   const [importOpen, setImportOpen] = useState(false)
+  const [list, setList] = useState<'rec' | 'history'>('rec')
   // Close an opened playlist if it was removed (e.g. from another tab of this browser).
   const imported = useImportedPlaylists()
   useEffect(() => {
@@ -387,8 +390,31 @@ function SearchTab() {
             <h2 className="m-0 px-0.5 text-[15px] font-semibold">临时歌单</h2>
             <ImportedPlaylistChips onOpen={setOpenPl} onImport={() => setImportOpen(true)} />
           </div>
-          <h2 className="m-0 px-0.5 text-[15px] font-semibold">{rec.data?.daily ? '每日推荐' : '热门推荐'}</h2>
-          {rec.isLoading ? (
+          <div role="tablist" aria-label="歌曲列表" className="flex items-center gap-1.5 px-0.5">
+            {(
+              [
+                ['rec', rec.data?.daily ? '每日推荐' : '热门推荐'],
+                ['history', '点歌记录'],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
+                type="button"
+                role="tab"
+                aria-selected={list === k}
+                onClick={() => setList(k)}
+                className={clsx(
+                  'h-8 rounded-full px-3.5 text-[15px] transition-colors',
+                  list === k ? 'bg-white/10 font-semibold text-fg' : 'text-muted',
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {list === 'history' ? (
+            <HistoryList />
+          ) : rec.isLoading ? (
             <div className="flex justify-center py-10 text-muted">
               <Spinner />
             </div>

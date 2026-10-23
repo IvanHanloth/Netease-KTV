@@ -31,6 +31,11 @@ export function getDb(): DatabaseSync {
       message TEXT,
       updated_at INTEGER NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS api_cache (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS scores (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       song_id INTEGER NOT NULL,
@@ -40,6 +45,10 @@ export function getDb(): DatabaseSync {
       at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS scores_song ON scores (song_id, score DESC);
+    CREATE TABLE IF NOT EXISTS history (
+      song_id INTEGER PRIMARY KEY,
+      at INTEGER NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS queue (
       uid TEXT PRIMARY KEY,
       song_id INTEGER NOT NULL,
