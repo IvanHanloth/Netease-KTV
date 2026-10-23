@@ -17,12 +17,15 @@
 播放模型：
 
 - **主屏（role = tv）是唯一的发声端。** 它根据 `player` 状态加载音频，每秒上报一次 `report`，播完发 `ended`。
+  - `report` 带 `at`：这一位置的声音从主屏扬声器播出时的服务端时间（毫秒，已含输出延迟），以及 `uid` / `epoch`（属于哪首歌，切歌过程中的旧上报会被丢弃）。
+- **时钟同步：** 主屏和移动耳返发 `{type:'ping', id}`，服务端立即回 `{type:'pong', id, t}`（`t` 为服务端高精度时间）。客户端取往返最快的几次估算时钟偏差。
+- **移动耳返（role = ear）：** 服务端把主屏的每次上报转成 `{type:'sync', sync: PlaybackSync}` 推给耳返；耳返连上时先收到最近一次。
 - **同一时间只有一个主屏发声。** 服务端给每个主屏连接发 `{type:'tvRole', active}`。
   - 主屏点“开始”或“在这里播放”时发 `{type:'claim'}`，成为发声主屏，其余主屏收到 `active:false` 后必须静音。
   - 只有发声主屏会收到 play/pause/seek/restart 指令，它的 `report` / `ended` 才会被采纳。
   - 发声主屏断开时，发声权交给最近打开的另一个主屏。
   - 主屏加载歌曲时，从服务端记录的位置继续，并保持原来的播放/暂停状态；只有新切到的歌从 0 开始。
-- 其他端（desk、remote）发 `command`。服务端处理音量、升降调、原唱/伴奏、切歌，然后广播 `player`。play / pause / seek / restart 会转发给主屏执行，主屏执行后的上报再更新状态。
+- 其他端（desk、remote、ear）发 `command`。服务端处理音量、升降调、原唱/伴奏、切歌，然后广播 `player`。play / pause / seek / restart 会转发给主屏执行，主屏执行后的上报再更新状态。
 - `player.epoch` 变化表示需要从头重新加载当前歌曲。
 
 ## 账号
@@ -42,6 +45,9 @@
 | GET | `/search?q=&offset=&limit=` | `{ songs: Song[], hasMore }` |
 | GET | `/search/suggest?q=` | `{ keywords: string[] }` |
 | GET | `/recommend` | `{ songs: Song[], daily: boolean }`。已登录返回日推，未登录返回热歌榜 |
+| GET | `/albums/:id` | `AlbumDetail`：专辑信息和全部歌曲 |
+| GET | `/artists/:id` | `ArtistDetail`：歌手信息（单曲数、专辑数） |
+| GET | `/artists/:id/songs?offset=&limit=` | `{ songs: Song[], hasMore }`，按热度排序 |
 | GET | `/playlists` | `{ playlists: PlaylistSummary[] }`，当前账号的歌单 |
 | GET | `/toplists` | `{ playlists: PlaylistSummary[] }`，官方榜单 |
 | GET | `/playlists/:id/tracks?offset=&limit=` | `{ songs: Song[], hasMore }`（任意公开歌单都可以） |
@@ -52,6 +58,8 @@
 | GET | `/mv/:mvId/stream` | MV 视频（支持 Range）。已缓存时读本地文件，否则代理网易云 |
 | GET | `/songs/:id/preview` | 试听：低音质（standard）音频流，在点歌的设备本地播放，不进队列。拿不到返回 404。不走第三方音源 |
 | GET | `/img?u=<网易云图片地址>&s=<尺寸>` | 封面代理（同源，方便取色），只允许 `*.music.126.net` |
+
+曲库类 GET 接口都可以加 `fresh=1`：跳过服务端的网易云数据缓存，重新获取（点歌台每页右上角的刷新按钮）。
 
 ## 点歌队列
 
@@ -97,6 +105,10 @@
 |---|---|---|
 | GET | `/settings` | `Settings` 加 `unblockSourceOptions: string[]` |
 | PUT | `/settings` | 点歌台能改的设置（`DeskSettings`）：`scoringEnabled`、`scoreTolerance`。其他字段会被忽略 |
+| GET | `/idle` | `IdleMusic`：待机音乐是否开启、音量比例和歌曲列表 |
+| POST | `/idle/:id/prepare` | 确保待机音乐里的这首歌已下载到本地（不在列表里返回 404）。之后用 `/media/:id/original` 播放 |
+
+设置变化时（点歌台或后台管理），WebSocket 推送 `{ type: 'settings' }`。
 
 ## 后台管理
 
@@ -104,8 +116,13 @@
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/admin/status` | `AdminStatus`：版本、运行时长、分离服务状态（阶段、设备、模型、任务数、错误）、各页面在线数、是否启用令牌 |
-| PUT | `/admin/settings` | 部分更新运维设置（`AdminSettings`）：`audioLevel`、`separatorModel`、`publicUrl`、`mvPreload`、`mvResolution` 480/720/1080、`cacheLimitGB` 1–500、`unblockEnabled`、`unblockSources` |
+| GET | `/admin/status` | `AdminStatus`：版本、运行时长、分离集群概况（在线 / 工作中的服务器数、待处理歌曲数）、各页面在线数、是否启用令牌 |
+| PUT | `/admin/settings` | 部分更新运维设置（`AdminSettings`）：`audioLevel`、`separatorModel`、`publicUrl`、`mvPreload`、`mvResolution` 480/720/1080、`cacheLimitGB` 1–500、`unblockEnabled`、`unblockSources`、`idleEnabled`、`idleVolume` 0–1、`idleSongs` |
+| GET | `/admin/separators` | `{ nodes: SeparatorNodeView[] }`：每台分离服务器的状态、设备、速度、正在做的任务、完成 / 失败数 |
+| POST | `/admin/separators` | 添加：`{ name, url, token?, enabled?, model? }` |
+| PUT | `/admin/separators/:id` | 修改，字段同上。`token` 省略表示不变，空字符串表示移除 |
+| DELETE | `/admin/separators/:id` | 移除 |
+| POST | `/admin/separators/test` | `{ url, token?, id? }` → `{ ok, message, health? }`：测试连接和令牌（传 `id` 时用已保存的令牌） |
 | GET | `/admin/cache` | `CacheInfo`：音频、MV 缓存占用，以及网易云数据缓存条数 |
 | DELETE | `/admin/cache` | 清空音频和 MV 缓存（正在唱和已点的歌除外） |
 | DELETE | `/admin/cache/data` | 清除网易云数据缓存（歌单、榜单、日推、搜索、歌词）。这些数据平时按各自的有效期缓存；网易云接口出错时先返回过期的旧数据 |

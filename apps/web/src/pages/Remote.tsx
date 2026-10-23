@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
+import { Link } from 'react-router'
 import type { PlayerCommand, Song } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtMs, fmtTime } from '../lib/format'
@@ -140,6 +141,20 @@ function RemoteTab() {
           <RoundButton icon="next" label="切歌" onClick={() => sendCommand({ action: 'next' })} />
         </div>
       </section>
+
+      <Link
+        to="/ear"
+        className="flex items-center gap-3.5 rounded-3xl border border-white/8 bg-white/4 p-4 active:bg-white/8"
+      >
+        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#FF4D7E_0%,#8B5CF6_100%)] text-white">
+          <Icon name="headphones" size={22} />
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="text-[15px] font-semibold">移动耳返</span>
+          <span className="truncate text-xs text-muted">在手机上听人声或原唱，同时当提词器</span>
+        </span>
+        <Icon name="chevronLeft" size={18} className="rotate-180 text-muted" />
+      </Link>
 
       <section aria-label="调音" className="flex flex-col gap-3.5 rounded-3xl border border-white/8 bg-white/4 p-4">
         {cur && (

@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config, paths } from '../config.js'
 import { mvUrl } from '../ncm/service.js'
-import { pollJob, submitJob } from '../separator.js'
+import { alignOnCluster } from '../separator.js'
 import { getSettings } from '../settings.js'
 import type { MvResolution, Song } from '../shared/types.js'
 import { download, findOriginal, mediaDir } from './files.js'
@@ -97,16 +97,8 @@ export async function ensureAlignment(song: Song): Promise<MvAlignment | null> {
   try {
     await toWav(original, songWav)
     await toWav(mv, mvWav)
-    const { id } = await submitJob({
-      songId: song.id,
-      input: songWav,
-      input2: mvWav,
-      outputDir: mediaDir(song.id),
-      durationMs: song.duration,
-      mode: 'align',
-    })
-    await pollJob(id, (j) => j.status === 'done', undefined, 120)
-    const raw = JSON.parse(fs.readFileSync(alignPath(song.id), 'utf8')) as { offset: number; confidence: number }
+    mediaDir(song.id)
+    const raw = await alignOnCluster(song.id, songWav, mvWav, song.duration, alignPath(song.id))
     const result: MvAlignment = { mvId: song.mvId, offset: raw.offset, confidence: raw.confidence }
     fs.writeFileSync(alignPath(song.id), JSON.stringify(result))
     console.log(`[mv] song ${song.id} aligned: offset ${result.offset.toFixed(2)}s, confidence ${result.confidence.toFixed(2)}`)

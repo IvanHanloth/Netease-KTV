@@ -1,8 +1,11 @@
 import type {
   Account,
+  AlbumDetail,
+  ArtistDetail,
   AdminSettings,
   AdminStatus,
   DeskSettings,
+  IdleMusic,
   AppState,
   CacheInfo,
   Lyrics,
@@ -15,6 +18,7 @@ import type {
   QueuePosition,
   ScoreSubmit,
   ScoreSubmitResult,
+  SeparatorNodeView,
   Settings,
   Song,
   SongRanking,
@@ -78,7 +82,21 @@ export function isRetryable(e: unknown): boolean {
 /** A request that hangs longer than this becomes a retryable error instead of spinning forever. */
 const TIMEOUT_MS = 12_000
 
+/** While > 0, GET requests carry ?fresh=1 so the server skips its NetEase data cache. */
+let freshDepth = 0
+
+/** Run `refetch` with the server cache bypassed (the desk's refresh button). */
+export async function withFreshData<T>(refetch: () => Promise<T>): Promise<T> {
+  freshDepth++
+  try {
+    return await refetch()
+  } finally {
+    freshDepth--
+  }
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  if (method === 'GET' && freshDepth > 0) path += (path.includes('?') ? '&' : '?') + 'fresh=1'
   const headers: Record<string, string> = {}
   if (body !== undefined) headers['Content-Type'] = 'application/json'
   if (token) headers.Authorization = 'Bearer ' + token
@@ -131,6 +149,15 @@ export interface SongPage {
 
 export type SettingsResponse = Settings & { unblockSourceOptions: string[] }
 
+export interface SeparatorNodeInput {
+  name: string
+  url: string
+  /** Omit to keep the stored token; '' removes it. */
+  token?: string
+  enabled?: boolean
+  model?: string
+}
+
 export const api = {
   health: () => get<{ ok: boolean; version?: string }>('/health'),
   state: () => get<AppState>('/state'),
@@ -144,6 +171,9 @@ export const api = {
   search: (keyword: string, offset = 0, limit = 30) => get<SongPage>('/search' + q({ q: keyword, offset, limit })),
   suggest: (keyword: string) => get<{ keywords: string[] }>('/search/suggest' + q({ q: keyword })),
   recommend: () => get<{ songs: Song[]; daily: boolean }>('/recommend'),
+  album: (id: number) => get<AlbumDetail>('/albums/' + id),
+  artist: (id: number) => get<ArtistDetail>('/artists/' + id),
+  artistSongs: (id: number, offset = 0, limit = 50) => get<SongPage>(`/artists/${id}/songs` + q({ offset, limit })),
   playlists: () => get<{ playlists: PlaylistSummary[] }>('/playlists'),
   toplists: () => get<{ playlists: PlaylistSummary[] }>('/toplists'),
   playlistTracks: (id: number, offset = 0, limit = 100) =>
@@ -161,6 +191,9 @@ export const api = {
   queueRemove: (uid: string) => del<void>('/queue/' + encodeURIComponent(uid)),
   queueClear: () => del<void>('/queue'),
   queueShuffle: () => post<void>('/queue/shuffle'),
+  /** 待机音乐 for the TV. */
+  idleMusic: () => get<IdleMusic>('/idle'),
+  prepareIdleSong: (id: number) => post<{ ok: boolean }>(`/idle/${id}/prepare`),
   /** 点歌记录: latest 50 distinct songs anyone queued, newest first. */
   history: () => get<{ songs: Song[] }>('/history'),
   resolvePlaylist: (text: string) => get<PlaylistSummary>('/playlists/resolve' + q({ q: text })),
@@ -181,6 +214,13 @@ export const api = {
   // ---- ops panel (/admin) ----
   adminStatus: () => get<AdminStatus>('/admin/status'),
   saveAdminSettings: (patch: Partial<AdminSettings>) => put<SettingsResponse>('/admin/settings', patch),
+  separators: () => get<{ nodes: SeparatorNodeView[] }>('/admin/separators'),
+  testSeparator: (body: { url: string; token?: string; id?: string }) =>
+    post<{ ok: boolean; message: string; health?: { device?: string; gpu?: boolean; model?: string } }>('/admin/separators/test', body),
+  addSeparator: (body: SeparatorNodeInput) => post<SeparatorNodeView>('/admin/separators', body),
+  updateSeparator: (id: string, body: Partial<SeparatorNodeInput>) =>
+    put<SeparatorNodeView>('/admin/separators/' + encodeURIComponent(id), body),
+  removeSeparator: (id: string) => del<{ ok: boolean }>('/admin/separators/' + encodeURIComponent(id)),
   cache: () => get<CacheInfo>('/admin/cache'),
   clearCache: () => del<{ removed?: number }>('/admin/cache'),
   clearDataCache: () => del<{ removed: number; cache: CacheInfo }>('/admin/cache/data'),

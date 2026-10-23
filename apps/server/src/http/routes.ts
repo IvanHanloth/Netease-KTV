@@ -4,9 +4,9 @@ import { z } from 'zod'
 import { config } from '../config.js'
 import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
-import { retry } from '../core/pipeline.js'
-import { renderPitch } from '../media/ffmpeg.js'
-import { clearApiCache } from '../apiCache.js'
+import { ensureOriginal, retry } from '../core/pipeline.js'
+import { renderPitch, renderPitchLater } from '../media/ffmpeg.js'
+import { bypassCache, clearApiCache } from '../apiCache.js'
 import { cacheInfo, clearCache, enforceCacheLimit, touchFile, touchSong } from '../media/cache.js'
 import { pitchedPath, pitchPath, stemFile } from '../media/files.js'
 import { cachedMv, readAlignment } from '../media/mv.js'
@@ -15,9 +15,9 @@ import { NcmError } from '../ncm/client.js'
 import * as ncm from '../ncm/service.js'
 import { listHistory, recordPick } from '../history.js'
 import { addScore, leaderboard, resetScores, songRanking } from '../scores.js'
-import { separatorHealth } from '../separator.js'
+import { addNode, clusterSummary, getNodes, nodeViews, pollNodes, removeNode, testNode, updateNode } from '../separator.js'
 import { getSettings, updateSettings } from '../settings.js'
-import type { AdminStatus, MvInfo, PlayerCommand, Stem } from '../shared/types.js'
+import type { AdminStatus, IdleMusic, MvInfo, PlayerCommand, Song, Stem } from '../shared/types.js'
 import { proxy, sendFile } from './stream.js'
 import { clientCounts } from './ws.js'
 
@@ -53,6 +53,12 @@ const previewCache = new Map<number, { url: string; at: number }>()
 
 export async function registerRoutes(app: FastifyInstance) {
   app.setErrorHandler((err, _req, reply) => fail(reply, err))
+  // ?fresh=1 (the desk's refresh button): this request skips the NetEase data cache.
+  app.addHook('preHandler', (req, _reply, done) => {
+    const fresh = (req.query as Record<string, unknown> | undefined)?.fresh
+    if (fresh === '1') bypassCache.run(true, done)
+    else done()
+  })
 
   // ---------- status ----------
   app.get('/api/health', async () => ({ ok: true, version: config.version }))
@@ -84,6 +90,13 @@ export async function registerRoutes(app: FastifyInstance) {
     return { keywords: q.trim() ? await ncm.suggest(q.trim()) : [] }
   })
   app.get('/api/recommend', async () => ncm.recommend())
+  app.get('/api/albums/:id', async (req) => ncm.albumDetail(z.object({ id }).parse(req.params).id))
+  app.get('/api/artists/:id', async (req) => ncm.artistDetail(z.object({ id }).parse(req.params).id))
+  app.get('/api/artists/:id/songs', async (req) => {
+    const { id: aid } = z.object({ id }).parse(req.params)
+    const q = page.extend({ limit: z.coerce.number().int().min(1).max(100).default(50) }).parse(req.query)
+    return ncm.artistSongs(aid, q.offset, q.limit)
+  })
   app.get('/api/playlists', async () => ({ playlists: await ncm.userPlaylists() }))
   app.get('/api/toplists', async () => ({ playlists: await ncm.toplists() }))
   app.get('/api/playlists/resolve', async (req) => {
@@ -167,6 +180,25 @@ export async function registerRoutes(app: FastifyInstance) {
     recordPick(song.id)
     return item
   })
+  // ---------- 待机音乐 ----------
+  app.get('/api/idle', async (): Promise<IdleMusic> => {
+    const s = getSettings()
+    const songs = s.idleSongs.length ? await ncm.getSongs(s.idleSongs).catch(() => []) : []
+    const byId = new Map(songs.map((x) => [x.id, x]))
+    return {
+      enabled: s.idleEnabled,
+      volume: s.idleVolume,
+      songs: s.idleSongs.map((id) => byId.get(id)).filter((x): x is Song => !!x),
+    }
+  })
+  // Download an idle song's audio if needed (it is not queued, so the pipeline won't).
+  app.post('/api/idle/:id/prepare', async (req, reply) => {
+    const { id: songId } = z.object({ id }).parse(req.params)
+    if (!getSettings().idleSongs.includes(songId)) return reply.code(404).send({ error: '不在待机音乐列表里' })
+    await ensureOriginal(songId)
+    return { ok: true }
+  })
+
   // 点歌记录: latest 50 distinct songs, newest first.
   app.get('/api/history', async () => listHistory())
   app.post('/api/queue/:uid/top', async (req, reply) => {
@@ -213,6 +245,10 @@ export async function registerRoutes(app: FastifyInstance) {
     if (key === 0) return sendFile(req, reply, file)
     const pitched = pitchedPath(p.id, p.stem as Stem, key)
     if (!fs.existsSync(pitched)) await renderPitch(file, pitched, key)
+    // The singer is adjusting the key: get the next steps either way ready in the background.
+    for (const k of [key + 1, key - 1]) {
+      if (k !== 0 && k >= -6 && k <= 6) renderPitchLater(file, pitchedPath(p.id, p.stem as Stem, k), k)
+    }
     return sendFile(req, reply, pitched)
   })
   app.post('/api/tracks/:id/retry', async (req) => {
@@ -262,27 +298,60 @@ export async function registerRoutes(app: FastifyInstance) {
   // ---------- admin (ops panel, /admin) ----------
   // No auth yet; keeping every ops endpoint under one prefix makes adding it a one-line hook.
   app.get('/api/admin/status', async (): Promise<AdminStatus> => {
-    const health = await separatorHealth()
+    const views = nodeViews()
     return {
       version: config.version,
       node: process.version,
       uptimeSec: Math.round(process.uptime()),
       dataDir: config.dataDir,
-      separatorUrl: config.separatorUrl,
-      separator: health
-        ? {
-            online: true,
-            ready: health.ready ?? true,
-            stage: health.stage,
-            error: (health as { error?: string | null }).error ?? undefined,
-            device: health.device,
-            model: health.model,
-            pending: health.pending ?? 0,
-          }
-        : { online: false, ready: false, pending: 0 },
+      separator: {
+        ...clusterSummary(),
+        pending: hub.separator.pending,
+        busyNodes: views.filter((n) => n.jobs.some((j) => j.mode === 'separate')).length,
+      },
       clients: clientCounts(),
       authEnabled: !!config.accessToken,
     }
+  })
+
+  // ---------- admin: separator servers ----------
+  const nodeBody = z.object({
+    name: z.string().trim().min(1).max(40),
+    url: z.string().trim().regex(/^https?:\/\/[^\s/]+/i, '地址要以 http:// 或 https:// 开头').max(200),
+    token: z.string().max(200).optional(),
+    enabled: z.boolean().default(true),
+    model: z.string().max(200).optional(),
+  })
+  const refreshNodes = async () => {
+    await pollNodes()
+    hub.emit('work')
+  }
+  app.get('/api/admin/separators', async () => ({ nodes: nodeViews() }))
+  app.post('/api/admin/separators/test', async (req) => {
+    const body = z.object({ url: z.string().max(200), token: z.string().max(200).optional(), id: z.string().optional() }).parse(req.body)
+    // Editing an existing node without retyping its token: test with the stored one.
+    const stored = body.id ? getNodes().find((n) => n.id === body.id)?.token : undefined
+    return testNode(body.url, body.token || stored)
+  })
+  app.post('/api/admin/separators', async (req) => {
+    const body = nodeBody.parse(req.body)
+    const node = addNode({ ...body, token: body.token || undefined, model: body.model || undefined })
+    await refreshNodes()
+    return nodeViews().find((n) => n.id === node.id)
+  })
+  app.put('/api/admin/separators/:id', async (req, reply) => {
+    const { id: nodeId } = z.object({ id: z.string() }).parse(req.params)
+    const body = nodeBody.partial().parse(req.body)
+    const node = updateNode(nodeId, body)
+    if (!node) return reply.code(404).send({ error: '分离服务器不存在' })
+    await refreshNodes()
+    return nodeViews().find((n) => n.id === nodeId)
+  })
+  app.delete('/api/admin/separators/:id', async (req, reply) => {
+    const { id: nodeId } = z.object({ id: z.string() }).parse(req.params)
+    if (!removeNode(nodeId)) return reply.code(404).send({ error: '分离服务器不存在' })
+    await refreshNodes()
+    return { ok: true }
   })
 
   app.put('/api/admin/settings', async (req) => {
@@ -296,6 +365,9 @@ export async function registerRoutes(app: FastifyInstance) {
         mvPreload: z.boolean().optional(),
         mvResolution: z.union([z.literal(480), z.literal(720), z.literal(1080)]).optional(),
         cacheLimitGB: z.number().min(1).max(500).optional(),
+        idleEnabled: z.boolean().optional(),
+        idleVolume: z.number().min(0).max(1).optional(),
+        idleSongs: z.array(z.number().int().positive()).max(100).optional(),
       })
       .parse(req.body)
     const sources = listUnblockSources()

@@ -15,32 +15,57 @@ export function currentLineIndex(lines: LyricLine[], ms: number): number {
   return ans
 }
 
-/** A gap at least this long between two sung lines (or before the first line) is an intro / interlude. */
-export const INTERLUDE_MIN_GAP_MS = 8000
-/** The countdown runs over the last 5 s of an interlude: one dot per second. */
+/**
+ * A pause at least this long starts a new section: its first line gets 领唱 (lib/leadVocal.ts)
+ * and a countdown. Most pop songs only breathe 3–5 s between verse and chorus.
+ */
+export const SECTION_GAP_MS = 4000
+/** At most this many countdown dots (one per second); fewer when the pause is short. */
 export const COUNTDOWN_DOTS = 5
+const MIN_COUNTDOWN_DOTS = 3
 
-/** When the previous line is actually done being sung (end of its last word). */
-function lineEnd(line: LyricLine): number {
+/** When a line is actually done being sung (end of its last word). */
+export function lineEnd(line: LyricLine): number {
   const last = line.words.at(-1)
   return last ? last.t + last.d : line.t + line.d
 }
 
+/** Pause before line `i` (ms): from the end of the previous line, or from 0 for the first line. */
+function gapBefore(lines: LyricLine[], i: number): number {
+  return lines[i]!.t - (i > 0 ? lineEnd(lines[i - 1]!) : 0)
+}
+
+/** Lines that start a section: the first line, and every line after a pause ≥ SECTION_GAP_MS. */
+export function sectionStarts(lines: LyricLine[]): number[] {
+  const out: number[] = []
+  for (let i = 0; i < lines.length; i++) if (i === 0 || gapBefore(lines, i) >= SECTION_GAP_MS) out.push(i)
+  return out
+}
+
 /**
- * Countdown before the line that follows a long gap: which line is about to start and how many
- * dots (5..1) are left. Dots drop one per second and the last one disappears exactly when the
- * line starts. null when there is no countdown right now.
+ * Countdown dots before section start `i`: one per second of the pause, keeping a second of quiet
+ * after the previous line — 4 s → 3 dots, 5 s → 4, 6 s or more → 5. 0 = too short for a countdown.
  */
-export function interludeCountdown(lines: LyricLine[], ms: number): { index: number; dots: number } | null {
-  const idx = currentLineIndex(lines, ms)
-  const index = idx + 1
+export function countdownDots(lines: LyricLine[], i: number): number {
+  const n = Math.min(COUNTDOWN_DOTS, Math.floor(gapBefore(lines, i) / 1000) - 1)
+  return n >= MIN_COUNTDOWN_DOTS ? n : 0
+}
+
+/**
+ * Countdown before the next section start: which line is about to start, how many dots are left
+ * and how many it started with. Dots drop one per second and the last one disappears exactly
+ * when the line starts. null when there is no countdown right now.
+ */
+export function interludeCountdown(lines: LyricLine[], ms: number): { index: number; dots: number; total: number } | null {
+  const index = currentLineIndex(lines, ms) + 1
   const next = lines[index]
   if (!next) return null
-  const prevEnd = idx >= 0 ? lineEnd(lines[idx]!) : 0
-  if (next.t - prevEnd < INTERLUDE_MIN_GAP_MS) return null
+  if (index > 0 && gapBefore(lines, index) < SECTION_GAP_MS) return null
+  const total = countdownDots(lines, index)
+  if (!total) return null
   const left = next.t - ms
-  if (left <= 0 || left > COUNTDOWN_DOTS * 1000) return null
-  return { index, dots: Math.ceil(left / 1000) }
+  if (left <= 0 || left > total * 1000) return null
+  return { index, dots: Math.ceil(left / 1000), total }
 }
 
 /** Fill percentage (0..100) for each word of a line at time `ms`. */

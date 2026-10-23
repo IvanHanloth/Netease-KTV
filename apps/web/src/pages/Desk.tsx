@@ -3,7 +3,8 @@ import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-quer
 import { Link, useSearchParams } from 'react-router'
 import clsx from 'clsx'
 import type { PlaylistSummary } from '@shared/types'
-import { api } from '../lib/api'
+import { api, withFreshData } from '../lib/api'
+import { DeskNavContext, type DeskNav } from '../lib/deskNav'
 import { stopPreview } from '../lib/preview'
 import { errorText, toast, useAccount, useDebounced, useHistory } from '../lib/hooks'
 import { connect, useApp } from '../store/app'
@@ -45,6 +46,8 @@ type View =
   | { kind: 'toplists' }
   | { kind: 'scores' }
   | { kind: 'history' }
+  | { kind: 'album'; id: number; name: string }
+  | { kind: 'artist'; id: number; name: string }
   | { kind: 'playlist'; id: number; name: string }
 
 function useView(): [View, (v: View) => void] {
@@ -55,6 +58,8 @@ function useView(): [View, (v: View) => void] {
     if (v === 'toplists') return { kind: 'toplists' }
     if (v === 'scores') return { kind: 'scores' }
     if (v === 'history') return { kind: 'history' }
+    if ((v === 'album' || v === 'artist') && params.get('id'))
+      return { kind: v, id: Number(params.get('id')), name: params.get('name') || '' }
     if (v === 'playlist' && params.get('id'))
       return { kind: 'playlist', id: Number(params.get('id')), name: params.get('name') || '歌单' }
     return { kind: 'recommend' }
@@ -65,7 +70,7 @@ function useView(): [View, (v: View) => void] {
     if (token) next.set('token', token)
     if (v.kind !== 'recommend') next.set('view', v.kind)
     if (v.kind === 'search') next.set('q', v.q)
-    if (v.kind === 'playlist') {
+    if (v.kind === 'playlist' || v.kind === 'album' || v.kind === 'artist') {
       next.set('id', String(v.id))
       next.set('name', v.name)
     }
@@ -276,7 +281,7 @@ function SearchBox({ initial, onSearch }: { initial: string; onSearch: (q: strin
 
   return (
     <div className="relative min-w-0 flex-[1_1_320px]">
-      <label className="flex h-[52px] items-center gap-3 rounded-2xl border border-white/8 bg-white/6 px-4.5 focus-within:border-white/20">
+      <label className="flex h-[52px] items-center gap-3 rounded-2xl border border-white/10 bg-[#16161E] px-4.5 shadow-[0_10px_30px_rgba(0,0,0,0.35)] focus-within:border-white/20">
         <Icon name="search" size={20} className="text-muted" />
         <span className="sr-only-x">搜索</span>
         <input
@@ -379,9 +384,11 @@ function SeparatorChip() {
         aria-expanded={open}
         aria-haspopup="dialog"
         title="伴奏分离服务状态"
+        aria-label={`伴奏分离：${label}`}
         className={clsx(
           'flex h-10 items-center gap-2 rounded-full px-3.5 text-[13px] font-medium whitespace-nowrap transition-colors',
-          state === 'ready' ? 'bg-[rgba(74,222,128,0.1)] text-ok hover:bg-[rgba(74,222,128,0.16)]' : 'bg-white/6 text-muted hover:bg-white/10',
+          // Opaque: the chip sits in the pinned search row, over scrolling content.
+          state === 'ready' ? 'bg-[#13211A] text-ok hover:bg-[#172a20]' : 'bg-[#1A1A22] text-muted hover:bg-[#22222b]',
         )}
       >
         <span
@@ -389,7 +396,8 @@ function SeparatorChip() {
           className={clsx('h-2 w-2 rounded-full', state === 'preparing' && 'ktv-pulse')}
           style={{ background: color, boxShadow: state === 'ready' ? '0 0 10px #4ADE80' : undefined }}
         />
-        {label}
+        {/* Phones: just the dot, so the pinned search row stays one line. */}
+        <span className="max-sm:hidden">{label}</span>
       </button>
       {open && (
         <div
@@ -444,6 +452,49 @@ function Section({ title, action, children }: { title: string; action?: ReactNod
   )
 }
 
+/**
+ * Top-right page actions: refresh (re-fetch this page's lists from NetEase, skipping the server's
+ * data cache) and, on sub-pages, back.
+ */
+function PageActions({ back, children }: { back?: () => void; children?: ReactNode }) {
+  const qc = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  async function refresh() {
+    setBusy(true)
+    try {
+      await withFreshData(() => qc.refetchQueries({ type: 'active' }))
+    } catch (e) {
+      toast(errorText(e), 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="flex shrink-0 items-center gap-1">
+      {children}
+      <button
+        type="button"
+        onClick={refresh}
+        disabled={busy}
+        aria-label="刷新"
+        title="刷新：重新从网易云获取"
+        className="flex h-10 w-10 items-center justify-center rounded-xl text-muted transition-colors hover:bg-white/6 hover:text-fg disabled:opacity-60"
+      >
+        <Icon name="refresh" size={18} className={busy ? 'ktv-spin' : undefined} />
+      </button>
+      {back && (
+        <button
+          type="button"
+          onClick={back}
+          className="inline-flex h-10 items-center gap-1 rounded-xl px-2 text-sm whitespace-nowrap text-muted hover:bg-white/6 hover:text-fg"
+        >
+          <Icon name="chevronLeft" size={16} /> 返回
+        </button>
+      )}
+    </div>
+  )
+}
+
 function Loading() {
   return (
     <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted">
@@ -465,9 +516,12 @@ function RecommendView({ go }: { go: (v: View) => void }) {
   return (
     <>
       <section className="flex flex-col gap-4">
-        <div className="flex flex-col gap-1.5">
-          <h1 className="m-0 text-[34px] font-bold tracking-[0.01em]">今晚想唱点什么？</h1>
-          <p className="m-0 text-[15px] text-muted">从日推、歌单或搜索开始点歌，点过的歌会在后台提前生成伴奏</p>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex flex-col gap-1.5">
+            <h1 className="m-0 text-[34px] font-bold tracking-[0.01em]">今晚想唱点什么？</h1>
+            <p className="m-0 text-[15px] text-muted">从日推、歌单或搜索开始点歌，点过的歌会在后台提前生成伴奏</p>
+          </div>
+          <PageActions />
         </div>
         <div role="group" aria-label="快速搜索" className="flex flex-wrap gap-2.5">
           {quickTags.map((t) => (
@@ -542,7 +596,7 @@ function InfiniteSongs({ queryKey, fetchPage }: { queryKey: unknown[]; fetchPage
 
 function SearchView({ q }: { q: string }) {
   return (
-    <Section title={`“${q}” 的搜索结果`}>
+    <Section title={`“${q}” 的搜索结果`} action={<PageActions />}>
       <InfiniteSongs queryKey={['search', q]} fetchPage={(offset) => api.search(q, offset, 30)} />
     </Section>
   )
@@ -563,7 +617,7 @@ function PlaylistCard({ p, onOpen }: { p: PlaylistSummary; onOpen: () => void })
 function ToplistsView({ go }: { go: (v: View) => void }) {
   const q = useQuery({ queryKey: ['toplists'], queryFn: api.toplists, staleTime: 10 * 60_000 })
   return (
-    <Section title="热歌榜">
+    <Section title="热歌榜" action={<PageActions />}>
       {q.isLoading ? (
         <Loading />
       ) : q.isError ? (
@@ -584,11 +638,7 @@ function PlaylistView({ id, name, back }: { id: number; name: string; back: () =
   return (
     <Section
       title={name}
-      action={
-        <button type="button" onClick={back} className="inline-flex h-10 items-center gap-1 text-sm whitespace-nowrap text-muted hover:text-fg">
-          <Icon name="chevronLeft" size={16} /> 返回
-        </button>
-      }
+      action={<PageActions back={back} />}
     >
       {imported && (
         <p className="m-0 -mt-1 flex items-center gap-2 text-xs text-muted">
@@ -601,13 +651,130 @@ function PlaylistView({ id, name, back }: { id: number; name: string; back: () =
   )
 }
 
+function DetailHeader({
+  kind,
+  title,
+  cover,
+  round,
+  meta,
+  back,
+}: {
+  kind: string
+  title: string
+  cover: ReactNode
+  round?: boolean
+  meta?: ReactNode
+  back: () => void
+}) {
+  return (
+    <div className="flex items-start gap-4 sm:gap-6">
+      <div
+        className={clsx(
+          'h-24 w-24 shrink-0 overflow-hidden shadow-[0_14px_30px_rgba(0,0,0,0.4)] sm:h-36 sm:w-36',
+          round ? 'rounded-full' : 'rounded-[20px]',
+        )}
+      >
+        {cover}
+      </div>
+      <div className="flex min-w-0 flex-1 flex-col gap-2 pt-1">
+        <span className="text-xs tracking-[0.12em] text-subtle">{kind}</span>
+        <h1 className="m-0 text-2xl leading-tight font-bold break-words sm:text-[30px]">{title}</h1>
+        {meta && <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-muted">{meta}</div>}
+      </div>
+      <PageActions back={back} />
+    </div>
+  )
+}
+
+function AlbumView({ id, name, go, back }: { id: number; name: string; go: (v: View) => void; back: () => void }) {
+  const q = useQuery({ queryKey: ['album', id], queryFn: () => api.album(id), staleTime: 10 * 60_000 })
+  const a = q.data
+  const year = a?.publishTime ? new Date(a.publishTime).getFullYear() : null
+  return (
+    <section className="flex flex-col gap-6">
+      <DetailHeader
+        kind="专辑"
+        title={a?.name || name}
+        back={back}
+        cover={<Cover url={a?.picUrl} seed={id} px={400} className="h-full w-full" />}
+        meta={
+          a && (
+            <>
+              {a.artists.map((ar, i) => (
+                <span key={ar.id || i}>
+                  {ar.id ? (
+                    <button
+                      type="button"
+                      onClick={() => go({ kind: 'artist', id: ar.id, name: ar.name })}
+                      className="font-semibold text-fg-2 hover:text-fg hover:underline"
+                    >
+                      {ar.name}
+                    </button>
+                  ) : (
+                    ar.name
+                  )}
+                </span>
+              ))}
+              {year && <span className="num">· {year}</span>}
+              {a.company && <span>· {a.company}</span>}
+              <span className="num">· {a.songs.length} 首</span>
+            </>
+          )
+        }
+      />
+      {q.isLoading ? (
+        <Loading />
+      ) : q.isError ? (
+        <ErrorNote error={q.error} retry={() => q.refetch()} retrying={q.isFetching} />
+      ) : a!.songs.length ? (
+        <div className="overflow-x-auto">
+          <SongTable songs={a!.songs} />
+        </div>
+      ) : (
+        <EmptyNote>这张专辑没有歌曲</EmptyNote>
+      )}
+    </section>
+  )
+}
+
+function ArtistView({ id, name, back }: { id: number; name: string; back: () => void }) {
+  const q = useQuery({ queryKey: ['artist', id], queryFn: () => api.artist(id), staleTime: 10 * 60_000 })
+  const a = q.data
+  return (
+    <section className="flex flex-col gap-6">
+      <DetailHeader
+        kind="歌手"
+        title={a?.name || name}
+        back={back}
+        round
+        cover={<Cover url={a?.picUrl} seed={id} px={400} className="h-full w-full" />}
+        meta={
+          a && (
+            <>
+              {a.alias.length > 0 && <span>{a.alias.join(' / ')}</span>}
+              <span className="num">
+                {a.alias.length > 0 && '· '}单曲 {a.songCount} · 专辑 {a.albumCount}
+              </span>
+            </>
+          )
+        }
+      />
+      <Section title="热门歌曲">
+        <InfiniteSongs queryKey={['artistSongs', id]} fetchPage={(offset) => api.artistSongs(id, offset, 50)} />
+      </Section>
+    </section>
+  )
+}
+
 function HistoryView() {
   const q = useHistory()
   const songs = q.data?.songs ?? []
   return (
     <Section
       title="点歌记录"
-      action={songs.length > 0 && <span className="num text-sm text-muted">最近 {songs.length} 首</span>}
+      action={
+        <PageActions>{songs.length > 0 && <span className="num mr-2 text-sm text-muted">最近 {songs.length} 首</span>}</PageActions>
+      }
     >
       <p className="m-0 -mt-1 text-sm text-muted">最近点过的 50 首歌，最新的在最前面。再点一次就会回到最前面。</p>
       {q.isLoading ? (
@@ -637,6 +804,15 @@ export default function Desk() {
   useEffect(() => {
     document.title = '点歌台 · Netease KTV'
   }, [])
+  const goRef = useRef(go)
+  goRef.current = go
+  const nav = useMemo<DeskNav>(
+    () => ({
+      openAlbum: (id, name) => goRef.current({ kind: 'album', id, name }),
+      openArtist: (id, name) => goRef.current({ kind: 'artist', id, name }),
+    }),
+    [],
+  )
   // 试听 stops when leaving the page or switching views.
   useEffect(() => stopPreview, [])
   const viewKey = JSON.stringify(view)
@@ -644,7 +820,8 @@ export default function Desk() {
 
   const content = (
     <>
-      <div className="flex flex-wrap items-center gap-4">
+      {/* Search stays pinned to the top while the page scrolls. */}
+      <div className="pointer-events-none sticky top-0 z-30 -mx-4 -mt-6 flex items-center gap-3 px-4 pt-6 pb-3 sm:-mx-8 sm:gap-4 sm:px-8 lg:-mx-10 lg:-mt-7 lg:px-10 lg:pt-7 [&>*]:pointer-events-auto">
         <SearchBox initial={view.kind === 'search' ? view.q : ''} onSearch={(q) => go({ kind: 'search', q })} />
         <SeparatorChip />
       </div>
@@ -652,17 +829,20 @@ export default function Desk() {
       {view.kind === 'search' && <SearchView q={view.q} />}
       {view.kind === 'toplists' && <ToplistsView go={go} />}
       {view.kind === 'scores' && (
-        <Section title="K 歌排行">
+        <Section title="K 歌排行" action={<PageActions />}>
           <Leaderboard manage />
         </Section>
       )}
       {view.kind === 'history' && <HistoryView />}
+      {view.kind === 'album' && <AlbumView key={view.id} id={view.id} name={view.name} go={go} back={() => window.history.back()} />}
+      {view.kind === 'artist' && <ArtistView key={view.id} id={view.id} name={view.name} back={() => window.history.back()} />}
       {view.kind === 'playlist' && <PlaylistView id={view.id} name={view.name} back={() => window.history.back()} />}
     </>
   )
 
   return (
-    <div className="relative min-h-full overflow-hidden bg-ink text-fg lg:h-full">
+    <DeskNavContext.Provider value={nav}>
+    <div className="relative min-h-full overflow-clip bg-ink text-fg lg:h-full">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute -top-[380px] left-[160px] h-[760px] w-[760px] rounded-full opacity-[0.16] blur-[20px]"
@@ -710,6 +890,7 @@ export default function Desk() {
         onImported={(p) => go({ kind: 'playlist', id: p.id, name: p.name })}
       />
     </div>
+    </DeskNavContext.Provider>
   )
 }
 

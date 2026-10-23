@@ -3,12 +3,14 @@ import { useQuery } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import clsx from 'clsx'
 import type { LyricLine, MvInfo, PlayerState, Song, TrackState } from '@shared/types'
+import { toServerTime } from '../lib/clock'
+import { useIdleMusic } from '../player/idleMusic'
 import { api, imgUrl, isRetryable, mediaUrl, tokenized } from '../lib/api'
 import { ambientColor, companionColor } from '../lib/color'
 import { artistsText, deriveStatus, fmtTime } from '../lib/format'
-import { useIsLocalhostOrigin, useRemoteUrl, useSettings } from '../lib/hooks'
-import { COUNTDOWN_DOTS, currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
-import { leadSegments } from '../lib/leadVocal'
+import { useDebounced, useIsLocalhostOrigin, useRemoteUrl, useSettings } from '../lib/hooks'
+import { currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
+import { leadSegments, mergeSegments, seekLeadSegments, type LeadSegment } from '../lib/leadVocal'
 import { AudioEngine } from '../player/engine'
 import { useScoring } from '../player/useScoring'
 import { DEFAULT_TOLERANCE } from '../player/scoring'
@@ -62,6 +64,55 @@ function Ambient({ song }: { song: Song | null }) {
         style={{ background: 'radial-gradient(circle, #FF9F43 0%, rgba(0,0,0,0) 60%)' }}
       />
     </div>
+  )
+}
+
+/** A blob that wanders slowly to a new random spot every 9–16 s (idle page background). */
+function WanderBlob({ className, style, range }: { className: string; style: React.CSSProperties; range: number }) {
+  const pick = () => ({
+    x: `${(Math.random() * 2 - 1) * range}vw`,
+    y: `${(Math.random() * 2 - 1) * range * 0.8}vh`,
+    scale: 0.85 + Math.random() * 0.35,
+    duration: 9 + Math.random() * 7,
+  })
+  const [to, setTo] = useState(pick)
+  return (
+    <motion.div
+      className={className}
+      style={style}
+      initial={{ x: 0, y: 0, scale: 1 }}
+      animate={{ x: to.x, y: to.y, scale: to.scale }}
+      transition={{ duration: to.duration, ease: 'easeInOut' }}
+      onAnimationComplete={() => setTo(pick())}
+    />
+  )
+}
+
+/** Idle page background: the two glows drift around irregularly so the screen feels alive. */
+function IdleAmbient() {
+  return (
+    <motion.div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 overflow-hidden"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 1.6 }}
+    >
+      <WanderBlob
+        range={14}
+        className="absolute -top-[30vh] -left-[14vw] h-[100vh] w-[58vw] rounded-full opacity-[0.42] blur-[30px]"
+        style={{ background: 'radial-gradient(circle, #FF4D7E 0%, rgba(0,0,0,0) 62%)' }}
+      />
+      <WanderBlob
+        range={12}
+        className="absolute top-[6vh] -right-[16vw] h-[92vh] w-[52vw] rounded-full opacity-[0.36] blur-[30px]"
+        style={{ background: `radial-gradient(circle, ${companionColor('#FF4D7E')} 0%, rgba(0,0,0,0) 60%)` }}
+      />
+      <div
+        className="absolute -bottom-[52vh] left-[32vw] h-[84vh] w-[47vw] rounded-full opacity-[0.16] blur-[30px]"
+        style={{ background: 'radial-gradient(circle, #FF9F43 0%, rgba(0,0,0,0) 60%)' }}
+      />
+    </motion.div>
   )
 }
 
@@ -400,11 +451,11 @@ function useLyrics(songId: number) {
 }
 
 /**
- * Intro / interlude countdown shown above the line that is about to start: five dots, the
+ * Countdown shown above the first line of a section (3–5 dots, see lib/lyrics.ts), the
  * rightmost one disappearing each second, the last one vanishing exactly as the line begins.
  * Absolutely positioned so it never shifts the lyrics.
  */
-function CountdownDots({ dots, align = 'center' }: { dots: number; align?: 'center' | 'left' | 'right' }) {
+function CountdownDots({ dots, total, align = 'center' }: { dots: number; total: number; align?: 'center' | 'left' | 'right' }) {
   return (
     <div
       aria-hidden="true"
@@ -415,7 +466,7 @@ function CountdownDots({ dots, align = 'center' }: { dots: number; align?: 'cent
         align === 'right' && 'right-0',
       )}
     >
-      {Array.from({ length: COUNTDOWN_DOTS }, (_, i) => {
+      {Array.from({ length: total }, (_, i) => {
         // Dots disappear from right to left: the rightmost one goes first.
         const on = i < dots
         return (
@@ -514,7 +565,7 @@ function LyricsView({ songId, getMs, song }: { songId: number; getMs: () => numb
           className="relative my-[1.5vh] text-[clamp(40px,4.8vw,104px)]"
         >
           {/* Intro: the first line is the big line and the one about to start. */}
-          {countdown?.index === cur && <CountdownDots dots={countdown.dots} />}
+          {countdown?.index === cur && <CountdownDots dots={countdown.dots} total={countdown.total} />}
           <CurrentLine line={lines[cur]} ms={idx < 0 ? -1 : ms} showTranslation={showTranslation} />
         </motion.div>
         <motion.p
@@ -527,7 +578,7 @@ function LyricsView({ songId, getMs, song }: { songId: number; getMs: () => numb
           className="relative m-0 min-h-[1.2em] px-[4vw] text-[clamp(24px,2.4vw,50px)] font-semibold text-white/62"
         >
           {/* Interlude: the next line is the one about to start. */}
-          {countdown && countdown.index === cur + 1 && <CountdownDots dots={countdown.dots} />}
+          {countdown && countdown.index === cur + 1 && <CountdownDots dots={countdown.dots} total={countdown.total} />}
           {next1?.text ?? ' '}
         </motion.p>
         <motion.p
@@ -624,7 +675,7 @@ function TwoLineLyrics({ songId, getMs, raised }: { songId: number; getMs: () =>
                 transition={{ duration: reduceMotion() ? 0 : 0.25 }}
                 className="relative"
               >
-                {countdown?.index === li && <CountdownDots dots={countdown.dots} align={r === 0 ? 'left' : 'right'} />}
+                {countdown?.index === li && <CountdownDots dots={countdown.dots} total={countdown.total} align={r === 0 ? 'left' : 'right'} />}
                 <KtvLine line={lines[li]} ms={ms} />
               </motion.div>
             )}
@@ -863,10 +914,10 @@ function MixerPopover({ player, karaoke }: { player: PlayerState; karaoke: boole
   )
 }
 
-function KeyControl({ value }: { value: number }) {
+function KeyControl({ value, pending }: { value: number; pending?: boolean }) {
   return (
     <ControlPill className="pr-2 pl-4">
-      <span className="hidden text-[15px] min-[1440px]:inline">升降调</span>
+      <span className="hidden text-[15px] min-[1440px]:inline">{pending ? '变调中' : '升降调'}</span>
       <button
         type="button"
         aria-label="降调"
@@ -876,8 +927,17 @@ function KeyControl({ value }: { value: number }) {
       >
         <Icon name="minus" size={18} strokeWidth={2} />
       </button>
-      <span className="num w-9 text-center text-[20px] font-semibold text-accent" aria-live="polite" title="当前调">
-        {value > 0 ? '+' + value : value}
+      <span
+        className="num relative flex w-9 items-center justify-center text-[20px] font-semibold text-accent"
+        aria-live="polite"
+        title={pending ? '正在处理变调，几秒后生效' : '当前调'}
+      >
+        <span className={clsx(pending && 'opacity-40')}>{value > 0 ? '+' + value : value}</span>
+        {pending && (
+          <span className="absolute inset-0 flex items-center justify-center text-fg">
+            <Spinner size={18} />
+          </span>
+        )}
       </span>
       <button
         type="button"
@@ -897,7 +957,17 @@ function KeyControl({ value }: { value: number }) {
  * Never wraps: labels collapse to icons below 1280 px, and below 1024 px the row scrolls
  * sideways. Popovers render outside the scrolling row so they are never clipped.
  */
-function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: boolean; extra?: ReactNode }) {
+function Controls({
+  player,
+  hasStems,
+  extra,
+  keyPending,
+}: {
+  player: PlayerState
+  hasStems: boolean
+  extra?: ReactNode
+  keyPending?: boolean
+}) {
   const karaoke = hasStems && player.trackMode === 'karaoke'
   const [mixerOpen, setMixerOpen] = useState(false)
   const boxRef = useRef<HTMLDivElement>(null)
@@ -939,7 +1009,7 @@ function Controls({ player, hasStems, extra }: { player: PlayerState; hasStems: 
         <DisplayModeToggle size="tv" />
         <span className="min-w-2 flex-1" aria-hidden="true" />
         <MixerButton player={player} karaoke={karaoke} open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
-        <KeyControl value={player.key} />
+        <KeyControl value={player.key} pending={keyPending} />
         {extra}
       </div>
     </div>
@@ -1122,12 +1192,8 @@ function useOsd(player: PlayerState) {
       if (prev.current && player.current) show(`切歌 · 《${player.current.song.name}》`, 'next')
       return
     }
-    if (prev.trackMode !== player.trackMode || !!prev.leadVocal !== !!player.leadVocal) {
-      if (player.trackMode === 'original') show('原唱', 'mic')
-      else if (player.leadVocal) show('领唱 · 每段第一句带原唱', 'note')
-      else show('伴唱', 'wave')
-    }
-    else if (prev.displayMode !== player.displayMode) show(player.displayMode === 'mv' ? 'MV 模式' : '舞台模式', player.displayMode === 'mv' ? 'video' : 'lyrics')
+    // 伴唱 / 领唱 / 原唱 changes need no banner: the control bar and header chip already show it.
+    if (prev.displayMode !== player.displayMode) show(player.displayMode === 'mv' ? 'MV 模式' : '舞台模式', player.displayMode === 'mv' ? 'video' : 'lyrics')
     else if (prev.key !== player.key) show(player.key === 0 ? '原调' : player.key > 0 ? `升调 +${player.key}` : `降调 ${player.key}`)
     else if (prev.musicVolume !== player.musicVolume) show(`音量 ${pctText(player.musicVolume)}`, 'volume')
   }, [player, storeReady, show])
@@ -1139,7 +1205,12 @@ function useOsd(player: PlayerState) {
 function IdleScreen() {
   const connected = useApp((s) => s.connected)
   return (
-    <div className="absolute inset-0 flex flex-col items-center justify-center gap-[6vh] px-[4vw] text-center">
+    <motion.div
+      className="absolute inset-0 flex flex-col items-center justify-center gap-[6vh] px-[4vw] text-center"
+      initial={{ opacity: 0, scale: 0.985 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 1.2, ease: 'easeOut' }}
+    >
       <div className="flex flex-col items-center gap-5">
         <div className="flex h-20 w-20 items-center justify-center rounded-[24px] bg-[linear-gradient(135deg,#FF4D7E_0%,#8B5CF6_100%)] text-white shadow-[0_20px_60px_rgba(255,77,126,0.45)]">
           <Icon name="mic" size={40} strokeWidth={2} />
@@ -1150,7 +1221,7 @@ function IdleScreen() {
         </p>
       </div>
       <QrCard big />
-    </div>
+    </motion.div>
   )
 }
 
@@ -1238,6 +1309,24 @@ export default function Tv() {
   const engine = engineRef.current
   const [unlocked, setUnlocked] = useState(false)
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  // 领唱 segments: the section starts, plus the lines right after a seek (merged into the engine).
+  const sectionLead = useRef<LeadSegment[]>([])
+  const seekLead = useRef<LeadSegment[]>([])
+  const leadCtx = useRef<{ on: boolean; lines: LyricLine[] | null }>({ on: false, lines: null })
+  const applyLead = useCallback(() => {
+    const e = engineRef.current!
+    e.setLeadSegments(leadCtx.current.on ? mergeSegments([...sectionLead.current, ...seekLead.current]) : [])
+  }, [])
+  /** Before jumping to `pos`: let the original vocal carry the singer back in. */
+  const leadAfterSeek = useCallback(
+    (pos: number) => {
+      const { on, lines } = leadCtx.current
+      const e = engineRef.current!
+      seekLead.current = on && lines && e.hasTrack ? seekLeadSegments(lines, e.vocalActivity(), pos) : []
+      applyLead()
+    },
+    [applyLead],
+  )
   const [loadError, setLoadError] = useState('')
   const player = useApp((s) => s.state.player)
   const tracks = useApp((s) => s.state.tracks)
@@ -1269,7 +1358,18 @@ export default function Tv() {
 
   const report = useCallback(() => {
     if (!engine.hasTrack || useApp.getState().tvActive !== true) return
-    sendMessage({ type: 'report', position: engine.position(), playing: engine.playing })
+    // Stamp the report with when this sample comes out of the speakers (server clock), so 耳返
+    // phones can play in step. uid / epoch say which song the audio belongs to.
+    const out = engine.outputClock()
+    const at = toServerTime(out.perf)
+    const [uid, epoch] = engine.loadedKey.split('|')
+    sendMessage({
+      type: 'report',
+      position: out.position,
+      playing: engine.playing,
+      ...(at !== null ? { at } : {}),
+      ...(uid ? { uid, epoch: Number(epoch) } : {}),
+    })
   }, [engine])
 
   // Keep audio on this TV across a brief reconnect: if it was the active TV, claim it back.
@@ -1293,8 +1393,10 @@ export default function Tv() {
   const hasStems = !!track?.hasStems
   const mvMode = (player.displayMode ?? 'stage') === 'mv'
   const songKey = cur ? `${cur.uid}|${player.epoch}|` : ''
+  // Key presses settle for a moment first, so tapping +3 renders one pitch, not three.
+  const pitchKey = useDebounced(player.key, 500)
   // trackMode is deliberately NOT part of the key: with stems, 伴唱 ⇄ 原唱 is a gain change.
-  const loadKey = cur && ready ? `${songKey}${player.key}|${hasStems ? 's' : 'o'}` : ''
+  const loadKey = cur && ready ? `${songKey}${pitchKey}|${hasStems ? 's' : 'o'}` : ''
 
   // load audio when the song / epoch / key / stems availability changes
   useEffect(() => {
@@ -1314,7 +1416,7 @@ export default function Tv() {
     // a different song: fade the old one out right away instead of waiting for the download
     if (!sameSong && engine.hasTrack) engine.unload(0.15)
     const id = cur.song.id
-    const k = player.key
+    const k = pitchKey
     const ac = new AbortController()
     setLoadState('loading')
     setLoadError('')
@@ -1335,6 +1437,8 @@ export default function Tv() {
         const fromServer = p.current?.uid === cur.uid && p.epoch === player.epoch && p.position > 0.5
         const resumeAt = sameSong ? engine.lastPosition : fromServer ? livePosition(p) : 0
         const resume = sameSong ? engine.lastPlaying : fromServer ? p.playing : true
+        if (!sameSong) seekLead.current = []
+        if (fromServer && resumeAt > 1) leadAfterSeek(resumeAt)
         if (resume) engine.play(resumeAt)
         else engine.seek(resumeAt)
         report()
@@ -1370,6 +1474,8 @@ export default function Tv() {
   }, [engine, audible, loadState, nextItem, nextTrack?.status, nextTrack?.hasStems])
 
   const { msg: osd, show: showOsd } = useOsd(player)
+  // 待机音乐 while nothing is queued (active TV only)
+  useIdleMusic(audible && !cur, player.musicVolume)
 
   // server-forwarded commands
   useEffect(
@@ -1391,10 +1497,13 @@ export default function Tv() {
             showOsd(engine.playing ? '播放' : '暂停', engine.playing ? 'play' : 'pause')
             break
           case 'seek':
+            leadAfterSeek(c.position)
             engine.seek(c.position)
             showOsd(fmtTime(c.position))
             break
           case 'restart':
+            seekLead.current = []
+            applyLead()
             engine.seek(0)
             if (!engine.playing) engine.play(0)
             showOsd('重唱', 'replay')
@@ -1488,6 +1597,8 @@ export default function Tv() {
   const playingAudio =
     !!songKey && engine.hasTrack && engine.loadedKey.startsWith(songKey) && (loadState === 'ready' || loadState === 'loading')
   const slowLoad = useDelayedFlag(loadState === 'loading', 500)
+  // Key of the audio actually playing (a new key takes a few seconds to render on the server).
+  const appliedKey = engine.loadedKey.startsWith(songKey) ? Number(engine.loadedKey.split('|')[2]) : player.key
   const showPreparing = !playingAudio && (!ready || loadState !== 'loading' || slowLoad)
 
   // "接下来" side panel, decided purely by the playback position (so seeking back hides it):
@@ -1517,19 +1628,18 @@ export default function Tv() {
   // 领唱 segments: computed once the stems are decoded and the lyrics are known, snapped to the
   // actual lead vocal, then handed to the engine which schedules them on the audio clock.
   useEffect(() => {
-    if (!leadOn || loadState !== 'ready' || !lyricsData || !hasLyrics(lyricsData) || !engine.hasTrack) {
-      engine.setLeadSegments([])
-      return
-    }
-    engine.setLeadSegments(leadSegments(lyricsData.lines, engine.vocalActivity()))
-  }, [engine, leadOn, loadState, lyricsData, loadKey])
+    const ok = leadOn && loadState === 'ready' && !!lyricsData && hasLyrics(lyricsData) && engine.hasTrack
+    leadCtx.current = { on: ok, lines: ok ? lyricsData!.lines : null }
+    sectionLead.current = ok ? leadSegments(lyricsData!.lines, engine.vocalActivity()) : []
+    applyLead()
+  }, [engine, leadOn, loadState, lyricsData, loadKey, applyLead])
   const scoring = useScoring({
     engine,
     active: audible && scoreOn && scoringAllowed && playingAudio,
     songId: cur?.song.id ?? null,
     songKey,
     hasPitch: !!track?.hasPitch,
-    pitchKey: player.key,
+    pitchKey: appliedKey, // match the audio actually playing
     lines: lyricsData?.lines,
     tolerance: scoreTolerance,
   })
@@ -1597,7 +1707,7 @@ export default function Tv() {
         />
       ) : (
         <>
-          <Ambient song={cur?.song ?? null} />
+          {cur ? <Ambient song={cur.song} /> : <IdleAmbient />}
           {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} engine={engine} preload={mvPreload} />}
           <Vignette />
         </>
@@ -1656,6 +1766,7 @@ export default function Tv() {
                 <Controls
                   player={player}
                   hasStems={hasStems}
+                  keyPending={playingAudio && appliedKey !== player.key}
                   extra={
                     scoringAllowed && (
                       <ScoreToggle

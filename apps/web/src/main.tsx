@@ -23,6 +23,7 @@ const Desk = lazy(() => import('./pages/Desk'))
 const Tv = lazy(() => import('./pages/Tv'))
 const Remote = lazy(() => import('./pages/Remote'))
 const Admin = lazy(() => import('./pages/Admin'))
+const Ear = lazy(() => import('./pages/Ear'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -53,6 +54,17 @@ function ConnectionWatcher() {
   return null
 }
 
+/** Settings changed somewhere (desk, 后台管理): every open page picks them up right away. */
+function SettingsWatcher() {
+  const version = useApp((s) => s.settingsVersion)
+  useEffect(() => {
+    if (!version) return
+    void queryClient.invalidateQueries({ queryKey: ['settings'] })
+    void queryClient.invalidateQueries({ queryKey: ['idle-music'] })
+  }, [version])
+  return null
+}
+
 const fallback = (
   <div className="flex h-full items-center justify-center text-muted">
     <Spinner size={28} />
@@ -66,6 +78,7 @@ const router = createBrowserRouter([
   { path: '/tv', element: page(<Tv />) },
   { path: '/m', element: page(<Remote />) },
   { path: '/admin', element: page(<Admin />) },
+  { path: '/ear', element: page(<Ear />) },
   { path: '*', element: page(<Desk />) },
 ])
 
@@ -74,6 +87,7 @@ createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
       <ConnectionWatcher />
+      <SettingsWatcher />
       <Toasts />
     </QueryClientProvider>
   </StrictMode>,

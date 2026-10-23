@@ -1,9 +1,16 @@
 """Netease-KTV separation service.
 
-A small FastAPI wrapper around python-audio-separator. The Node app posts jobs
-with absolute input/output paths on a shared volume; this service writes
+A small FastAPI wrapper around python-audio-separator. It writes
 `instrumental.flac` (backing vocals kept), `vocals.flac` (lead vocal) and
-`pitch.json` (lead-vocal melody for scoring) into the job's output directory.
+`pitch.json` (lead-vocal melody for scoring) for each job.
+
+Two ways to hand over files:
+- Upload (works from any machine on the LAN): `POST /files` the input, create the
+  job with `input_file`, fetch results from `GET /jobs/{id}/files/{name}`, then
+  `DELETE /jobs/{id}`. Several of these servers can work for one KTV host.
+- Shared volume (legacy): absolute `input` / `output_dir` paths under ALLOWED_ROOT.
+
+Set SEPARATOR_TOKEN to require `Authorization: Bearer <token>` on the job API.
 
 - Separation runs one job at a time on a worker thread, so the GPU is never
   shared, and the model is loaded once and reused.
@@ -40,6 +47,9 @@ CPU_DEFAULT_MODEL = "UVR_MDXNET_KARA_2.onnx"
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 # Only paths under this root are accepted (empty = no restriction, for local dev).
 ALLOWED_ROOT = os.environ.get("ALLOWED_ROOT", "")
+# Uploaded inputs and the outputs of upload-mode jobs live here until the host deletes the job.
+JOBS_DIR = Path(os.environ.get("JOBS_DIR") or (Path(tempfile.gettempdir()) / "ktv-jobs"))
+TOKEN = os.environ.get("SEPARATOR_TOKEN", "")
 
 PITCH_SR = 8000
 PITCH_HOP = 160  # 20 ms at 8 kHz
@@ -171,7 +181,10 @@ if __name__ == "__main__" and len(sys.argv) == 5 and sys.argv[1] == "--align":
 # Service
 # ---------------------------------------------------------------------------
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+import re  # noqa: E402
+
+from fastapi import Depends, FastAPI, HTTPException, Request  # noqa: E402
+from fastapi.responses import FileResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 
@@ -204,6 +217,10 @@ class Job:
     model: str
     mode: str = "separate"
     input2: Optional[str] = None
+    # Upload mode: inputs were uploaded; outputs stay in JOBS_DIR until the host deletes the job.
+    uploaded: bool = False
+    # The host already asked to delete it while it was still running.
+    drop_when_done: bool = False
     status: str = "queued"  # queued | running | done | error
     stems_ready: bool = False
     progress: float = 0.0
@@ -230,8 +247,11 @@ class Job:
 
 class JobIn(BaseModel):
     song_id: int
-    input: str
-    output_dir: str
+    # Shared-volume mode: absolute paths. Upload mode: leave empty and pass input_file (from POST /files).
+    input: str = ""
+    output_dir: str = ""
+    input_file: Optional[str] = None
+    input2_file: Optional[str] = None
     duration_ms: int = 0
     model: Optional[str] = None
     # "separate": stems + pitch; "pitch": only extract pitch from an existing vocals stem (input);
@@ -257,6 +277,11 @@ def check_path(p: str) -> Path:
     if ALLOWED_ROOT and not str(path).startswith(str(Path(ALLOWED_ROOT).resolve())):
         raise HTTPException(400, f"path outside ALLOWED_ROOT: {p}")
     return path
+
+
+def job_path(job: Job, p: str) -> Path:
+    """Upload-mode jobs live in JOBS_DIR (ours); shared-volume paths must stay under ALLOWED_ROOT."""
+    return Path(p).resolve() if job.uploaded else check_path(p)
 
 
 def get_separator(model: str):
@@ -297,6 +322,33 @@ def finish(job: Job, error: Optional[str] = None) -> None:
         job.status, job.error = "error", error
     else:
         job.status, job.progress = "done", 1.0
+    if job.drop_when_done:
+        drop_job(job)
+        jobs.pop(job.id, None)
+
+
+def drop_job(job: Job) -> None:
+    """Upload mode: remove the job's inputs and outputs."""
+    if not job.uploaded:
+        return
+    shutil.rmtree(job.output_dir, ignore_errors=True)
+    for p in (job.input, job.input2):
+        if p:
+            Path(p).unlink(missing_ok=True)
+
+
+def sweep_uploads(cutoff: float) -> None:
+    """Uploads that never became a job (the host went away mid-way) are removed after an hour."""
+    folder = JOBS_DIR / "uploads"
+    if not folder.exists():
+        return
+    in_use = {p for j in jobs.values() for p in (j.input, j.input2) if p}
+    for f in folder.iterdir():
+        try:
+            if str(f) not in in_use and f.stat().st_mtime < cutoff:
+                f.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def start_pitch(job: Job, vocals: Path, out_dir: Path) -> None:
@@ -359,20 +411,20 @@ def run_job(job: Job) -> None:
     job.status = "running"
     job.started_at = time.time()
     try:
-        out_dir = check_path(job.output_dir)
+        out_dir = job_path(job, job.output_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         if job.mode == "pitch":
-            start_pitch(job, check_path(job.input), out_dir)
+            start_pitch(job, job_path(job, job.input), out_dir)
             return
         if job.mode == "align":
-            start_align(job, check_path(job.input), check_path(job.input2 or ""), out_dir)
+            start_align(job, job_path(job, job.input), job_path(job, job.input2 or ""), out_dir)
             return
 
         sep = get_separator(job.model)
         for f in _work_dir.iterdir():
             f.unlink(missing_ok=True)
         t0 = time.time()
-        produced = sep.separate(str(check_path(job.input)))
+        produced = sep.separate(str(job_path(job, job.input)))
         found: dict[str, Path] = {}
         for item in produced:
             p = Path(item)
@@ -425,14 +477,15 @@ def worker() -> None:
     while True:
         job_id = pending.get()
         job = jobs.get(job_id)
-        if job:
+        if job and job.status == "queued":
             run_job(job)
             if job.stems_ready and stage == "error":
                 stage, stage_error = "ready", None
         # Forget finished jobs after an hour.
         cutoff = time.time() - 3600
         for jid in [j.id for j in jobs.values() if j.finished_at and j.finished_at < cutoff]:
-            jobs.pop(jid, None)
+            drop_job(jobs.pop(jid))
+        sweep_uploads(cutoff)
 
 
 app = FastAPI(title="Netease-KTV separator")
@@ -443,49 +496,134 @@ def _start_worker() -> None:
     threading.Thread(target=worker, daemon=True, name="separator-worker").start()
 
 
+def auth(request: Request) -> None:
+    if TOKEN and request.headers.get("authorization", "") != f"Bearer {TOKEN}":
+        raise HTTPException(401, "invalid separator token")
+
+
 @app.get("/health")
 def health() -> dict:
+    separating = [j for j in jobs.values() if j.mode == "separate" and not j.stems_ready and j.status in ("queued", "running")]
     return {
         "ok": True,
         "ready": stage == "ready",
         "stage": stage,
         "error": stage_error,
         "device": DEVICE,
+        "gpu": HAS_GPU,
         "model": _loaded_model or DEFAULT_MODEL,
+        "default_model": DEFAULT_MODEL,
         "pending": pending.qsize() + sum(1 for j in jobs.values() if j.status == "running"),
+        # Separations waiting for / running on the worker (pitch and align run on the side).
+        "queue": len(separating),
+        # Seconds of processing per second of audio (moving average), used by the host's scheduler.
+        "speed_factor": round(speed_factor, 3),
+        "upload": True,
+        "auth": bool(TOKEN),
+        "api": 2,
     }
 
 
-@app.post("/jobs")
+FILE_RE = re.compile(r"^[0-9a-f]{32}\.[a-z0-9]{1,5}$")
+
+
+def uploaded_path(name: Optional[str]) -> Path:
+    if not name or not FILE_RE.match(name):
+        raise HTTPException(400, "bad file id")
+    p = JOBS_DIR / "uploads" / name
+    if not p.exists():
+        raise HTTPException(404, "uploaded file not found")
+    return p
+
+
+@app.post("/files", dependencies=[Depends(auth)])
+async def upload_file(request: Request, ext: str = "bin") -> dict:
+    """Raw request body = file contents. Returns the id to pass as input_file / input2_file."""
+    ext = re.sub(r"[^a-z0-9]", "", ext.lower())[:5] or "bin"
+    name = f"{uuid.uuid4().hex}.{ext}"
+    folder = JOBS_DIR / "uploads"
+    folder.mkdir(parents=True, exist_ok=True)
+    tmp = folder / (name + ".part")
+    size = 0
+    with open(tmp, "wb") as f:
+        async for chunk in request.stream():
+            size += len(chunk)
+            f.write(chunk)
+    if size == 0:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(400, "empty upload")
+    os.replace(tmp, folder / name)
+    return {"file": name, "size": size}
+
+
+@app.post("/jobs", dependencies=[Depends(auth)])
 def create_job(body: JobIn) -> dict:
-    check_path(body.input)
-    check_path(body.output_dir)
-    if not Path(body.input).exists():
-        raise HTTPException(404, "input file not found")
-    if body.mode == "align":
-        if not body.input2 or not check_path(body.input2).exists():
+    job_id = uuid.uuid4().hex
+    mode = body.mode if body.mode in ("pitch", "align") else "separate"
+    if body.input_file:
+        inp = str(uploaded_path(body.input_file))
+        inp2 = str(uploaded_path(body.input2_file)) if mode == "align" else None
+        out = str(JOBS_DIR / "jobs" / job_id)
+        uploaded = True
+    else:
+        check_path(body.input)
+        check_path(body.output_dir)
+        if not Path(body.input).exists():
+            raise HTTPException(404, "input file not found")
+        if mode == "align" and (not body.input2 or not check_path(body.input2).exists()):
             raise HTTPException(404, "input2 file not found")
+        inp, inp2, out, uploaded = body.input, body.input2, body.output_dir, False
     job = Job(
-        id=uuid.uuid4().hex,
+        id=job_id,
         song_id=body.song_id,
-        input=body.input,
-        output_dir=body.output_dir,
+        input=inp,
+        output_dir=out,
         duration_ms=body.duration_ms,
         model=body.model or DEFAULT_MODEL,
-        mode=body.mode if body.mode in ("pitch", "align") else "separate",
-        input2=body.input2,
+        mode=mode,
+        input2=inp2,
+        uploaded=uploaded,
     )
     jobs[job.id] = job
     pending.put(job.id)
     return {"id": job.id}
 
 
-@app.get("/jobs/{job_id}")
+@app.get("/jobs/{job_id}", dependencies=[Depends(auth)])
 def get_job(job_id: str) -> dict:
     job = jobs.get(job_id)
     if not job:
         raise HTTPException(404, "job not found")
     return job.view()
+
+
+@app.get("/jobs/{job_id}/files/{name}", dependencies=[Depends(auth)])
+def get_job_file(job_id: str, name: str):
+    """Download an output of an upload-mode job: instrumental, vocals, pitch or align."""
+    job = jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    path = job.outputs.get(name)
+    if not path or not Path(path).exists():
+        raise HTTPException(404, "output not ready")
+    return FileResponse(path)
+
+
+@app.delete("/jobs/{job_id}", dependencies=[Depends(auth)])
+def delete_job(job_id: str) -> dict:
+    """The host has what it needs (or gave up): free the disk space."""
+    job = jobs.get(job_id)
+    if not job:
+        return {"ok": True}
+    if job.status == "queued":
+        # Not started: the worker skips it.
+        job.status, job.error, job.finished_at = "error", "cancelled", time.time()
+    if job.status in ("done", "error"):
+        drop_job(job)
+        jobs.pop(job_id, None)
+    else:
+        job.drop_when_done = True
+    return {"ok": True}
 
 
 if __name__ == "__main__":

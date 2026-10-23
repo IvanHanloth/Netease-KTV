@@ -1,4 +1,5 @@
 import { config } from './config.js'
+import { hub } from './core/hub.js'
 import { kv } from './db.js'
 import type { Settings, SoundLevel } from './shared/types.js'
 
@@ -19,6 +20,9 @@ export function getSettings(): Settings {
     mvPreload: saved.mvPreload ?? config.defaults.mvPreload,
     mvResolution: saved.mvResolution ?? config.defaults.mvResolution,
     cacheLimitGB: saved.cacheLimitGB ?? config.defaults.cacheLimitGB,
+    idleEnabled: saved.idleEnabled ?? config.defaults.idleEnabled,
+    idleVolume: saved.idleVolume ?? config.defaults.idleVolume,
+    idleSongs: saved.idleSongs ?? config.defaults.idleSongs,
   }
 }
 
@@ -42,6 +46,14 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
   if (typeof patch.scoreTolerance === 'number' && Number.isFinite(patch.scoreTolerance)) {
     next.scoreTolerance = Math.round(Math.min(3, Math.max(0.3, patch.scoreTolerance)) * 10) / 10
   }
+  if (typeof patch.idleEnabled === 'boolean') next.idleEnabled = patch.idleEnabled
+  if (typeof patch.idleVolume === 'number' && Number.isFinite(patch.idleVolume)) {
+    next.idleVolume = Math.round(Math.min(1, Math.max(0, patch.idleVolume)) * 100) / 100
+  }
+  if (Array.isArray(patch.idleSongs)) {
+    next.idleSongs = [...new Set(patch.idleSongs.filter((id) => Number.isInteger(id) && id > 0))].slice(0, 100)
+  }
   kv.set(KEY, next)
+  hub.broadcast({ type: 'settings' })
   return next
 }

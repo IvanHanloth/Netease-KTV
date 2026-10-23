@@ -7,17 +7,22 @@ import { api } from '../lib/api'
 import { errorText, toast, useAccount, useCacheInfo, useSettings } from '../lib/hooks'
 import { Icon, type IconName } from '../components/icons'
 import { ProgressBar, Range, Spinner, Switch } from '../components/ui'
+import { IdleSection } from '../components/admin/IdleSection'
+import { SeparatorsSection } from '../components/admin/SeparatorsSection'
+import { Card, ChoiceCard, inputCls, MODELS, Row, Segmented } from '../components/admin/parts'
 
 /**
  * 后台管理 (/admin): the ops panel. Everything here changes how the server downloads, separates,
  * stores and serves music; the 点歌台 only keeps singing options. No auth yet.
  */
 
-type SectionId = 'overview' | 'audio' | 'network' | 'storage' | 'unblock'
+type SectionId = 'overview' | 'separators' | 'audio' | 'idle' | 'network' | 'storage' | 'unblock'
 
 const SECTIONS: { id: SectionId; label: string; icon: IconName; keys: (keyof AdminSettings)[] }[] = [
   { id: 'overview', label: '运行状态', icon: 'info', keys: [] },
+  { id: 'separators', label: '分离服务器', icon: 'server', keys: [] },
   { id: 'audio', label: '音质与分离', icon: 'wave', keys: ['audioLevel', 'separatorModel'] },
+  { id: 'idle', label: '待机音乐', icon: 'note', keys: ['idleEnabled', 'idleVolume', 'idleSongs'] },
   { id: 'network', label: '网络', icon: 'globe', keys: ['publicUrl'] },
   { id: 'storage', label: '视频与缓存', icon: 'database', keys: ['mvPreload', 'mvResolution', 'cacheLimitGB'] },
   { id: 'unblock', label: '第三方音源', icon: 'link', keys: ['unblockEnabled', 'unblockSources'] },
@@ -165,12 +170,16 @@ export default function Admin() {
               </Card>
             ) : section === 'overview' ? (
               <Overview />
+            ) : section === 'separators' ? (
+              <SeparatorsSection />
             ) : !draft ? (
               <div className="flex justify-center py-16 text-muted">
                 <Spinner size={24} />
               </div>
             ) : section === 'audio' ? (
               <AudioSection draft={draft} set={set} />
+            ) : section === 'idle' ? (
+              <IdleSection draft={draft} set={set} />
             ) : section === 'network' ? (
               <NetworkSection draft={draft} set={set} />
             ) : section === 'storage' ? (
@@ -223,7 +232,9 @@ export default function Admin() {
 
 const SECTION_INTRO: Record<SectionId, string> = {
   overview: '服务、账号、存储和在线设备的当前状态，每 5 秒刷新。',
+  separators: '可以接入多台分离服务器一起处理点歌，本机不一定要运行分离服务。改动立即生效。',
   audio: '影响新下载和新分离的歌曲；已经生成好的伴奏不会重新处理。',
+  idle: '没人点歌时，主屏小声循环播放的音乐。',
   network: '手机扫码点歌用的地址。',
   storage: 'MV 下载和本地缓存的空间管理。清理操作立即生效，不需要保存。',
   unblock: '只给网易云完全没有音源的歌兜底，默认关闭。',
@@ -265,76 +276,6 @@ function ExternalNav({ to, icon, label }: { to: string; icon: IconName; label: s
   )
 }
 
-function Card({ title, action, children, className }: { title?: string; action?: ReactNode; children: ReactNode; className?: string }) {
-  return (
-    <section className={clsx('rounded-3xl border border-white/7 bg-white/[0.025] p-5 sm:p-6', className)}>
-      {(title || action) && (
-        <div className="mb-4 flex items-center justify-between gap-3">
-          {title && <h2 className="m-0 text-xs font-medium tracking-[0.12em] text-subtle">{title}</h2>}
-          {action}
-        </div>
-      )}
-      <div className="flex flex-col gap-5">{children}</div>
-    </section>
-  )
-}
-
-/** Title + help on the left, control on the right (stacks on phones when `stack`). */
-function Row({ title, help, children, stack }: { title: string; help?: ReactNode; children: ReactNode; stack?: boolean }) {
-  return (
-    <div className={clsx('flex gap-3', stack ? 'flex-col' : 'items-center justify-between gap-5')}>
-      <div className="flex min-w-0 flex-col gap-1">
-        <span className="text-[15px] font-semibold">{title}</span>
-        {help && <span className="text-xs leading-5 text-muted">{help}</span>}
-      </div>
-      {children}
-    </div>
-  )
-}
-
-function Segmented<T extends string | number>({
-  value,
-  options,
-  onChange,
-  label,
-}: {
-  value: T
-  options: { value: T; label: ReactNode }[]
-  onChange: (v: T) => void
-  label: string
-}) {
-  return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      className="grid gap-1 rounded-xl bg-white/5 p-1"
-      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
-    >
-      {options.map((o) => {
-        const on = o.value === value
-        return (
-          <button
-            key={String(o.value)}
-            type="button"
-            role="radio"
-            aria-checked={on}
-            onClick={() => onChange(o.value)}
-            className={clsx(
-              'h-9 min-w-0 truncate rounded-lg px-1.5 text-sm whitespace-nowrap transition-colors',
-              on ? 'bg-fg font-semibold text-ink' : 'text-fg-2 hover:bg-white/8',
-            )}
-          >
-            {o.label}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
-
-const inputCls =
-  'h-11 w-full rounded-xl border border-white/10 bg-white/5 px-3 text-sm text-fg outline-none placeholder:text-faint focus:border-white/25'
-
 type SetFn = <K extends keyof AdminSettings>(k: K, v: AdminSettings[K]) => void
 
 const GB = 1024 ** 3
@@ -362,10 +303,10 @@ const TONE_DOT: Record<Tone, string> = { ok: 'bg-ok-dot', warn: 'bg-warn-dot', b
 
 function separatorState(s: AdminStatus['separator'] | undefined): { tone: Tone; text: string } {
   if (!s) return { tone: 'idle', text: '读取中' }
-  if (!s.online) return { tone: 'bad', text: '离线' }
-  if (s.stage === 'error' || s.error) return { tone: 'bad', text: '模型加载失败' }
+  if (!s.nodes) return { tone: 'warn', text: '未配置' }
+  if (!s.online) return { tone: 'bad', text: '全部离线' }
   if (!s.ready) return { tone: 'warn', text: '模型准备中' }
-  if (s.pending > 0) return { tone: 'ok', text: `工作中 · ${s.pending} 个任务` }
+  if (s.busyNodes > 0) return { tone: 'ok', text: `${s.busyNodes} 台工作中` }
   return { tone: 'ok', text: '空闲' }
 }
 
@@ -404,7 +345,6 @@ function Overview() {
   const used = cache.data?.usedBytes ?? 0
   const limit = cache.data?.limitBytes ?? 0
   const ratio = limit ? Math.min(1, used / limit) : 0
-  const gpu = s?.separator.device && /cuda|gpu/i.test(s.separator.device)
 
   if (status.isError && !s)
     return (
@@ -423,10 +363,15 @@ function Overview() {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <StatusTile
           icon="wave"
-          label="伴奏分离服务"
+          label="伴奏分离服务器"
           tone={sep.tone}
           value={sep.text}
-          sub={s?.separator.online ? (gpu ? 'NVIDIA GPU 加速' : s.separator.device ? 'CPU 模式' : '') : '检查 separator 容器是否在运行'}
+          sub={
+            s &&
+            (s.separator.nodes
+              ? `${s.separator.onlineNodes} / ${s.separator.nodes} 台在线${s.separator.pending ? ` · ${s.separator.pending} 首待处理` : ''}`
+              : '在“分离服务器”里添加，否则只能播放原曲')
+          }
         />
         <StatusTile
           icon="user"
@@ -460,6 +405,7 @@ function Overview() {
                 主屏 {s.clients.tv}
                 <span className="text-sm font-medium text-muted">
                   {' '}· 点歌台 {s.clients.desk} · 手机 {s.clients.remote}
+                  {s.clients.ear > 0 && ` · 耳返 ${s.clients.ear}`}
                 </span>
               </span>
             ) : (
@@ -475,17 +421,10 @@ function Overview() {
           <Info k="版本" v={s && <span className="num">v{s.version}</span>} />
           <Info k="已运行" v={s && duration(s.uptimeSec)} />
           <Info k="Node.js" v={s && <span className="num">{s.node}</span>} />
-          <Info k="分离模型" v={s?.separator.model && <span className="num break-all">{s.separator.model}</span>} />
-          <Info k="分离设备" v={s?.separator.device && <span className="num">{s.separator.device}</span>} />
-          <Info k="分离服务地址" v={s && <span className="num break-all">{s.separatorUrl}</span>} />
+          <Info k="最快的分离设备" v={s?.separator.device && <span className="num">{s.separator.device}</span>} />
           <Info k="数据目录" v={s && <span className="num break-all">{s.dataDir}</span>} />
           <Info k="访问令牌" v={s && (s.authEnabled ? '已启用（ACCESS_TOKEN）' : '未启用，局域网内任何人都能访问')} />
         </dl>
-        {s?.separator.error && (
-          <p className="m-0 rounded-xl bg-[rgba(255,77,126,0.1)] p-3 text-xs leading-5 break-all text-accent-soft">
-            {s.separator.error}
-          </p>
-        )}
       </Card>
     </>
   )
@@ -508,16 +447,6 @@ const LEVELS: { value: SoundLevel; label: string; note: string }[] = [
   { value: 'exhigh', label: '极高', note: '320k' },
   { value: 'lossless', label: '无损', note: 'FLAC' },
   { value: 'hires', label: 'Hi-Res', note: '' },
-]
-
-const MODELS: { value: string; label: string; note: string }[] = [
-  { value: '', label: '自动', note: '有 NVIDIA 显卡用 RoFormer，否则用 MDX-Net' },
-  {
-    value: 'mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt',
-    label: 'Mel-Band RoFormer Karaoke',
-    note: '效果最好，需要显卡，约 900 MB',
-  },
-  { value: 'UVR_MDXNET_KARA_2.onnx', label: 'UVR MDX-Net Karaoke 2', note: '轻量，CPU 也能跑，约 50 MB' },
 ]
 
 function AudioSection({ draft, set }: { draft: AdminSettings; set: SetFn }) {
@@ -578,34 +507,6 @@ function AudioSection({ draft, set }: { draft: AdminSettings; set: SetFn }) {
         </p>
       </Card>
     </>
-  )
-}
-
-function ChoiceCard({ on, onClick, title, note }: { on: boolean; onClick: () => void; title: string; note: string }) {
-  return (
-    <button
-      type="button"
-      role="radio"
-      aria-checked={on}
-      onClick={onClick}
-      className={clsx(
-        'flex items-center gap-3.5 rounded-2xl border px-4 py-3 text-left transition-colors',
-        on ? 'border-[rgba(139,123,255,0.55)] bg-[rgba(109,75,255,0.12)]' : 'border-white/8 bg-white/[0.02] hover:bg-white/5',
-      )}
-    >
-      <span
-        className={clsx(
-          'flex h-5 w-5 shrink-0 items-center justify-center rounded-full border-2',
-          on ? 'border-[#8B7BFF]' : 'border-white/25',
-        )}
-      >
-        {on && <span className="h-2.5 w-2.5 rounded-full bg-[#8B7BFF]" />}
-      </span>
-      <span className="flex min-w-0 flex-col gap-0.5">
-        <span className="text-[15px] font-semibold">{title}</span>
-        <span className="text-xs leading-5 text-muted">{note}</span>
-      </span>
-    </button>
   )
 }
 

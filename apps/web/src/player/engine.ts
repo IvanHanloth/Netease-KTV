@@ -43,8 +43,21 @@ export function scheduleVocalGain(
   for (const x of segs) {
     if (x.end <= o.pos) continue
     if (x.start > o.pos) g.setTargetAtTime(o.lead, at(x.start), LEAD_ATTACK_TC)
-    g.setTargetAtTime(o.base, at(x.end), LEAD_RELEASE_TC)
+    // Soft release: an exponential fade that is ~95 % done after `fade` seconds.
+    const fade = x.fade ?? LEAD_RELEASE_TC * 3
+    g.setTargetAtTime(o.base, at(Math.max(x.start, x.end - Math.min(0.15, fade / 2))), fade / 3)
   }
+}
+
+/**
+ * A matching (audio-clock time, performance.now() time) pair for the sample being heard right now.
+ * getOutputTimestamp() includes the output latency; without it, estimate from the latency fields.
+ */
+export function outputTimeMap(ctx: AudioContext): { ctxTime: number; perf: number } {
+  const ts = typeof ctx.getOutputTimestamp === 'function' ? ctx.getOutputTimestamp() : null
+  if (ts && ts.contextTime && ts.performanceTime) return { ctxTime: ts.contextTime, perf: ts.performanceTime }
+  const latency = (ctx.outputLatency || 0) + (ctx.baseLatency || 0)
+  return { ctxTime: ctx.currentTime - latency, perf: performance.now() }
 }
 
 export interface TrackUrls {
@@ -114,6 +127,18 @@ export class AudioEngine {
     if (!this.ctx || !this.main) return 0
     if (!this.playing) return this.pausedAt
     return Math.max(0, Math.min(this.main.duration, this.startOffset + (this.ctx.currentTime - this.startCtxTime)))
+  }
+
+  /**
+   * What the speakers are playing right now: buffer position plus the performance.now() time at
+   * which that sample is heard (output latency included). Used to stamp position reports so
+   * 耳返 phones can line up with the TV.
+   */
+  outputClock(): { position: number; perf: number } {
+    const ctx = this.ctx
+    if (!ctx || !this.main || !this.playing) return { position: this.pausedAt, perf: performance.now() }
+    const map = outputTimeMap(ctx)
+    return { position: this.startOffset + (map.ctxTime - this.startCtxTime), perf: map.perf }
   }
 
   // No abort signal here: the promise is cached and may be shared by a later load.

@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { getDb } from './db.js'
 
 /**
@@ -11,6 +12,9 @@ export const HOUR = 60 * MIN
 export const DAY = 24 * HOUR
 
 const inflight = new Map<string, Promise<unknown>>()
+
+/** Set for requests with `?fresh=1` (the desk's refresh button): skip cache hits, refetch. */
+export const bypassCache = new AsyncLocalStorage<boolean>()
 
 function read(key: string): { value: unknown; fresh: boolean } | null {
   const row = getDb().prepare('SELECT value, expires_at FROM api_cache WHERE key = ?').get(key) as
@@ -35,7 +39,7 @@ function write(key: string, value: unknown, ttl: number): void {
 /** Return the cached value for `key`, or compute, store and return it. */
 export async function cached<T>(key: string, ttl: number, load: () => Promise<T>): Promise<T> {
   const hit = read(key)
-  if (hit?.fresh) return hit.value as T
+  if (hit?.fresh && !bypassCache.getStore()) return hit.value as T
   const running = inflight.get(key)
   if (running) return running as Promise<T>
   const job = (async () => {

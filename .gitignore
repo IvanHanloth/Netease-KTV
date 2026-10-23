@@ -10,3 +10,4 @@ __pycache__/
 separator/.venv/
 models/
 .DS_Store
+.env.separator

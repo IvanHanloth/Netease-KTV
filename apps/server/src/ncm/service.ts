@@ -1,6 +1,6 @@
 import { cached, DAY, HOUR, MIN } from '../apiCache.js'
 import { getDb } from '../db.js'
-import type { Account, Lyrics, PlaylistSummary, QrStatus, Song } from '../shared/types.js'
+import type { Account, AlbumDetail, ArtistDetail, Lyrics, PlaylistSummary, QrStatus, Song } from '../shared/types.js'
 import { call, clearCookie, getCookie, NcmError, setCookie } from './client.js'
 import { buildLyrics } from './lyrics.js'
 import { mapPlaylist, mapSongs } from './mappers.js'
@@ -163,6 +163,56 @@ export async function playlistTracks(id: number, offset = 0, limit = 100): Promi
     const songs = mapSongs(res.body?.songs, res.body?.privileges)
     cacheSongs(songs)
     return { songs, hasMore: songs.length >= limit }
+  })
+}
+
+export async function albumDetail(id: number): Promise<AlbumDetail> {
+  return cached(`album:${await who()}:${id}`, DAY, async () => {
+    const res = await call('album', { id })
+    const al = res.body?.album
+    if (!al) throw new NcmError('专辑不存在', 404)
+    const picUrl = String(al.picUrl ?? '')
+    const songs = mapSongs(res.body?.songs).map((s) => ({ ...s, album: { ...s.album, picUrl: s.album.picUrl || picUrl } }))
+    cacheSongs(songs)
+    return {
+      id,
+      name: String(al.name ?? ''),
+      picUrl,
+      artists: (al.artists?.length ? al.artists : al.artist ? [al.artist] : []).map((a: any) => ({
+        id: Number(a.id) || 0,
+        name: String(a.name ?? ''),
+      })),
+      publishTime: Number(al.publishTime ?? 0),
+      company: al.company || undefined,
+      description: al.description || undefined,
+      songs,
+    }
+  })
+}
+
+export async function artistDetail(id: number): Promise<ArtistDetail> {
+  return cached(`artist:${id}`, DAY, async () => {
+    const res = await call('artists', { id })
+    const ar = res.body?.artist
+    if (!ar) throw new NcmError('歌手不存在', 404)
+    return {
+      id,
+      name: String(ar.name ?? ''),
+      picUrl: String(ar.img1v1Url || ar.picUrl || ''),
+      alias: (ar.alias ?? []).map(String),
+      songCount: Number(ar.musicSize ?? 0),
+      albumCount: Number(ar.albumSize ?? 0),
+    }
+  })
+}
+
+/** An artist's songs, most popular first. */
+export async function artistSongs(id: number, offset = 0, limit = 50): Promise<{ songs: Song[]; hasMore: boolean }> {
+  return cached(`artistSongs:${await who()}:${id}:${offset}:${limit}`, 6 * HOUR, async () => {
+    const res = await call('artist_songs', { id, order: 'hot', offset, limit })
+    const songs = mapSongs(res.body?.songs)
+    cacheSongs(songs)
+    return { songs, hasMore: !!res.body?.more }
   })
 }
 

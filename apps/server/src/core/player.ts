@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { getDb, kv } from '../db.js'
-import type { AppState, PlayerCommand, PlayerState, QueueItem, QueuePosition, Song } from '../shared/types.js'
+import { serverNow } from '../clock.js'
+import type { AppState, PlaybackSync, PlayerCommand, PlayerState, QueueItem, QueuePosition, Song } from '../shared/types.js'
 import { hub } from './hub.js'
 
 const PLAYER_KEY = 'player'
@@ -248,10 +249,23 @@ export function command(cmd: PlayerCommand): void {
 let lastReportBroadcast = 0
 
 /** Position report from the TV. */
-export function report(position: number, playing: boolean): void {
-  if (!player.current) return
+let lastSync: PlaybackSync | null = null
+
+/** The TV's latest position report (for 耳返 clients that just connected). */
+export function latestSync(): PlaybackSync | null {
+  return lastSync && lastSync.uid === player.current?.uid ? lastSync : null
+}
+
+export function report(position: number, playing: boolean, at?: number, uid?: string, epoch?: number): void {
+  const cur = player.current
+  if (!cur) return
+  // A report about the previous song (sent while the TV was switching) is ignored.
+  if (uid !== undefined && (uid !== cur.uid || (epoch !== undefined && epoch !== player.epoch))) return
   const changed = playing !== player.playing
-  player = { ...player, position: Math.max(0, position), positionAt: Date.now(), playing }
+  const t = at !== undefined && Math.abs(at - serverNow()) < 5000 ? at : serverNow()
+  player = { ...player, position: Math.max(0, position), positionAt: Math.round(t), playing }
+  lastSync = { uid: cur.uid, epoch: player.epoch, position, at: t, playing }
+  hub.emit('sync', lastSync)
   const now = Date.now()
   if (changed || now - lastReportBroadcast > 900) {
     lastReportBroadcast = now

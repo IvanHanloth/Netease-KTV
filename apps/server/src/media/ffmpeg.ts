@@ -65,6 +65,33 @@ export function renderPitch(input: string, output: string, semitones: number): P
   return job
 }
 
+const queued = new Set<string>()
+const background: (() => Promise<void>)[] = []
+let backgroundRunning = 0
+
+/**
+ * Render a pitch-shifted copy in the background (at most 2 at a time), unless it already exists or
+ * is being rendered. Used to have the neighbouring keys ready before the singer asks for them:
+ * a full stem takes ~7 s, which made every +/- press feel broken.
+ */
+export function renderPitchLater(input: string, output: string, semitones: number): void {
+  if (queued.has(output) || inflight.has(output) || fs.existsSync(output)) return
+  queued.add(output)
+  background.push(() => renderPitch(input, output, semitones).catch(() => {}).finally(() => queued.delete(output)))
+  pumpBackground()
+}
+
+function pumpBackground(): void {
+  while (backgroundRunning < 2 && background.length) {
+    const job = background.shift()!
+    backgroundRunning++
+    void job().finally(() => {
+      backgroundRunning--
+      pumpBackground()
+    })
+  }
+}
+
 export async function ffmpegAvailable(): Promise<boolean> {
   try {
     const { code } = await run(config.ffmpeg, ['-version'])

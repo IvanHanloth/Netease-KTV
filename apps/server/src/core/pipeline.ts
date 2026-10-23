@@ -2,12 +2,22 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { config } from '../config.js'
 import { probeDuration } from '../media/ffmpeg.js'
-import { clearMedia, download, findOriginal, hasPitch, hasStems, mediaDir, stemPath } from '../media/files.js'
+import { clearMedia, download, findOriginal, hasPitch, hasStems, mediaDir, pitchPath, stemPath } from '../media/files.js'
 import { resolveAudio, UnavailableError } from '../media/resolve.js'
 import { enforceCacheLimit } from '../media/cache.js'
 import { cachedMv, ensureAlignment, ensureMv, readAlignment } from '../media/mv.js'
 import { getCachedSong, getSong } from '../ncm/service.js'
-import { pollJob, separatorHealth, submitJob } from '../separator.js'
+import {
+  chooseSeparationNode,
+  clusterOnline,
+  clusterSummary,
+  hasNodes,
+  NodeError,
+  pitchOnCluster,
+  pollNodes,
+  separateOnNode,
+  type SeparatorNodeConfig,
+} from '../separator.js'
 import { getSettings } from '../settings.js'
 import { hub } from './hub.js'
 import { priorityIds } from './player.js'
@@ -15,15 +25,14 @@ import { priorityIds } from './player.js'
 /**
  * Prepares accompaniment for queued songs, in queue order:
  *   idle -> downloading -> queued -> separating -> ready
- * Downloads and separation run in two independent loops so the next song can
- * download while the GPU is busy.
+ * Downloads and separation run independently so the next song can download while the
+ * separator nodes are busy; separations are spread over all nodes (see ../separator.ts).
  */
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const bootAt = Date.now()
 
 let downloading = false
-let separating = false
 
 function nextWith(status: string): number | undefined {
   return priorityIds().find((id) => hub.getTrack(id).status === status)
@@ -89,28 +98,33 @@ async function downloadLoop(): Promise<void> {
   hub.emit('work-separate')
 }
 
-async function separateOne(songId: number): Promise<void> {
+/** Songs whose separation failed because a node went away: retried on another node. */
+const attempts = new Map<number, number>()
+const MAX_ATTEMPTS = 3
+
+async function separateOne(songId: number, node: SeparatorNodeConfig): Promise<void> {
   const input = findOriginal(songId)
   if (!input) {
     hub.setTrack(songId, { status: 'idle' })
     return
   }
-  const song = await getSong(songId).catch(() => null)
+  // Claim the song synchronously so the dispatcher does not hand it out twice.
   hub.setTrack(songId, { status: 'separating', progress: 0, message: undefined }, false)
+  // No await before separateOnNode: it reserves the node slot synchronously, so the dispatcher's
+  // next pick in the same pass already sees this node as busy.
+  const song = getCachedSong(songId)
   try {
-    const { id: jobId } = await submitJob({
+    const { pitch } = await separateOnNode(node, {
       songId,
+      songName: song?.name,
       input,
-      outputDir: mediaDir(songId),
+      outDir: mediaDir(songId),
       durationMs: song?.duration ?? 0,
       model: getSettings().separatorModel,
+      onProgress: (p) => hub.setTrack(songId, { status: 'separating', progress: p }, false),
     })
-    const job = await pollJob(
-      jobId,
-      (j) => j.status === 'done' || !!j.stems_ready,
-      (j) => hub.setTrack(songId, { status: 'separating', progress: j.progress ?? 0 }, false),
-    )
     if (!hasStems(songId)) throw new Error('分离服务没有生成伴奏文件')
+    attempts.delete(songId)
     // Playable now; the pitch track (for scoring) may still be computing.
     hub.setTrack(songId, {
       status: 'ready',
@@ -120,12 +134,21 @@ async function separateOne(songId: number): Promise<void> {
       message: undefined,
     })
     enforceCacheLimit()
-    if (job.status !== 'done') {
-      pitchTried.add(songId)
-      void waitForPitch(jobId, songId)
-    }
+    pitchTried.add(songId)
+    void pitch.then(() => {
+      if (hasPitch(songId)) hub.setTrack(songId, { hasPitch: true }, false)
+    })
   } catch (err) {
-    console.error(`[pipeline] separate ${songId} failed:`, err)
+    const n = (attempts.get(songId) ?? 0) + 1
+    attempts.set(songId, n)
+    const lost = err instanceof NodeError && err.unreachable
+    console.error(`[pipeline] separate ${songId} on ${node.name} failed (attempt ${n}):`, (err as Error).message)
+    if (lost && n < MAX_ATTEMPTS) {
+      // The node dropped out mid-job: give the song to whichever node is up now.
+      hub.setTrack(songId, { status: 'queued', progress: 0, message: undefined }, false)
+      return
+    }
+    attempts.delete(songId)
     // Still playable with the original audio.
     hub.setTrack(songId, {
       status: 'ready',
@@ -137,6 +160,7 @@ async function separateOne(songId: number): Promise<void> {
 }
 
 const pitchTried = new Set<number>()
+let pitchBusy = false
 
 /** Songs separated before scoring existed (or whose pitch step failed) get their pitch extracted once. */
 function nextNeedingPitch(): number | undefined {
@@ -148,84 +172,81 @@ function nextNeedingPitch(): number | undefined {
 
 async function pitchOne(songId: number): Promise<void> {
   pitchTried.add(songId)
+  pitchBusy = true
   try {
-    const { id: jobId } = await submitJob({
-      songId,
-      input: stemPath(songId, 'vocals'),
-      outputDir: mediaDir(songId),
-      durationMs: 0,
-      mode: 'pitch',
-    })
-    await waitForPitch(jobId, songId)
-  } catch (err) {
-    console.warn(`[pipeline] pitch ${songId} failed:`, (err as Error).message)
-  }
-}
-
-/** Wait (in the background) for a job's pitch step and flag the track when it lands. */
-async function waitForPitch(jobId: string, songId: number): Promise<void> {
-  try {
-    await pollJob(jobId, (j) => j.status === 'done', undefined, 300)
-  } catch (err) {
-    console.warn(`[pipeline] pitch ${songId} failed:`, (err as Error).message)
-  }
-  if (hasPitch(songId)) hub.setTrack(songId, { hasPitch: true }, false)
-}
-
-async function separateLoop(): Promise<void> {
-  if (separating) return
-  separating = true
-  try {
-    for (;;) {
-      const id = nextWith('queued')
-      if (id === undefined) {
-        const pid = hub.separator.online ? nextNeedingPitch() : undefined
-        if (pid === undefined) break
-        await pitchOne(pid)
-        continue
-      }
-      if (!hub.separator.online) {
-        // Give a separator container that is still loading its model a moment.
-        if (Date.now() - bootAt < 45_000) {
-          await sleep(3000)
-          await pollSeparator()
-          continue
-        }
-        // No separator: play the original instead of waiting forever.
-        hub.setTrack(id, {
-          status: 'ready',
-          progress: 1,
-          hasStems: false,
-          message: '分离服务离线，将播放原曲',
-        })
-        continue
-      }
-      await separateOne(id)
+    if (await pitchOnCluster(songId, stemPath(songId, 'vocals'), pitchPath(songId))) {
+      hub.setTrack(songId, { hasPitch: true }, false)
     }
+  } catch (err) {
+    console.warn(`[pipeline] pitch ${songId} failed:`, (err as Error).message)
   } finally {
-    separating = false
+    pitchBusy = false
+    hub.emit('work-separate')
+  }
+}
+
+/**
+ * Hands queued songs (in queue order) to separator nodes. Several nodes work in parallel; a song
+ * waits for a busy fast node when that still beats a free slow one (see chooseSeparationNode).
+ * Re-run whenever something changes: a download finishes, a job ends, a node comes online.
+ */
+function separateLoop(): void {
+  for (;;) {
+    const id = nextWith('queued')
+    if (id === undefined) {
+      const pid = !pitchBusy && clusterOnline() ? nextNeedingPitch() : undefined
+      if (pid !== undefined) void pitchOne(pid)
+      return
+    }
+    const durationMs = getCachedSong(id)?.duration ?? 0
+    const choice = chooseSeparationNode(durationMs)
+    if (!choice) {
+      // Nothing can take it. Give nodes that are still starting (model download) a moment,
+      // otherwise play the original instead of waiting forever.
+      const starting = hasNodes() && (Date.now() - bootAt < 45_000 || clusterOnline())
+      if (starting) return
+      hub.setTrack(id, {
+        status: 'ready',
+        progress: 1,
+        hasStems: false,
+        message: hasNodes() ? '分离服务器都不在线，将播放原曲' : '没有配置分离服务器，将播放原曲',
+      })
+      continue
+    }
+    if (choice.wait) return
+    void separateOne(id, choice.node).finally(() => hub.emit('work-separate'))
   }
 }
 
 async function pollSeparator(): Promise<void> {
-  const health = await separatorHealth()
   const wasOnline = hub.separator.online
+  await pollNodes()
+  const summary = clusterSummary()
   const pending = priorityIds().filter((id) => {
     const s = hub.getTrack(id).status
     return s === 'queued' || s === 'separating' || s === 'downloading' || s === 'idle'
   }).length
-  hub.setSeparator({
-    online: !!health?.ok,
-    ready: health ? (health.ready ?? true) : false,
-    device: health?.device,
-    model: health?.model,
-    pending,
-  })
-  // The separator just came (back) online: pick up queued songs and pitch backfills.
-  if (!wasOnline && health?.ok) {
-    hub.emit('work-separate')
-    hub.emit('work-mv')
-  }
+  hub.setSeparator({ ...summary, pending })
+  // Nodes may have come online or freed up: hand out queued songs.
+  hub.emit('work-separate')
+  if (!wasOnline && summary.online) hub.emit('work-mv')
+}
+
+const fetching = new Map<number, Promise<void>>()
+
+/** Make sure a song's original audio is on disk (待机音乐: not queued, never separated). */
+export function ensureOriginal(songId: number): Promise<void> {
+  if (findOriginal(songId)) return Promise.resolve()
+  const running = fetching.get(songId)
+  if (running) return running
+  const job = (async () => {
+    const song = await getSong(songId)
+    const audio = await resolveAudio(song)
+    await download(audio.url, path.join(mediaDir(songId), `original.${audio.ext}`))
+    enforceCacheLimit()
+  })().finally(() => fetching.delete(songId))
+  fetching.set(songId, job)
+  return job
 }
 
 export function retry(songId: number): void {
@@ -285,11 +306,11 @@ async function mvLoop(): Promise<void> {
 export function startPipeline(): void {
   hub.on('work', () => {
     void downloadLoop()
-    void separateLoop()
+    separateLoop()
     void pollSeparator()
     void mvLoop()
   })
-  hub.on('work-separate', () => void separateLoop())
+  hub.on('work-separate', () => separateLoop())
   hub.on('work-mv', () => void mvLoop())
   setTimeout(enforceCacheLimit, 10_000).unref()
   // Safety net: pick up MV work that was skipped while the separator was still starting.

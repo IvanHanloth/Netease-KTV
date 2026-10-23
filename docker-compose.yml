@@ -1,6 +1,8 @@
 # Netease-KTV
 #   CPU only:      docker compose up -d
 #   NVIDIA GPU:    docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+#   No local separator (other machines do the separation, see docker-compose.separator.yml):
+#                  set KTV_SEPARATOR=off in .env, then: docker compose up -d --no-deps app
 # Then open http://<this machine's LAN IP>:8686 (copy .env.example to .env to customize).
 name: netease-ktv
 
@@ -13,6 +15,8 @@ services:
       - "${KTV_PORT:-8686}:8686"
     environment:
       SEPARATOR_URL: http://separator:9000
+      # off = no local separator node (add separator servers in 后台管理 /admin instead)
+      KTV_SEPARATOR: ${KTV_SEPARATOR:-on}
       ACCESS_TOKEN: ${ACCESS_TOKEN:-}
       PUBLIC_URL: ${PUBLIC_URL:-}
       AUDIO_LEVEL: ${AUDIO_LEVEL:-exhigh}
@@ -38,6 +42,7 @@ services:
     restart: unless-stopped
     environment:
       SEPARATOR_MODEL: ${SEPARATOR_MODEL:-}
+      JOBS_DIR: /data/separator-jobs
     volumes:
       - ktv-data:/data
       - ktv-models:/models

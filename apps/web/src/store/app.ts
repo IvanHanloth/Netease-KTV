@@ -3,11 +3,13 @@ import type {
   AppState,
   ClientMessage,
   ClientRole,
+  PlaybackSync,
   PlayerCommand,
   PlayerState,
   ServerMessage,
 } from '@shared/types'
 import { withToken } from '../lib/api'
+import { handlePong, startClockSync, stopClockSync } from '../lib/clock'
 
 type CommandListener = (command: PlayerCommand) => void
 
@@ -44,6 +46,10 @@ interface Store {
   scoresVersion: number
   /** Bumped on every `{type:'history'}` message so 点歌记录 refetches. */
   historyVersion: number
+  /** Bumped on every `{type:'settings'}` message (main.tsx refetches settings queries). */
+  settingsVersion: number
+  /** 耳返 only: the TV's latest position report. */
+  sync: PlaybackSync | null
   apply: (msg: ServerMessage) => void
   setConnected: (v: boolean) => void
 }
@@ -55,6 +61,8 @@ export const useApp = create<Store>((set) => ({
   tvActive: null,
   scoresVersion: 0,
   historyVersion: 0,
+  sync: null,
+  settingsVersion: 0,
   setConnected: (connected) => set({ connected }),
   apply: (msg) =>
     set((s) => {
@@ -78,6 +86,10 @@ export const useApp = create<Store>((set) => ({
           return { scoresVersion: s.scoresVersion + 1 }
         case 'history':
           return { historyVersion: s.historyVersion + 1 }
+        case 'sync':
+          return { sync: msg.sync }
+        case 'settings':
+          return { settingsVersion: s.settingsVersion + 1 }
         default:
           return {}
       }
@@ -99,6 +111,16 @@ function wsUrl() {
   return proto + '//' + location.host + withToken('/api/ws')
 }
 
+/** The TV stamps its reports and 耳返 schedules audio on the server clock; others don't need it. */
+function syncClock() {
+  const ws = socket
+  if ((role === 'tv' || role === 'ear') && ws?.readyState === WebSocket.OPEN) {
+    startClockSync((id) => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping', id } satisfies ClientMessage))
+    })
+  } else stopClockSync()
+}
+
 function open() {
   clearTimeout(retryTimer)
   const ws = new WebSocket(wsUrl())
@@ -108,12 +130,17 @@ function open() {
     useApp.getState().setConnected(true)
     ws.send(JSON.stringify({ type: 'hello', role } satisfies ClientMessage))
     while (outbox.length) ws.send(JSON.stringify(outbox.shift()))
+    syncClock()
   }
   ws.onmessage = (ev) => {
     let msg: ServerMessage
     try {
       msg = JSON.parse(String(ev.data))
     } catch {
+      return
+    }
+    if (msg.type === 'pong') {
+      handlePong(msg.id, msg.t)
       return
     }
     if (msg.type === 'command') {
@@ -125,6 +152,7 @@ function open() {
   ws.onclose = () => {
     if (socket !== ws) return
     socket = null
+    stopClockSync()
     useApp.getState().setConnected(false)
     const delay = Math.min(15000, 500 * 2 ** retry++)
     retryTimer = window.setTimeout(open, delay)
@@ -137,6 +165,7 @@ export function connect(r: ClientRole) {
   role = r
   if (started) {
     if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'hello', role }))
+    syncClock()
     return
   }
   started = true

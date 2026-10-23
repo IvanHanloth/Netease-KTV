@@ -1,7 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
-import type { ClientMessage, ClientRole, ServerMessage } from '../shared/types.js'
+import { serverNow } from '../clock.js'
+import type { ClientMessage, ClientRole, PlaybackSync, ServerMessage } from '../shared/types.js'
 import { commandSchema } from './routes.js'
 
 /**
@@ -20,7 +21,7 @@ const tvs: TvConn[] = []
 const roles = new Map<symbol, ClientRole>()
 
 export function clientCounts(): Record<ClientRole, number> & { activeTv: boolean } {
-  const out = { tv: 0, desk: 0, remote: 0, admin: 0 }
+  const out = { tv: 0, desk: 0, remote: 0, admin: 0, ear: 0 }
   for (const r of roles.values()) out[r]++
   return { ...out, activeTv: activeTv !== null }
 }
@@ -73,6 +74,11 @@ export async function registerWs(app: FastifyInstance) {
     const tv: TvConn = { id: nextId++, send }
     const isActiveTv = () => role === 'tv' && activeTv === tv.id
 
+    const onSync = (sync: PlaybackSync) => {
+      if (role === 'ear') send({ type: 'sync', sync })
+    }
+    hub.on('sync', onSync)
+
     const onMessage = (msg: ServerMessage) => {
       // Playback commands are executed by the active TV only.
       if (msg.type === 'command' && !isActiveTv()) return
@@ -95,6 +101,13 @@ export async function registerWs(app: FastifyInstance) {
           role = msg.role
           roles.set(key, role)
           if (role === 'tv') send({ type: 'tvRole', active: activeTv === tv.id })
+          if (role === 'ear') {
+            const sync = player.latestSync()
+            if (sync) send({ type: 'sync', sync })
+          }
+          break
+        case 'ping':
+          send({ type: 'pong', id: msg.id, t: serverNow() })
           break
         case 'claim':
           if (role === 'tv') claim(tv)
@@ -105,7 +118,15 @@ export async function registerWs(app: FastifyInstance) {
           break
         }
         case 'report':
-          if (isActiveTv() && typeof msg.position === 'number') player.report(msg.position, !!msg.playing)
+          if (isActiveTv() && typeof msg.position === 'number') {
+            player.report(
+              msg.position,
+              !!msg.playing,
+              typeof msg.at === 'number' ? msg.at : undefined,
+              typeof msg.uid === 'string' ? msg.uid : undefined,
+              typeof msg.epoch === 'number' ? msg.epoch : undefined,
+            )
+          }
           break
         case 'ended':
           if (isActiveTv()) player.ended()
@@ -120,6 +141,7 @@ export async function registerWs(app: FastifyInstance) {
     socket.on('close', () => {
       clearInterval(ping)
       hub.off('message', onMessage)
+      hub.off('sync', onSync)
       roles.delete(key)
       if (role === 'tv') removeTv(tv)
     })

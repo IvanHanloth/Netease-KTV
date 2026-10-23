@@ -25,7 +25,9 @@ export const config = {
   webDist: path.resolve(process.env.WEB_DIST ?? path.join(repoRoot, 'apps/web/dist')),
   /** Optional LAN access token. Empty = no auth. */
   accessToken: process.env.ACCESS_TOKEN ?? '',
-  separatorUrl: (process.env.SEPARATOR_URL ?? 'http://127.0.0.1:9000').replace(/\/$/, ''),
+  /** Local separator node added on first start ('' with KTV_SEPARATOR=off: separation only on other machines). */
+  separatorUrl:
+    process.env.KTV_SEPARATOR === 'off' ? '' : (process.env.SEPARATOR_URL ?? 'http://127.0.0.1:9000').replace(/\/$/, ''),
   ffmpeg: process.env.FFMPEG_PATH ?? 'ffmpeg',
   ffprobe: process.env.FFPROBE_PATH ?? 'ffprobe',
   /** Defaults for settings that can be changed in the UI. */
@@ -40,6 +42,10 @@ export const config = {
     mvPreload: bool(process.env.MV_PRELOAD, true),
     mvResolution: ([480, 720, 1080].includes(Number(process.env.MV_RESOLUTION)) ? Number(process.env.MV_RESOLUTION) : 720) as 480 | 720 | 1080,
     cacheLimitGB: Number(process.env.CACHE_LIMIT_GB ?? 20) || 20,
+    idleEnabled: bool(process.env.IDLE_MUSIC, true),
+    idleVolume: 0.5,
+    // Tony Anderson – 1993
+    idleSongs: [2755842309],
   },
   /** Allowed difference between NetEase duration and unblock audio duration. */
   unblockDurationTolerance: Number(process.env.UNBLOCK_DURATION_TOLERANCE ?? 3000),

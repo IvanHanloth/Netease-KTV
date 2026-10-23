@@ -25,6 +25,29 @@ export interface Song {
   playable: Playability
 }
 
+/** GET /api/albums/:id */
+export interface AlbumDetail {
+  id: number
+  name: string
+  picUrl: string
+  artists: Artist[]
+  /** ms since epoch, 0 when unknown */
+  publishTime: number
+  company?: string
+  description?: string
+  songs: Song[]
+}
+
+/** GET /api/artists/:id (songs: page through GET /api/artists/:id/songs) */
+export interface ArtistDetail {
+  id: number
+  name: string
+  picUrl: string
+  alias: string[]
+  songCount: number
+  albumCount: number
+}
+
 export interface PlaylistSummary {
   id: number
   name: string
@@ -109,6 +132,40 @@ export interface SeparatorStatus {
   device?: string
   model?: string
   pending: number
+  /** Enabled separator servers, and how many of them are reachable. */
+  nodes?: number
+  onlineNodes?: number
+}
+
+/** One separator server as shown in 后台管理 (GET /api/admin/separators). */
+export interface SeparatorNodeView {
+  id: string
+  name: string
+  url: string
+  enabled: boolean
+  hasToken: boolean
+  /** Model override for this node ('' = global setting / node default). */
+  model: string
+  /** Reachable and new enough to take jobs. */
+  online: boolean
+  /** Answers /health at all (may still be too old). */
+  reachable: boolean
+  ready: boolean
+  stage?: string
+  error?: string
+  device?: string
+  gpu: boolean
+  activeModel?: string
+  /** Separations waiting on / running on that node. */
+  queue: number
+  /** Seconds of work per second of audio (lower is faster). */
+  speedFactor?: number
+  /** Jobs this host has on the node right now. */
+  jobs: { songId: number; songName?: string; mode: 'separate' | 'pitch' | 'align'; startedAt: number; progress: number }[]
+  /** Since the KTV server started. */
+  done: number
+  failed: number
+  lastSeen: number
 }
 
 export interface AppState {
@@ -173,6 +230,19 @@ export interface Settings {
   mvResolution: MvResolution
   /** Max disk space for cached audio, stems and MVs (GB). Oldest unused songs are evicted first. */
   cacheLimitGB: number
+  /** 待机音乐: played quietly on the TV while nothing is queued. */
+  idleEnabled: boolean
+  /** Idle-music level as a share of the accompaniment volume (0..1). */
+  idleVolume: number
+  /** NetEase song ids, played in order and looped. */
+  idleSongs: number[]
+}
+
+/** GET /api/idle */
+export interface IdleMusic {
+  enabled: boolean
+  volume: number
+  songs: Song[]
 }
 
 export type MvResolution = 480 | 720 | 1080
@@ -187,19 +257,21 @@ export interface AdminStatus {
   node: string
   uptimeSec: number
   dataDir: string
-  separatorUrl: string
+  /** The separation cluster as a whole (per-node detail: GET /api/admin/separators). */
   separator: {
     online: boolean
     ready: boolean
-    /** starting / preparing_model / ready / error */
-    stage?: string
-    error?: string
     device?: string
     model?: string
+    nodes: number
+    onlineNodes: number
+    /** Nodes separating a song for us right now. */
+    busyNodes: number
+    /** Queued songs still waiting for accompaniment. */
     pending: number
   }
   /** Open browser connections by page. */
-  clients: { tv: number; desk: number; remote: number; admin: number; activeTv: boolean }
+  clients: { tv: number; desk: number; remote: number; admin: number; ear: number; activeTv: boolean }
   /** ACCESS_TOKEN is set. */
   authEnabled: boolean
 }
@@ -296,14 +368,19 @@ export type PlayerCommand =
       leadVocal?: boolean
     }
 
-export type ClientRole = 'tv' | 'desk' | 'remote' | 'admin'
+export type ClientRole = 'tv' | 'desk' | 'remote' | 'admin' | 'ear'
 
 /** Messages sent by browsers over the WebSocket. */
 export type ClientMessage =
   | { type: 'hello'; role: ClientRole }
   | { type: 'command'; command: PlayerCommand }
-  /** Sent only by the TV, ~1/s and on every state change. */
-  | { type: 'report'; position: number; playing: boolean }
+  /**
+   * Sent only by the TV, ~1/s and on every state change. `at` (server clock, ms) is when the
+   * sample at `position` came out of the TV's speakers; `uid` / `epoch` identify what it plays.
+   */
+  | { type: 'report'; position: number; playing: boolean; at?: number; uid?: string; epoch?: number }
+  /** Clock sync (TV, 耳返): the server answers with `pong` right away. */
+  | { type: 'ping'; id: number }
   | { type: 'ended' }
   /** Sent by a TV when the user starts it ("点击开始" / "在这里播放"): it becomes the one TV that plays audio. */
   | { type: 'claim' }
@@ -325,7 +402,25 @@ export type ServerMessage =
   | { type: 'scores' }
   /** 点歌记录 changed. */
   | { type: 'history' }
+  /** Settings changed (desk or 后台管理): refetch GET /api/settings and /api/idle. */
+  | { type: 'settings' }
   /** Forwarded to the TV: play / pause / seek / restart. */
   | { type: 'command'; command: PlayerCommand }
+  /** Answer to `ping`: `t` = server clock (ms, sub-millisecond precision). */
+  | { type: 'pong'; id: number; t: number }
+  /** To 耳返 clients: the TV's latest playback position (see PlaybackSync). */
+  | { type: 'sync'; sync: PlaybackSync }
+
+/**
+ * Where the active TV is, on the server clock: at server time `at` (ms) the TV's speakers were
+ * playing `position` (s) of song `uid`. While playing, position(t) = position + (t − at) / 1000.
+ */
+export interface PlaybackSync {
+  uid: string
+  epoch: number
+  position: number
+  at: number
+  playing: boolean
+}
 
 export type Stem = 'instrumental' | 'vocals' | 'original'

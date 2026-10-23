@@ -33,11 +33,15 @@ if ! grep -qE '^PUBLIC_URL=[^[:space:]]+' .env; then
   if [ -n "$ip" ]; then export PUBLIC_URL="http://$ip:$port"; fi
 fi
 
+sep=${KTV_SEPARATOR:-$(grep -E '^KTV_SEPARATOR=' .env | cut -d= -f2 | tr -d '[:space:]' || true)}
+sep=${sep:-on}
 files=(-f docker-compose.yml)
 gpu=${KTV_GPU:-$(grep -E '^KTV_GPU=' .env | cut -d= -f2 | tr -d '[:space:]' || true)}
 gpu=${gpu:-auto}
 use_gpu=false
-if [ "$gpu" = "on" ]; then
+if [ "$sep" = "off" ]; then
+  echo ">> 本机不运行分离服务（KTV_SEPARATOR=off），请在 后台管理 → 分离服务器 里添加其他电脑"
+elif [ "$gpu" = "on" ]; then
   use_gpu=true
 elif [ "$gpu" != "off" ]; then
   echo ".. 检测 GPU"
@@ -46,11 +50,16 @@ fi
 if $use_gpu; then
   files+=(-f docker-compose.gpu.yml)
   echo ">> 伴奏分离：NVIDIA GPU"
-else
+elif [ "$sep" != "off" ]; then
   echo ">> 伴奏分离：CPU（较慢，每首几分钟）"
 fi
 
-docker compose "${files[@]}" up -d --build "$@"
+if [ "$sep" = "off" ]; then
+  docker compose "${files[@]}" rm -sf separator >/dev/null 2>&1 || true
+  docker compose "${files[@]}" up -d --build --no-deps "$@" app
+else
+  docker compose "${files[@]}" up -d --build "$@"
+fi
 
 echo
 echo "[OK] Netease KTV 已启动"

@@ -1,4 +1,5 @@
 import type { LyricLine } from '@shared/types'
+import { currentLineIndex, lineEnd, sectionStarts } from './lyrics'
 
 /**
  * 领唱 (lead-in vocal): the first line of the song and the first line after every interlude are
@@ -23,6 +24,8 @@ export interface LeadSegment {
   /** Buffer time in seconds. */
   start: number
   end: number
+  /** Fade-out length (s), starting slightly before `end`. */
+  fade: number
 }
 
 const HOP_S = 0.01
@@ -34,6 +37,11 @@ const ONSET_MIN_S = 0.06 // sustained energy needed to count as an onset
 const RELEASE_SEARCH_S = 1.5
 const RELEASE_SILENCE_S = 0.25 // this much quiet after the last word = the line is over
 const NEXT_LINE_GUARD_S = 0.08
+/** Vocal fade-out at the end of a 领唱 line: begins this much before the segment end… */
+const FADE_LEAD_S = 0.15
+/** …and lasts this long, depending on the pause before the next line. */
+const MIN_FADE_S = 0.2
+const MAX_FADE_S = 0.8
 
 /** RMS envelope of the lead-vocal stem (all channels mixed), 10 ms frames. */
 export function vocalActivity(channels: Float32Array[], sampleRate: number): VocalActivity {
@@ -60,28 +68,8 @@ export function vocalActivity(channels: Float32Array[], sampleRate: number): Voc
   return { hop: HOP_S, rms, threshold: Math.max(p95 * 0.1, p30 * 2, 1e-4) }
 }
 
-/** End of the last sung word of a line (ms). */
-function lineEnd(line: LyricLine): number {
-  const last = line.words.at(-1)
-  return last ? last.t + last.d : line.t + line.d
-}
-
-/**
- * A pause at least this long starts a new section that gets 领唱. Shorter than the 8 s used for
- * the interlude countdown: most pop songs only breathe 3–5 s between verse and chorus, and with
- * 8 s many songs got 领唱 on the first line only.
- */
-export const LEAD_MIN_GAP_MS = 4000
-
-/** Lines that get the lead vocal: the first line, and every line after a pause ≥ LEAD_MIN_GAP_MS. */
-export function leadLineIndexes(lines: LyricLine[]): number[] {
-  const out: number[] = []
-  lines.forEach((line, i) => {
-    const prevEnd = i > 0 ? lineEnd(lines[i - 1]!) : 0
-    if (i === 0 || line.t - prevEnd >= LEAD_MIN_GAP_MS) out.push(i)
-  })
-  return out
-}
+/** Lines that get the lead vocal: the section starts (same rule as the countdown dots). */
+export const leadLineIndexes = sectionStarts
 
 function snapOnset(a: VocalActivity, nominal: number): number | null {
   const from = Math.max(0, Math.floor((nominal - ONSET_SEARCH_BEFORE_S) / a.hop))
@@ -110,11 +98,12 @@ function snapRelease(a: VocalActivity, lastWordEnd: number, limit: number): numb
   return lastActive === null ? null : (lastActive + 1) * a.hop
 }
 
-/** Lead-vocal segments (buffer seconds), snapped to the actual vocal when `activity` is known. */
-export function leadSegments(lines: LyricLine[], activity: VocalActivity | null): LeadSegment[] {
+/** Lead-vocal segments for the given lines (buffer seconds), snapped to the actual vocal. */
+function segmentsFor(lines: LyricLine[], indexes: number[], activity: VocalActivity | null): LeadSegment[] {
   const segs: LeadSegment[] = []
-  for (const i of leadLineIndexes(lines)) {
-    const line = lines[i]!
+  for (const i of indexes) {
+    const line = lines[i]
+    if (!line) continue
     const nextStart = lines[i + 1] ? lines[i + 1]!.t / 1000 : Infinity
     const s0 = line.t / 1000
     const e0 = lineEnd(line) / 1000
@@ -123,7 +112,45 @@ export function leadSegments(lines: LyricLine[], activity: VocalActivity | null)
     const release = activity ? snapRelease(activity, e0, limit) : null
     const start = Math.max(0, (onset ?? s0) - PRE_ROLL_S)
     const end = Math.min(limit, Math.max(release ?? e0, e0 - 0.2) + TAIL_S)
-    if (end - start > 0.2) segs.push({ start, end })
+    // Fade the vocal out instead of cutting it: start a little before the end and take as long as
+    // the pause before the next line allows (so the next line is never sung by the original).
+    const fade = Math.max(MIN_FADE_S, Math.min(MAX_FADE_S, limit - end + FADE_LEAD_S))
+    if (end - start > 0.2) segs.push({ start, end, fade })
   }
+  return segs
+}
+
+/** Sort and merge overlapping segments (section starts + the lines after a seek). */
+export function mergeSegments(segs: LeadSegment[]): LeadSegment[] {
+  const sorted = [...segs].sort((a, b) => a.start - b.start)
+  const out: LeadSegment[] = []
+  for (const x of sorted) {
+    const last = out.at(-1)
+    if (last && x.start <= last.end) {
+      if (x.end > last.end) {
+        last.end = x.end
+        last.fade = x.fade
+      }
+    } else out.push({ ...x })
+  }
+  return out
+}
+
+/** Lead-vocal segments (buffer seconds), snapped to the actual vocal when `activity` is known. */
+export function leadSegments(lines: LyricLine[], activity: VocalActivity | null): LeadSegment[] {
+  return segmentsFor(lines, leadLineIndexes(lines), activity)
+}
+
+/**
+ * After a seek the singer has lost their place: the original vocal carries them back in. Landing
+ * inside a line → the rest of that line and the next one; landing in a pause → the next line.
+ */
+export function seekLeadSegments(lines: LyricLine[], activity: VocalActivity | null, pos: number): LeadSegment[] {
+  const ms = pos * 1000
+  const i = currentLineIndex(lines, ms)
+  const inLine = i >= 0 && ms < lineEnd(lines[i]!) - 300
+  const indexes = inLine ? [i, i + 1] : [i + 1]
+  const segs = segmentsFor(lines, indexes, activity)
+  if (inLine && segs[0]) segs[0].start = Math.min(segs[0].start, Math.max(0, pos - 0.05))
   return segs
 }

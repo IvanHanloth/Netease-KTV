@@ -1,0 +1,29 @@
+# A separator server on its own, for another machine on the LAN (ideally one with an NVIDIA GPU).
+# Add it in the KTV's 后台管理 (/admin) -> 分离服务器 with this machine's address and token.
+#   CPU:        docker compose -f docker-compose.separator.yml up -d
+#   NVIDIA GPU: docker compose -f docker-compose.separator.yml -f docker-compose.gpu.yml up -d
+# Or simply run start-separator.cmd / start-separator.sh, which also creates a token.
+name: netease-ktv-separator
+
+services:
+  separator:
+    build:
+      context: ./separator
+      args:
+        SEPARATOR_TAG: cpu
+    image: netease-ktv/separator:cpu
+    restart: unless-stopped
+    ports:
+      - "${SEPARATOR_PORT:-9000}:9000"
+    environment:
+      # Required in Authorization: Bearer <token> by the job API. Empty = no token (trusted LAN only).
+      SEPARATOR_TOKEN: ${SEPARATOR_TOKEN:-}
+      SEPARATOR_MODEL: ${SEPARATOR_MODEL:-}
+      JOBS_DIR: /jobs
+    volumes:
+      - separator-models:/models
+      - separator-jobs:/jobs
+
+volumes:
+  separator-models:
+  separator-jobs:

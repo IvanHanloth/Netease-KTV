@@ -26,10 +26,13 @@ if ($envText -notmatch '(?m)^PUBLIC_URL=\S+') {
   if ($ip) { $env:PUBLIC_URL = "http://${ip}:$port" }
 }
 
+$sep = if ($env:KTV_SEPARATOR) { $env:KTV_SEPARATOR } elseif ($envText -match '(?m)^KTV_SEPARATOR=(\w+)') { $Matches[1] } else { 'on' }
 $files = @('-f', 'docker-compose.yml')
 $gpu = if ($env:KTV_GPU) { $env:KTV_GPU } elseif ($envText -match '(?m)^KTV_GPU=(\w+)') { $Matches[1] } else { 'auto' }
 $useGpu = $false
-if ($gpu -eq 'on') {
+if ($sep -eq 'off') {
+  Write-Host '>> 本机不运行分离服务（KTV_SEPARATOR=off），请在 后台管理 → 分离服务器 里添加其他电脑' -ForegroundColor Yellow
+} elseif ($gpu -eq 'on') {
   $useGpu = $true
 } elseif ($gpu -ne 'off') {
   Write-Host '.. 检测 GPU'
@@ -39,11 +42,16 @@ if ($gpu -eq 'on') {
 if ($useGpu) {
   $files += @('-f', 'docker-compose.gpu.yml')
   Write-Host '>> 伴奏分离：NVIDIA GPU' -ForegroundColor Cyan
-} else {
+} elseif ($sep -ne 'off') {
   Write-Host '>> 伴奏分离：CPU（较慢，每首几分钟）' -ForegroundColor Yellow
 }
 
-docker compose @files up -d --build @args
+if ($sep -eq 'off') {
+  docker compose @files rm -sf separator *> $null
+  docker compose @files up -d --build --no-deps @args app
+} else {
+  docker compose @files up -d --build @args
+}
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $desk = if ($env:PUBLIC_URL) { $env:PUBLIC_URL } else { "http://localhost:$port" }

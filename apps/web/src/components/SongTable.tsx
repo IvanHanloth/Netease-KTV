@@ -1,6 +1,7 @@
 import clsx from 'clsx'
 import type { Song } from '@shared/types'
 import { artistsText, fmtMs } from '../lib/format'
+import { useDeskNav } from '../lib/deskNav'
 import { enqueueKey, useEnqueue, useIsPending, useStatusOf } from '../lib/hooks'
 import { Icon } from './icons'
 import { PreviewButton } from './PreviewButton'
@@ -104,14 +105,16 @@ export function SongTable({ songs, start = 0 }: { songs: Song[]; start?: number 
                   {song.mvId > 0 && (
                     <span className="num rounded border border-white/28 px-[5px] py-px text-[10px] font-bold text-fg-2">MV</span>
                   )}
-                  <span className="truncate">{artistsText(song)}</span>
+                  <ArtistLinks song={song} />
                 </div>
                 <span className="@2xl:hidden">
                   {st.kind !== 'new' && <StatusPill status={st} />}
                 </span>
               </div>
             </div>
-            <span className="hidden truncate text-sm text-muted @4xl:block">{song.album.name}</span>
+            <span className="hidden min-w-0 truncate text-sm text-muted @4xl:block">
+              <AlbumLink song={song} />
+            </span>
             <span className="num hidden text-sm text-muted @4xl:block">{fmtMs(song.duration)}</span>
             <div className="hidden min-w-0 @2xl:block">
               <StatusPill status={st} />
@@ -123,6 +126,46 @@ export function SongTable({ songs, start = 0 }: { songs: Song[]; start?: number 
         )
       })}
     </div>
+  )
+}
+
+const linkCls = 'cursor-pointer hover:text-fg hover:underline underline-offset-2 decoration-white/30'
+
+/** Artist names; each opens that artist's page on the desk. */
+export function ArtistLinks({ song }: { song: Song }) {
+  const nav = useDeskNav()
+  if (!nav || !song.artists.some((a) => a.id)) return <span className="truncate">{artistsText(song)}</span>
+  return (
+    <span className="truncate">
+      {song.artists.map((a, i) => (
+        <span key={a.id || i}>
+          {i > 0 && ' / '}
+          {a.id ? (
+            <button type="button" onClick={() => nav.openArtist(a.id, a.name)} className={linkCls} title={`查看歌手：${a.name}`}>
+              {a.name}
+            </button>
+          ) : (
+            a.name
+          )}
+        </span>
+      ))}
+    </span>
+  )
+}
+
+/** Album name; opens the album page on the desk. */
+export function AlbumLink({ song }: { song: Song }) {
+  const nav = useDeskNav()
+  if (!nav || !song.album.id) return <>{song.album.name}</>
+  return (
+    <button
+      type="button"
+      onClick={() => nav.openAlbum(song.album.id, song.album.name)}
+      className={clsx(linkCls, 'max-w-full truncate text-left')}
+      title={`查看专辑：${song.album.name}`}
+    >
+      {song.album.name}
+    </button>
   )
 }
 

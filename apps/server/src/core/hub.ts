@@ -67,7 +67,9 @@ class Hub extends EventEmitter {
       prev.ready !== status.ready ||
       prev.pending !== status.pending ||
       prev.model !== status.model ||
-      prev.device !== status.device
+      prev.device !== status.device ||
+      prev.nodes !== status.nodes ||
+      prev.onlineNodes !== status.onlineNodes
     ) {
       this.broadcast({ type: 'separator', separator: status })
     }
