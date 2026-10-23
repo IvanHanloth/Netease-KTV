@@ -9,8 +9,11 @@ import { Cover, Eq, IconButton, Spinner, StatusPill } from './ui'
 
 // Columns follow the table's own width (container queries), not the viewport: the desk's
 // main column is much narrower than the window when the sidebar and queue are shown.
+// Every row is its own grid, so the actions column has a fixed width once other columns sit to
+// its left: with `auto`, a row showing "演唱中" or "已点" (narrower than 试听 + 插播 + 点歌) would
+// shift its album / duration / status columns out of line with the rest.
 const cols =
-  'grid-cols-[28px_minmax(0,1fr)_auto] @2xl:grid-cols-[32px_minmax(0,1fr)_136px_auto] @4xl:grid-cols-[36px_minmax(0,2.2fr)_minmax(0,1fr)_52px_136px_auto]'
+  'grid-cols-[28px_minmax(0,1fr)_auto] @2xl:grid-cols-[32px_minmax(0,1fr)_136px_168px] @4xl:grid-cols-[36px_minmax(0,2.2fr)_minmax(0,1fr)_52px_136px_168px]'
 
 export function SongActions({ song, compact }: { song: Song; compact?: boolean }) {
   const statusOf = useStatusOf()
