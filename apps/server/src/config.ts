@@ -51,7 +51,7 @@ export const config = {
   },
   /** Allowed difference between NetEase duration and unblock audio duration. */
   unblockDurationTolerance: Number(process.env.UNBLOCK_DURATION_TOLERANCE ?? 3000),
-  version: '0.1.1',
+  version: '0.1.2',
 }
 
 export const paths = {

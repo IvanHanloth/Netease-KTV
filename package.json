@@ -1,7 +1,7 @@
 {
   "name": "netease-ktv",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "基于网易云音乐与 AI 人声分离的本地 KTV",
   "type": "module",
   "workspaces": [
