@@ -7,6 +7,46 @@
  * pause / seek / song changes never click and never race a newer session.
  * Switching 伴唱 ⇄ 原唱 with stems is just a vocal-gain ramp: no reload, no gap.
  */
+import { vocalActivity, type LeadSegment, type VocalActivity } from '../lib/leadVocal'
+
+type GainParam = Pick<AudioParam, 'cancelScheduledValues' | 'setValueAtTime' | 'linearRampToValueAtTime' | 'setTargetAtTime'>
+
+/**
+ * Write the lead-vocal gain timeline onto `g`, starting at audio-clock time `now` (playback
+ * position `pos`): the level for right now, then up at each upcoming 领唱 segment start and back
+ * down at its end. Buffer time p maps to audio-clock time startCtxTime + (p − startOffset), the
+ * same mapping the sources were started with, so the switches are sample-exact.
+ */
+export function scheduleVocalGain(
+  g: GainParam,
+  o: {
+    now: number
+    pos: number
+    startCtxTime: number
+    startOffset: number
+    base: number
+    lead: number
+    segments: LeadSegment[]
+    fadeIn: boolean
+  },
+) {
+  const segs = o.lead > o.base + 1e-3 ? o.segments : []
+  const level = segs.some((x) => o.pos >= x.start && o.pos < x.end) ? o.lead : o.base
+  g.cancelScheduledValues(o.now)
+  if (o.fadeIn) {
+    g.setValueAtTime(0, o.now)
+    g.linearRampToValueAtTime(level, o.now + 0.03)
+  } else {
+    g.setTargetAtTime(level, o.now, RAMP_TC)
+  }
+  const at = (p: number) => Math.max(o.now + 0.001, o.startCtxTime + (p - o.startOffset))
+  for (const x of segs) {
+    if (x.end <= o.pos) continue
+    if (x.start > o.pos) g.setTargetAtTime(o.lead, at(x.start), LEAD_ATTACK_TC)
+    g.setTargetAtTime(o.base, at(x.end), LEAD_RELEASE_TC)
+  }
+}
+
 export interface TrackUrls {
   main: string
   vocals?: string
@@ -20,6 +60,10 @@ interface Session {
 
 /** Gain time constant for volume / mode changes (~80 ms). */
 const RAMP_TC = 0.08
+/** 领唱: open fast (the segment already starts a little before the vocal onset)… */
+const LEAD_ATTACK_TC = 0.02
+/** …and fade back to the accompaniment gently so a held note isn't cut off. */
+const LEAD_RELEASE_TC = 0.12
 /** Decoded buffers kept around: current song (2 stems) + prefetched next song (2 stems). */
 const CACHE_SIZE = 4
 
@@ -35,6 +79,10 @@ export class AudioEngine {
   private cache = new Map<string, Promise<AudioBuffer>>()
   private music = 0.8
   private vocal = 0.3
+  /** Vocal level inside 领唱 segments. */
+  private lead = 0.3
+  private leadSegs: LeadSegment[] = []
+  private activity = new WeakMap<AudioBuffer, VocalActivity>()
   playing = false
   loadedKey = ''
   /** Position / playing state right before the last successful load (for seamless key changes). */
@@ -116,6 +164,7 @@ export class AudioEngine {
     this.vocals = vocals
     this.pausedAt = 0
     this.loadedKey = key
+    this.leadSegs = []
     return true
   }
 
@@ -127,6 +176,7 @@ export class AudioEngine {
     this.vocals = null
     this.pausedAt = 0
     this.loadedKey = ''
+    this.leadSegs = []
   }
 
   play(offset = this.pausedAt) {
@@ -144,7 +194,11 @@ export class AudioEngine {
       g.connect(ctx.destination)
       return g
     }
-    const session: Session = { music: mkGain(this.music), vocal: mkGain(this.vocal), sources: [] }
+    // The vocal gain starts silent; scheduleVocal() below adds its fade-in and the 领唱 automation.
+    const vocalGain = ctx.createGain()
+    vocalGain.gain.setValueAtTime(0, ctx.currentTime)
+    vocalGain.connect(ctx.destination)
+    const session: Session = { music: mkGain(this.music), vocal: vocalGain, sources: [] }
     const mk = (buf: AudioBuffer, gain: GainNode) => {
       const src = ctx.createBufferSource()
       src.buffer = buf
@@ -166,6 +220,7 @@ export class AudioEngine {
     this.startCtxTime = when
     this.startOffset = at
     this.playing = true
+    this.scheduleVocal(true, when, at)
   }
 
   pause() {
@@ -181,15 +236,58 @@ export class AudioEngine {
     if (wasPlaying) this.play(this.pausedAt)
   }
 
-  /** Target gains; changes ramp smoothly (no zipper noise, seamless 伴唱/原唱 switch). */
-  setVolumes(music: number, vocal: number) {
+  /**
+   * Target gains; changes ramp smoothly (no zipper noise, seamless 伴唱/原唱 switch).
+   * `lead` is the vocal level used inside 领唱 segments (≤ `vocal` disables them).
+   */
+  setVolumes(music: number, vocal: number, lead = vocal) {
     this.music = music
     this.vocal = vocal
+    this.lead = lead
     const s = this.session
     if (!this.ctx || !s) return
-    const t = this.ctx.currentTime
-    s.music.gain.setTargetAtTime(music, t, RAMP_TC)
-    s.vocal.gain.setTargetAtTime(vocal, t, RAMP_TC)
+    s.music.gain.setTargetAtTime(music, this.ctx.currentTime, RAMP_TC)
+    this.scheduleVocal(false)
+  }
+
+  /** 领唱 segments in buffer seconds (see lib/leadVocal.ts); [] turns 领唱 off. */
+  setLeadSegments(segments: LeadSegment[]) {
+    this.leadSegs = segments
+    this.scheduleVocal(false)
+  }
+
+  /** RMS envelope of the loaded lead-vocal stem (computed once per buffer, ~30 ms). */
+  vocalActivity(): VocalActivity | null {
+    const buf = this.vocals
+    if (!buf) return null
+    let a = this.activity.get(buf)
+    if (!a) {
+      const channels = Array.from({ length: buf.numberOfChannels }, (_, i) => buf.getChannelData(i))
+      a = vocalActivity(channels, buf.sampleRate)
+      this.activity.set(buf, a)
+    }
+    return a
+  }
+
+  /**
+   * (Re)build the vocal-gain timeline on the audio clock: the current level now, then a ramp up
+   * at every upcoming 领唱 segment start and back down at its end. Because both stems play from
+   * the same start time, the switch lands on the exact sample the schedule says.
+   */
+  private scheduleVocal(fadeIn: boolean, fromCtx?: number, fromPos?: number) {
+    const s = this.session
+    const ctx = this.ctx
+    if (!s || !ctx) return
+    scheduleVocalGain(s.vocal.gain, {
+      now: fromCtx ?? ctx.currentTime,
+      pos: fromPos ?? this.position(),
+      startCtxTime: this.startCtxTime,
+      startOffset: this.startOffset,
+      base: this.vocal,
+      lead: this.lead,
+      segments: this.leadSegs,
+      fadeIn,
+    })
   }
 
   /** Ramp the current session to silence and stop its sources, all scheduled on the audio clock. */

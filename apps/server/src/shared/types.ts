@@ -93,6 +93,11 @@ export interface PlayerState {
   key: number
   trackMode: TrackMode
   displayMode: DisplayMode
+  /**
+   * 领唱: in karaoke mode, the first line of the song and the first line after every
+   * interlude are sung with the original lead vocal, then it drops back to the accompaniment.
+   */
+  leadVocal: boolean
   /** Bumped every time the current song restarts so the TV can reload. */
   epoch: number
 }
@@ -258,6 +263,7 @@ export type PlayerCommand =
       key?: number
       trackMode?: TrackMode
       displayMode?: DisplayMode
+      leadVocal?: boolean
     }
 
 export type ClientRole = 'tv' | 'desk' | 'remote'

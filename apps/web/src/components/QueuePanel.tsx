@@ -8,7 +8,7 @@ import { errorText, runAction, shuffleQueue, toast, useIsPending, useStatusOf } 
 import { useDragReorder } from '../lib/useDragReorder'
 import { livePosition, sendCommand, useApp } from '../store/app'
 import { Icon } from './icons'
-import { DisplayModeToggle, TrackModeToggle } from './PlayerModes'
+import { DisplayModeButton, VocalModeButton } from './PlayerModes'
 import { Cover, dotColor, EmptyNote, Eq, IconButton, ProgressBar } from './ui'
 
 export function useNow(interval = 1000) {
@@ -69,8 +69,8 @@ export function NowSingingCard({ compact }: { compact?: boolean }) {
       </div>
       {!compact && (
         <div className="mt-3.5 grid grid-cols-2 gap-2">
-          <TrackModeToggle size="sm" stretch />
-          <DisplayModeToggle size="sm" stretch />
+          <VocalModeButton />
+          <DisplayModeButton />
         </div>
       )}
     </div>

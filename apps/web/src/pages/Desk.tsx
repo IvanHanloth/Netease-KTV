@@ -146,9 +146,7 @@ function AccountCard({ onLogin }: { onLogin: () => void }) {
       )}
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className="truncate text-sm font-semibold">{account.nickname}</span>
-        <span className={clsx('text-xs', account.vipType ? 'text-warn' : 'text-muted')}>
-          {account.vipType ? '黑胶 VIP · 已登录' : '已登录'}
-        </span>
+        {!!account.vipType && <span className="truncate text-xs whitespace-nowrap text-warn">黑胶 VIP</span>}
       </div>
       <button
         type="button"

@@ -8,6 +8,7 @@ import { ambientColor, companionColor } from '../lib/color'
 import { artistsText, deriveStatus, fmtTime } from '../lib/format'
 import { useIsLocalhostOrigin, useRemoteUrl, useSettings } from '../lib/hooks'
 import { COUNTDOWN_DOTS, currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
+import { leadSegments } from '../lib/leadVocal'
 import { AudioEngine } from '../player/engine'
 import { useScoring } from '../player/useScoring'
 import { DEFAULT_TOLERANCE } from '../player/scoring'
@@ -18,7 +19,7 @@ import { Cover, ProgressBar, Range, Spinner, StatusPill } from '../components/ui
 import { QrCode } from '../components/QrCode'
 import { PitchLane } from '../components/PitchLane'
 import { LineRatingPop, ScoreOverlay, type ScoreResult } from '../components/ScoreOverlay'
-import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
+import { DisplayModeToggle, TrackModeToggle, vocalModeCommand, type VocalMode } from '../components/PlayerModes'
 
 const reduceMotion = () => typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 
@@ -1130,7 +1131,11 @@ function useOsd(player: PlayerState) {
       if (prev.current && player.current) show(`切歌 · 《${player.current.song.name}》`, 'next')
       return
     }
-    if (prev.trackMode !== player.trackMode) show(player.trackMode === 'original' ? '原唱' : '伴唱', player.trackMode === 'original' ? 'mic' : 'wave')
+    if (prev.trackMode !== player.trackMode || !!prev.leadVocal !== !!player.leadVocal) {
+      if (player.trackMode === 'original') show('原唱', 'mic')
+      else if (player.leadVocal) show('领唱 · 每段第一句带原唱', 'note')
+      else show('伴唱', 'wave')
+    }
     else if (prev.displayMode !== player.displayMode) show(player.displayMode === 'mv' ? 'MV 模式' : '舞台模式', player.displayMode === 'mv' ? 'video' : 'lyrics')
     else if (prev.key !== player.key) show(player.key === 0 ? '原调' : player.key > 0 ? `升调 +${player.key}` : `降调 ${player.key}`)
     else if (prev.musicVolume !== player.musicVolume) show(`音量 ${pctText(player.musicVolume)}`, 'volume')
@@ -1352,12 +1357,14 @@ export default function Tv() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loadKey, audible])
 
-  // gains: 原唱 with stems = lead vocal at the same level as the backing track
+  // gains: 原唱 with stems = lead vocal at the same level as the backing track.
+  // 领唱 (karaoke only) raises the lead vocal to that same level inside its segments.
+  const leadOn = !!player.leadVocal && hasStems && player.trackMode === 'karaoke'
   useEffect(() => {
     const music = player.musicVolume
     const vocal = hasStems ? (player.trackMode === 'original' ? music : player.vocalVolume) : 0
-    engine.setVolumes(music, vocal)
-  }, [engine, player.musicVolume, player.vocalVolume, player.trackMode, hasStems, loadState])
+    engine.setVolumes(music, vocal, leadOn ? music : vocal)
+  }, [engine, player.musicVolume, player.vocalVolume, player.trackMode, hasStems, leadOn, loadState])
 
   // prefetch the next ready song so 切歌 starts without a download
   const nextItem = queue[0]
@@ -1469,8 +1476,12 @@ export default function Tv() {
           break
         case 'v':
         case 'V': {
+          // cycles 伴唱 → 领唱 → 原唱
           const t = p.current ? st.tracks[p.current.song.id] : undefined
-          if (t?.hasStems) sendCommand({ action: 'set', trackMode: p.trackMode === 'original' ? 'karaoke' : 'original' })
+          if (!t?.hasStems) break
+          const mode: VocalMode = p.trackMode === 'original' ? 'original' : p.leadVocal ? 'lead' : 'karaoke'
+          const nextMode: VocalMode = mode === 'karaoke' ? 'lead' : mode === 'lead' ? 'original' : 'karaoke'
+          sendCommand({ action: 'set', ...vocalModeCommand(nextMode) })
           break
         }
       }
@@ -1510,6 +1521,16 @@ export default function Tv() {
     enabled: !!cur,
     staleTime: Infinity,
   })
+
+  // 领唱 segments: computed once the stems are decoded and the lyrics are known, snapped to the
+  // actual lead vocal, then handed to the engine which schedules them on the audio clock.
+  useEffect(() => {
+    if (!leadOn || loadState !== 'ready' || !lyricsData || !hasLyrics(lyricsData) || !engine.hasTrack) {
+      engine.setLeadSegments([])
+      return
+    }
+    engine.setLeadSegments(leadSegments(lyricsData.lines, engine.vocalActivity()))
+  }, [engine, leadOn, loadState, lyricsData, loadKey])
   const scoring = useScoring({
     engine,
     active: audible && scoreOn && scoringAllowed && playingAudio,
@@ -1809,7 +1830,7 @@ function UpNextPanel({ shown, mvMode }: { shown: boolean; mvMode: boolean }) {
                     <div className="flex min-w-0 flex-1 flex-col gap-0.5">
                       {first && (
                         <span className="text-xs font-semibold tracking-[0.14em] whitespace-nowrap text-[#FFC2D1]">
-                          下一首 · 请准备
+                          下一首
                         </span>
                       )}
                       <span className={clsx('truncate font-semibold', first ? 'text-[19px]' : 'text-[16px]')}>

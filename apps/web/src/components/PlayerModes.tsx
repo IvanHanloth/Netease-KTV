@@ -68,9 +68,10 @@ export function Segmented<T extends string>({
   )
 }
 
-/** 伴唱 / 原唱 switch for the current song; "仅原曲" when the song has no stems. */
+/** 伴唱 / 领唱 / 原唱 switch for the current song; "仅原曲" when the song has no stems. */
 export function TrackModeToggle({ size = 'md', stretch, className }: { size?: Size; stretch?: boolean; className?: string }) {
   const trackMode = useApp((s) => s.state.player.trackMode)
+  const leadVocal = useApp((s) => !!s.state.player.leadVocal)
   const cur = useApp((s) => s.state.player.current)
   const track = useApp((s) => (cur ? s.state.tracks[cur.song.id] : undefined))
   if (!cur) return null
@@ -94,18 +95,123 @@ export function TrackModeToggle({ size = 'md', stretch, className }: { size?: Si
       </div>
     )
   }
+  // 领唱 = 伴唱 + the original lead vocal on the first line after each interlude.
+  const value: VocalMode = trackMode === 'original' ? 'original' : leadVocal ? 'lead' : 'karaoke'
   return (
-    <Segmented<TrackMode>
-      label="伴唱或原唱"
+    <Segmented<VocalMode>
+      label="伴唱、领唱或原唱"
       size={size}
       stretch={stretch}
       className={className}
-      value={trackMode}
+      value={value}
       options={[
         ['karaoke', '伴唱', 'wave'],
+        ['lead', '领唱', 'note'],
         ['original', '原唱', 'mic'],
       ]}
-      onChange={(v) => sendCommand({ action: 'set', trackMode: v })}
+      onChange={(v) => sendCommand({ action: 'set', ...vocalModeCommand(v) })}
+    />
+  )
+}
+
+export type VocalMode = 'karaoke' | 'lead' | 'original'
+
+/** Player settings for a 伴唱 / 领唱 / 原唱 choice. */
+export function vocalModeCommand(v: VocalMode): { trackMode: TrackMode; leadVocal?: boolean } {
+  if (v === 'original') return { trackMode: 'original' }
+  return { trackMode: 'karaoke', leadVocal: v === 'lead' }
+}
+
+/**
+ * Compact "tap to switch" button: shows the current mode, each tap moves to the next one.
+ * Small dots show where the current mode sits in the cycle. Used where a segmented control
+ * doesn't fit (the desk's now-singing card).
+ */
+function CycleButton<T extends string>({
+  label,
+  value,
+  modes,
+  onChange,
+  disabled,
+  disabledText,
+  className,
+}: {
+  label: string
+  value: T
+  modes: readonly (readonly [T, string, IconName])[]
+  onChange: (v: T) => void
+  disabled?: boolean
+  disabledText?: string
+  className?: string
+}) {
+  const idx = Math.max(0, modes.findIndex(([v]) => v === value))
+  const [, text, icon] = modes[idx]!
+  const next = modes[(idx + 1) % modes.length]!
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(next[0])}
+      aria-label={disabled ? `${label}：${disabledText}` : `${label}：${text}，点击切换到${next[1]}`}
+      title={disabled ? disabledText : `点击切换（${modes.map(([, t]) => t).join(' → ')}）`}
+      className={clsx(
+        'flex h-9 min-w-0 items-center justify-center gap-1.5 rounded-xl px-2.5 text-[13px] whitespace-nowrap transition-colors',
+        disabled ? 'cursor-not-allowed bg-white/4 text-subtle' : 'bg-white/8 text-fg hover:bg-white/14',
+        className,
+      )}
+    >
+      <Icon name={disabled ? 'note' : icon} size={14} className="shrink-0" />
+      <span className="truncate font-semibold">{disabled ? disabledText : text}</span>
+      {!disabled && (
+        <span aria-hidden="true" className="ml-0.5 flex shrink-0 gap-[3px]">
+          {modes.map(([v], i) => (
+            <span key={v} className={clsx('h-1 w-1 rounded-full', i === idx ? 'bg-accent' : 'bg-white/25')} />
+          ))}
+        </span>
+      )}
+    </button>
+  )
+}
+
+/** Tap to cycle 伴唱 → 领唱 → 原唱. */
+export function VocalModeButton({ className }: { className?: string }) {
+  const trackMode = useApp((s) => s.state.player.trackMode)
+  const leadVocal = useApp((s) => !!s.state.player.leadVocal)
+  const cur = useApp((s) => s.state.player.current)
+  const track = useApp((s) => (cur ? s.state.tracks[cur.song.id] : undefined))
+  if (!cur) return null
+  const noStems = track?.status === 'ready' && !track.hasStems
+  const value: VocalMode = trackMode === 'original' ? 'original' : leadVocal ? 'lead' : 'karaoke'
+  return (
+    <CycleButton<VocalMode>
+      label="演唱模式"
+      value={value}
+      modes={[
+        ['karaoke', '伴唱', 'wave'],
+        ['lead', '领唱', 'note'],
+        ['original', '原唱', 'mic'],
+      ]}
+      onChange={(v) => sendCommand({ action: 'set', ...vocalModeCommand(v) })}
+      disabled={noStems}
+      disabledText="仅原曲"
+      className={className}
+    />
+  )
+}
+
+/** Tap to switch the TV between 舞台 and MV. */
+export function DisplayModeButton({ className }: { className?: string }) {
+  const displayMode = useApp((s) => s.state.player.displayMode ?? 'stage')
+  return (
+    <CycleButton<DisplayMode>
+      label="主屏显示模式"
+      value={displayMode}
+      modes={[
+        ['stage', '舞台', 'lyrics'],
+        ['mv', 'MV', 'video'],
+      ]}
+      onChange={(v) => sendCommand({ action: 'set', displayMode: v })}
+      className={className}
     />
   )
 }

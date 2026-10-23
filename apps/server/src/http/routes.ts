@@ -33,6 +33,7 @@ export const commandSchema: z.ZodType<PlayerCommand> = z.union([
     key: z.number().int().min(-6).max(6).optional(),
     trackMode: z.enum(['karaoke', 'original']).optional(),
     displayMode: z.enum(['stage', 'mv']).optional(),
+    leadVocal: z.boolean().optional(),
   }),
 ]) as z.ZodType<PlayerCommand>
 

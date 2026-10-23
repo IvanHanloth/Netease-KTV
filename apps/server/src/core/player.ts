@@ -18,6 +18,7 @@ let player: PlayerState = {
   key: 0,
   trackMode: 'karaoke',
   displayMode: 'stage',
+  leadVocal: false,
   epoch: 0,
 }
 
@@ -44,6 +45,7 @@ function savePlayer(): void {
     vocalVolume: player.vocalVolume,
     trackMode: player.trackMode,
     displayMode: player.displayMode,
+    leadVocal: player.leadVocal,
     position: player.position,
   })
 }
@@ -58,6 +60,7 @@ export function loadPlayer(getSong: (id: number) => Song | undefined): void {
       vocalVolume: saved.vocalVolume ?? player.vocalVolume,
       trackMode: saved.trackMode ?? player.trackMode,
       displayMode: saved.displayMode ?? player.displayMode,
+      leadVocal: saved.leadVocal ?? player.leadVocal,
       position: saved.position ?? 0,
       playing: false,
       positionAt: Date.now(),
@@ -212,6 +215,7 @@ export function command(cmd: PlayerCommand): void {
       if (typeof cmd.key === 'number') player.key = clamp(Math.round(cmd.key), -6, 6)
       if (cmd.trackMode === 'karaoke' || cmd.trackMode === 'original') player.trackMode = cmd.trackMode
       if (cmd.displayMode === 'stage' || cmd.displayMode === 'mv') player.displayMode = cmd.displayMode
+      if (typeof cmd.leadVocal === 'boolean') player.leadVocal = cmd.leadVocal
       player = { ...player }
       emitPlayer()
       return
@@ -250,8 +254,14 @@ export function report(position: number, playing: boolean): void {
     lastReportBroadcast = now
     hub.broadcast({ type: 'player', player })
   }
-  if (changed) savePlayer()
+  // Persist on play/pause changes and every few seconds, so a restart resumes near where it was.
+  if (changed || now - lastSave > 5000) {
+    lastSave = now
+    savePlayer()
+  }
 }
+
+let lastSave = 0
 
 export function ended(): void {
   next()
