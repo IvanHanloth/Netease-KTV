@@ -111,6 +111,39 @@ git pull
 
 歌曲缓存、伴奏、登录状态和模型都保存在 Docker 卷里，停止或更新都不会丢失。
 
+### 使用预构建镜像
+
+每个版本发布时，镜像会推送到 GitHub Container Registry，不想在本机构建时可以直接拉取：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.ghcr.yml up -d --no-build
+```
+
+有 NVIDIA 显卡时：
+
+```bash
+KTV_SEPARATOR_VARIANT=gpu docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.ghcr.yml up -d --no-build
+```
+
+默认使用最新版本，用 `KTV_VERSION=0.1.2` 这样的变量固定版本。镜像列表：
+
+- `ghcr.io/ivanhanloth/netease-ktv-app`（amd64 / arm64）
+- `ghcr.io/ivanhanloth/netease-ktv-separator`，标签带 `-cpu` 或 `-gpu` 后缀
+
+### 发布新版本
+
+把 `package.json`（根目录和 `apps/*`）里的版本号改好并提交，然后推送版本标签：
+
+```bash
+git tag -a v0.1.2 -m "Netease KTV 0.1.2"
+```
+
+```bash
+git push origin v0.1.2
+```
+
+GitHub Actions（`.github/workflows/release.yml`）会检查标签和版本号一致、构建并推送镜像，然后创建 GitHub Release。
+
 ### 可选配置
 
 第一次启动后，项目目录下会生成 `.env`，改完重新运行启动脚本即可生效。常用项：
