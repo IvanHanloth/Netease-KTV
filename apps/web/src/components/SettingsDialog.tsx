@@ -16,7 +16,13 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const [draft, setDraft] = useState<DeskSettings | null>(null)
   const [saving, setSaving] = useState(false)
   useEffect(() => {
-    if (open && data) setDraft({ scoringEnabled: data.scoringEnabled, scoreTolerance: data.scoreTolerance })
+    if (open && data)
+      setDraft({
+        scoringEnabled: data.scoringEnabled,
+        scoreTolerance: data.scoreTolerance,
+        multiScreenSync: data.multiScreenSync ?? false,
+        multiScreenAudio: data.multiScreenAudio ?? false,
+      })
   }, [open, data])
 
   const set = <K extends keyof DeskSettings>(k: K, v: DeskSettings[K]) => setDraft((d) => (d ? { ...d, [k]: v } : d))
@@ -60,6 +66,37 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               onChange={(v) => set('scoreTolerance', v)}
               disabled={draft.scoringEnabled === false}
             />
+          </section>
+
+          <section className="flex flex-col gap-4">
+            <h3 className="m-0 text-xs tracking-[0.12em] text-subtle">多块大屏</h3>
+            <p className="m-0 -mt-1 text-xs leading-5 text-muted">
+              同时打开多个播放页面（大屏）时，只有一块是主屏：它负责发声，点歌台和手机遥控控制的也是它。其他大屏可以在右下角“设为主屏”。
+            </p>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-[15px] font-semibold">多大屏协同</span>
+                <span className="text-xs leading-5 text-muted">开启后所有大屏统一用同一种 舞台 / MV 模式；关闭时每块大屏可以各自切换</span>
+              </div>
+              <Switch
+                checked={draft.multiScreenSync ?? false}
+                onChange={(v) => set('multiScreenSync', v)}
+                label="多大屏协同"
+              />
+            </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="flex flex-col gap-1">
+                <span className="text-[15px] font-semibold">多大屏播放</span>
+                <span className="text-xs leading-5 text-muted">
+                  开启后，其他大屏可以在右下角取消静音，和主屏同步发声（开启时不会自动取消静音）。关闭后，除主屏外的大屏全部静音
+                </span>
+              </div>
+              <Switch
+                checked={draft.multiScreenAudio ?? false}
+                onChange={(v) => set('multiScreenAudio', v)}
+                label="多大屏播放"
+              />
+            </div>
           </section>
 
           <div className="flex justify-end gap-3">

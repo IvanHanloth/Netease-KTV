@@ -290,6 +290,8 @@ export async function registerRoutes(app: FastifyInstance) {
       .object({
         scoringEnabled: z.boolean().optional(),
         scoreTolerance: z.number().min(0.3).max(3).optional(),
+        multiScreenSync: z.boolean().optional(),
+        multiScreenAudio: z.boolean().optional(),
       })
       .parse(req.body)
     return { ...updateSettings(body, listUnblockSources()), unblockSourceOptions: listUnblockSources() }

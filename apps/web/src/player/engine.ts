@@ -119,6 +119,45 @@ export class AudioEngine {
     return this.main?.duration ?? 0
   }
 
+  private keepAwakeNode: OscillatorNode | null = null
+
+  /**
+   * Keep the audio output busy with an inaudible signal (20 Hz at −60 dBFS). Between songs Web
+   * Audio is silent, and HDMI TVs, amplifiers, Bluetooth speakers and some sound cards power down
+   * on silence; waking up takes seconds, which swallowed the start of the next song.
+   */
+  keepAwake(on: boolean) {
+    const ctx = this.ctx
+    if (!on || !ctx) {
+      this.keepAwakeNode?.stop()
+      this.keepAwakeNode?.disconnect()
+      this.keepAwakeNode = null
+      return
+    }
+    if (this.keepAwakeNode) return
+    const osc = ctx.createOscillator()
+    osc.frequency.value = 20
+    const g = ctx.createGain()
+    g.gain.value = 0.001
+    osc.connect(g).connect(ctx.destination)
+    osc.start()
+    this.keepAwakeNode = osc
+  }
+
+  /** The audio clock is running (resumes a suspended context; false if the browser refuses). */
+  async ensureRunning(): Promise<boolean> {
+    const ctx = this.ctx
+    if (!ctx) return false
+    if (ctx.state !== 'running') {
+      try {
+        await ctx.resume()
+      } catch {
+        /* needs a user gesture */
+      }
+    }
+    return ctx.state === 'running'
+  }
+
   get hasTrack() {
     return !!this.main
   }
@@ -204,12 +243,33 @@ export class AudioEngine {
     this.leadSegs = []
   }
 
-  play(offset = this.pausedAt) {
+  /**
+   * Start so that `target(perf)` is heard at every moment from now on (perf = performance.now()
+   * time at which a sample comes out of the speakers): a 大屏 that isn't the 主屏 uses it to play
+   * in step with the 主屏's reports. Returns false when the target is past the end.
+   */
+  playAligned(target: (perf: number) => number): boolean {
+    const ctx = this.ctx
+    if (!ctx || !this.main) return false
+    let when = ctx.currentTime + 0.1
+    const m = outputTimeMap(ctx)
+    let pos = target(m.perf + (when - m.ctxTime) * 1000)
+    if (!Number.isFinite(pos)) return false
+    if (pos < 0) {
+      when -= pos
+      pos = 0
+    }
+    if (pos >= this.main.duration - 0.05) return false
+    this.play(pos, when)
+    return true
+  }
+
+  play(offset = this.pausedAt, startAt?: number) {
     if (!this.ctx || !this.main) return
     this.endSession(0.02)
     const ctx = this.ctx
     const at = Math.max(0, Math.min(offset, this.main.duration - 0.05))
-    const when = ctx.currentTime + 0.05
+    const when = startAt ?? ctx.currentTime + 0.05
     const gen = ++this.gen
     const mkGain = (target: number) => {
       const g = ctx.createGain()

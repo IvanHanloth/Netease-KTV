@@ -41,7 +41,7 @@ export function IdleSection({ draft, set }: { draft: AdminSettings; set: SetFn }
   return (
     <>
       <Card>
-        <Row title="启用待机音乐" help="已点列表空了的时候，主屏一边显示扫码页面，一边小声循环播放下面的歌。有人点歌就自动淡出。">
+        <Row title="启用待机音乐" help="已点列表空了的时候，大屏显示扫码页面，主屏小声循环播放下面的歌。有人点歌就自动淡出。">
           <Switch checked={draft.idleEnabled} onChange={(v) => set('idleEnabled', v)} label="启用待机音乐" />
         </Row>
         <Row stack title="音量" help="相对于伴奏音量的比例；伴奏音量调大调小，待机音乐也跟着变。">

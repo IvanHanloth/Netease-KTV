@@ -42,6 +42,8 @@ export const config = {
     mvPreload: bool(process.env.MV_PRELOAD, true),
     mvResolution: ([480, 720, 1080].includes(Number(process.env.MV_RESOLUTION)) ? Number(process.env.MV_RESOLUTION) : 720) as 480 | 720 | 1080,
     cacheLimitGB: Number(process.env.CACHE_LIMIT_GB ?? 20) || 20,
+    multiScreenSync: false,
+    multiScreenAudio: false,
     idleEnabled: bool(process.env.IDLE_MUSIC, true),
     idleVolume: 0.5,
     // Tony Anderson – 1993
@@ -49,7 +51,7 @@ export const config = {
   },
   /** Allowed difference between NetEase duration and unblock audio duration. */
   unblockDurationTolerance: Number(process.env.UNBLOCK_DURATION_TOLERANCE ?? 3000),
-  version: '0.1.0',
+  version: '0.1.1',
 }
 
 export const paths = {

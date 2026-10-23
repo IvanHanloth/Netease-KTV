@@ -217,8 +217,25 @@ export function DisplayModeButton({ className }: { className?: string }) {
 }
 
 /** 舞台 / MV display mode of the TV page. */
-export function DisplayModeToggle({ size = 'md', stretch, className }: { size?: Size; stretch?: boolean; className?: string }) {
-  const displayMode = useApp((s) => s.state.player.displayMode ?? 'stage')
+/**
+ * 舞台 / MV. Controls the sound-playing TV (synced to every remote) unless `value` / `onChange`
+ * are given: a silent extra screen switches only itself.
+ */
+export function DisplayModeToggle({
+  size = 'md',
+  stretch,
+  className,
+  value,
+  onChange,
+}: {
+  size?: Size
+  stretch?: boolean
+  className?: string
+  value?: DisplayMode
+  onChange?: (v: DisplayMode) => void
+}) {
+  const synced = useApp((s) => s.state.player.displayMode ?? 'stage')
+  const displayMode = value ?? synced
   return (
     <Segmented<DisplayMode>
       label="主屏显示模式"
@@ -230,7 +247,7 @@ export function DisplayModeToggle({ size = 'md', stretch, className }: { size?: 
         ['stage', '舞台', 'lyrics'],
         ['mv', 'MV', 'video'],
       ]}
-      onChange={(v) => sendCommand({ action: 'set', displayMode: v })}
+      onChange={(v) => (onChange ? onChange(v) : sendCommand({ action: 'set', displayMode: v }))}
     />
   )
 }

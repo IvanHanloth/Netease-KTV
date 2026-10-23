@@ -20,6 +20,8 @@ export function getSettings(): Settings {
     mvPreload: saved.mvPreload ?? config.defaults.mvPreload,
     mvResolution: saved.mvResolution ?? config.defaults.mvResolution,
     cacheLimitGB: saved.cacheLimitGB ?? config.defaults.cacheLimitGB,
+    multiScreenSync: saved.multiScreenSync ?? config.defaults.multiScreenSync,
+    multiScreenAudio: saved.multiScreenAudio ?? config.defaults.multiScreenAudio,
     idleEnabled: saved.idleEnabled ?? config.defaults.idleEnabled,
     idleVolume: saved.idleVolume ?? config.defaults.idleVolume,
     idleSongs: saved.idleSongs ?? config.defaults.idleSongs,
@@ -46,6 +48,8 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
   if (typeof patch.scoreTolerance === 'number' && Number.isFinite(patch.scoreTolerance)) {
     next.scoreTolerance = Math.round(Math.min(3, Math.max(0.3, patch.scoreTolerance)) * 10) / 10
   }
+  if (typeof patch.multiScreenSync === 'boolean') next.multiScreenSync = patch.multiScreenSync
+  if (typeof patch.multiScreenAudio === 'boolean') next.multiScreenAudio = patch.multiScreenAudio
   if (typeof patch.idleEnabled === 'boolean') next.idleEnabled = patch.idleEnabled
   if (typeof patch.idleVolume === 'number' && Number.isFinite(patch.idleVolume)) {
     next.idleVolume = Math.round(Math.min(1, Math.max(0, patch.idleVolume)) * 100) / 100

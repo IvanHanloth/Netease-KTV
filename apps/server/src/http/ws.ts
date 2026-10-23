@@ -66,6 +66,8 @@ function claim(tv: TvConn): void {
 export async function registerWs(app: FastifyInstance) {
   app.get('/api/ws', { websocket: true }, (socket) => {
     let role: ClientRole | null = null
+    /** Heard from the client since the last heartbeat ping (see below). */
+    let alive = true
     const key = Symbol('client')
 
     const send = (msg: ServerMessage) => {
@@ -74,8 +76,9 @@ export async function registerWs(app: FastifyInstance) {
     const tv: TvConn = { id: nextId++, send }
     const isActiveTv = () => role === 'tv' && activeTv === tv.id
 
+    // 移动耳返 and silent extra screens follow the sound-playing TV's position reports.
     const onSync = (sync: PlaybackSync) => {
-      if (role === 'ear') send({ type: 'sync', sync })
+      if (role === 'ear' || (role === 'tv' && activeTv !== tv.id)) send({ type: 'sync', sync })
     }
     hub.on('sync', onSync)
 
@@ -87,6 +90,7 @@ export async function registerWs(app: FastifyInstance) {
     hub.on('message', onMessage)
 
     socket.on('message', (raw: unknown) => {
+      alive = true
       let msg: ClientMessage
       try {
         msg = JSON.parse(String(raw)) as ClientMessage
@@ -101,7 +105,7 @@ export async function registerWs(app: FastifyInstance) {
           role = msg.role
           roles.set(key, role)
           if (role === 'tv') send({ type: 'tvRole', active: activeTv === tv.id })
-          if (role === 'ear') {
+          if (role === 'ear' || role === 'tv') {
             const sync = player.latestSync()
             if (sync) send({ type: 'sync', sync })
           }
@@ -110,7 +114,11 @@ export async function registerWs(app: FastifyInstance) {
           send({ type: 'pong', id: msg.id, t: serverNow() })
           break
         case 'claim':
-          if (role === 'tv') claim(tv)
+          if (role === 'tv') {
+            claim(tv)
+            // The new sound screen's own 舞台 / MV mode is what remotes now show and control.
+            if (msg.displayMode === 'stage' || msg.displayMode === 'mv') player.command({ action: 'set', displayMode: msg.displayMode })
+          }
           break
         case 'command': {
           const parsed = commandSchema.safeParse(msg.command)
@@ -134,9 +142,19 @@ export async function registerWs(app: FastifyInstance) {
       }
     })
 
+    // Heartbeat: a connection that died silently (TV asleep, Wi‑Fi dropped) never sends 'close'.
+    // Without this a dead 主屏 would keep the role forever and every new 大屏 would open muted.
+    // Two missed pongs (~20 s) and it is dropped, which hands 主屏 to another 大屏.
+    socket.on('pong', () => (alive = true))
     const ping = setInterval(() => {
-      if (socket.readyState === socket.OPEN) socket.ping()
-    }, 25_000)
+      if (socket.readyState !== socket.OPEN) return
+      if (!alive) {
+        socket.terminate()
+        return
+      }
+      alive = false
+      socket.ping()
+    }, 10_000)
 
     socket.on('close', () => {
       clearInterval(ping)

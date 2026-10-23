@@ -208,7 +208,7 @@ function Sidebar({
           className="flex h-11 items-center gap-3 rounded-xl px-3 text-[15px] text-[#C8C8D0] hover:bg-white/5"
         >
           <Icon name="tv" size={20} />
-          打开主屏
+          打开大屏
         </Link>
       </div>
       <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-1">

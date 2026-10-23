@@ -5,9 +5,11 @@ import clsx from 'clsx'
 import type { LyricLine, PlaybackSync } from '@shared/types'
 import { api, mediaUrl } from '../lib/api'
 import { clockReady, clockRtt, toServerTime } from '../lib/clock'
+import { smoothSync, tvPosition } from '../lib/playbackSync'
 import { artistsText } from '../lib/format'
 import { currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
 import { EarPlayer } from '../player/earPlayer'
+import { FIRST_GUESS_MS, LatencyCalibration } from '../components/LatencyCalibration'
 import { connect, livePosition, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
 import { Range, Spinner } from '../components/ui'
@@ -68,28 +70,6 @@ function usePrefs(): [Prefs, (patch: Partial<Prefs>) => void] {
     })
   }, [])
   return [prefs, update]
-}
-
-/**
- * Smooth the TV's reports: each one predicts a line pos(t). Reports of the same uninterrupted
- * playback agree within a few ms; average them in so clock-estimate jitter doesn't shake the audio.
- * A real jump (seek, pause, new song) replaces the line.
- */
-function smoothSync(prev: PlaybackSync | null, next: PlaybackSync): PlaybackSync {
-  if (!prev || prev.uid !== next.uid || prev.epoch !== next.epoch || !prev.playing || !next.playing) return next
-  const predicted = prev.position + (next.at - prev.at) / 1000
-  const err = next.position - predicted
-  if (Math.abs(err) > 0.05) return next
-  return { ...next, position: predicted + err * 0.3 }
-}
-
-/** TV timeline position (s) heard at local time `perf`; null when unknown. */
-function tvPosition(sync: PlaybackSync | null, perf: number): number | null {
-  if (!sync) return null
-  if (!sync.playing) return sync.position
-  const server = toServerTime(perf)
-  if (server === null) return null
-  return sync.position + (server - sync.at) / 1000
 }
 
 type Status =
@@ -195,6 +175,10 @@ export default function Ear() {
 
   // ---- the sync loop ----
   const delayRef = useRef(prefs.delayMs)
+  // 蓝牙延迟 calibration: the monitor audio pauses while the beeps play.
+  const [calibrating, setCalibrating] = useState(false)
+  const calibratingRef = useRef(false)
+  calibratingRef.current = calibrating
   const [drift, setDrift] = useState<number | null>(null)
   const driftEma = useRef<number | null>(null)
   const lastStart = useRef(0)
@@ -206,7 +190,7 @@ export default function Ear() {
       const p = tvPosition(s, perf)
       return p === null ? NaN : p - delayRef.current / 1000
     }
-    const playable = !!ear.buffer && !!s && s.uid === curUid && s.playing && clockReady()
+    const playable = !calibratingRef.current && !!ear.buffer && !!s && s.uid === curUid && s.playing && clockReady()
     if (!playable) {
       if (ear.playing) ear.stop(0.12)
       driftEma.current = null
@@ -344,7 +328,21 @@ export default function Ear() {
         <p className="relative m-0 px-5 pb-2 text-center text-xs text-warn">这首歌没有分离出人声，正在播放原唱</p>
       )}
 
-      <Controls prefs={prefs} setPrefs={setPrefs} rate={ear.currentRate} />
+      <Controls prefs={prefs} setPrefs={setPrefs} rate={ear.currentRate} onCalibrate={() => setCalibrating(true)} />
+
+      {calibrating && (
+        <LatencyCalibration
+          ear={ear}
+          // Start from the delay already set; the first time, from a typical Bluetooth delay.
+          initialLatencyMs={prefs.delayMs < 0 ? -prefs.delayMs : FIRST_GUESS_MS}
+          maxLatencyMs={DELAY_LIMIT}
+          onApply={(latencyMs) => {
+            // Heard X ms late → play X ms earlier.
+            setPrefs({ delayMs: Math.max(-DELAY_LIMIT, Math.min(DELAY_LIMIT, -Math.round(latencyMs / 5) * 5)) })
+          }}
+          onClose={() => setCalibrating(false)}
+        />
+      )}
     </div>
   )
 }
@@ -603,7 +601,17 @@ function Dots({ n, total }: { n: number; total: number }) {
 
 // ---------------- controls ----------------
 
-function Controls({ prefs, setPrefs, rate }: { prefs: Prefs; setPrefs: (p: Partial<Prefs>) => void; rate: number }) {
+function Controls({
+  prefs,
+  setPrefs,
+  rate,
+  onCalibrate,
+}: {
+  prefs: Prefs
+  setPrefs: (p: Partial<Prefs>) => void
+  rate: number
+  onCalibrate: () => void
+}) {
   void rate
   const delay = prefs.delayMs
   const setDelay = (v: number) => setPrefs({ delayMs: Math.max(-DELAY_LIMIT, Math.min(DELAY_LIMIT, Math.round(v))) })
@@ -753,6 +761,14 @@ function Controls({ prefs, setPrefs, rate }: { prefs: Prefs; setPrefs: (p: Parti
               )}
               <span>延后 →</span>
             </div>
+            <button
+              type="button"
+              onClick={onCalibrate}
+              className="flex h-10 items-center justify-center gap-2 rounded-xl bg-white/6 text-sm text-fg-2 active:bg-white/10"
+            >
+              <Icon name="headphones" size={16} />
+              测量蓝牙延迟
+            </button>
           </div>
 
           <div className="flex items-center justify-between">

@@ -16,14 +16,17 @@
 
 播放模型：
 
-- **主屏（role = tv）是唯一的发声端。** 它根据 `player` 状态加载音频，每秒上报一次 `report`，播完发 `ended`。
+- **大屏与主屏。** 每个播放页面（role = tv）都是一块“大屏”，其中只有一块是“主屏”。主屏根据 `player` 状态加载音频，每秒上报一次 `report`，播完发 `ended`。
   - `report` 带 `at`：这一位置的声音从主屏扬声器播出时的服务端时间（毫秒，已含输出延迟），以及 `uid` / `epoch`（属于哪首歌，切歌过程中的旧上报会被丢弃）。
 - **时钟同步：** 主屏和移动耳返发 `{type:'ping', id}`，服务端立即回 `{type:'pong', id, t}`（`t` 为服务端高精度时间）。客户端取往返最快的几次估算时钟偏差。
 - **移动耳返（role = ear）：** 服务端把主屏的每次上报转成 `{type:'sync', sync: PlaybackSync}` 推给耳返；耳返连上时先收到最近一次。
-- **同一时间只有一个主屏发声。** 服务端给每个主屏连接发 `{type:'tvRole', active}`。
-  - 主屏点“开始”或“在这里播放”时发 `{type:'claim'}`，成为发声主屏，其余主屏收到 `active:false` 后必须静音。
-  - 只有发声主屏会收到 play/pause/seek/restart 指令，它的 `report` / `ended` 才会被采纳。
-  - 发声主屏断开时，发声权交给最近打开的另一个主屏。
+- **同一时间只有一块主屏。** 服务端给每块大屏发 `{type:'tvRole', active}`（`active` 表示是不是主屏）。
+  - 大屏点“开始”或“设为主屏”时发 `{type:'claim', displayMode}`，成为主屏。它当时的 舞台 / MV 模式成为同步的模式，点歌台和手机遥控显示、控制的都是主屏。
+  - 其他大屏继续显示：歌词、进度和 MV 按主屏的 `sync` 上报同步（和移动耳返用同一套时钟）。右下角有“设为主屏”按钮。
+  - `multiScreenSync`（多大屏协同）开启时，所有大屏都用同步的 舞台 / MV 模式；关闭时，主屏以外的大屏各自切换，只影响自己。
+  - `multiScreenAudio`（多大屏播放）开启时，主屏以外的大屏可以取消静音，按主屏的上报对齐起播，偏差超过 35ms 时重新对齐；开启时不会自动取消静音，关闭时主屏以外的大屏全部静音。
+  - 只有主屏会收到 play/pause/seek/restart 指令，它的 `report` / `ended` 才会被采纳；打分和待机音乐也只在主屏上。
+  - 主屏断开时，主屏交给最近打开的另一块大屏。
   - 主屏加载歌曲时，从服务端记录的位置继续，并保持原来的播放/暂停状态；只有新切到的歌从 0 开始。
 - 其他端（desk、remote、ear）发 `command`。服务端处理音量、升降调、原唱/伴奏、切歌，然后广播 `player`。play / pause / seek / restart 会转发给主屏执行，主屏执行后的上报再更新状态。
 - `player.epoch` 变化表示需要从头重新加载当前歌曲。
@@ -104,7 +107,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/settings` | `Settings` 加 `unblockSourceOptions: string[]` |
-| PUT | `/settings` | 点歌台能改的设置（`DeskSettings`）：`scoringEnabled`、`scoreTolerance`。其他字段会被忽略 |
+| PUT | `/settings` | 点歌台能改的设置（`DeskSettings`）：`scoringEnabled`、`scoreTolerance`、`multiScreenSync`（多大屏协同）、`multiScreenAudio`（多大屏播放）。其他字段会被忽略 |
 | GET | `/idle` | `IdleMusic`：待机音乐是否开启、音量比例和歌曲列表 |
 | POST | `/idle/:id/prepare` | 确保待机音乐里的这首歌已下载到本地（不在列表里返回 404）。之后用 `/media/:id/original` 播放 |
 

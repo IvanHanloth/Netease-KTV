@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObjec
 import { useQuery } from '@tanstack/react-query'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import clsx from 'clsx'
-import type { LyricLine, MvInfo, PlayerState, Song, TrackState } from '@shared/types'
+import type { DisplayMode, LyricLine, MvInfo, PlayerState, Song, TrackState } from '@shared/types'
 import { toServerTime } from '../lib/clock'
 import { useIdleMusic } from '../player/idleMusic'
 import { api, imgUrl, isRetryable, mediaUrl, tokenized } from '../lib/api'
@@ -12,6 +12,7 @@ import { useDebounced, useIsLocalhostOrigin, useRemoteUrl, useSettings } from '.
 import { currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
 import { leadSegments, mergeSegments, seekLeadSegments, type LeadSegment } from '../lib/leadVocal'
 import { AudioEngine } from '../player/engine'
+import { MirrorClock, type PlaybackClock } from '../lib/playbackSync'
 import { useScoring } from '../player/useScoring'
 import { DEFAULT_TOLERANCE } from '../player/scoring'
 import type { MicError } from '../player/mic'
@@ -162,7 +163,7 @@ const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x
  */
 function useMvSync(
   videoRef: MutableRefObject<HTMLVideoElement | null>,
-  engine: AudioEngine,
+  engine: PlaybackClock,
   sync: MvSync | null,
   cached: boolean,
   stalledRef: MutableRefObject<boolean>,
@@ -240,7 +241,7 @@ function useMvSync(
   }, [sync, mode, offset, cached, engine, videoRef, stalledRef, realignRef])
 }
 
-function MvBackdrop({ song, engine, preload }: { song: Song; engine: AudioEngine; preload: boolean }) {
+function MvBackdrop({ song, engine, preload }: { song: Song; engine: PlaybackClock; preload: boolean }) {
   const { data } = useMv(song)
   const [failed, setFailed] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -308,7 +309,7 @@ function MvScreen({
   onModeKnown,
 }: {
   song: Song
-  engine: AudioEngine
+  engine: PlaybackClock
   getSongDuration: () => number
   preload: boolean
   /** Called once per song when it is known whether the MV is aligned to the audio. */
@@ -962,11 +963,20 @@ function Controls({
   hasStems,
   extra,
   keyPending,
+  mirror,
 }: {
   player: PlayerState
   hasStems: boolean
   extra?: ReactNode
   keyPending?: boolean
+  /** A 大屏 that isn't the 主屏: its 舞台 / MV mode (own one unless 多大屏协同), 设为主屏, mute. */
+  mirror?: {
+    displayMode: DisplayMode
+    setDisplayMode: (m: DisplayMode) => void
+    takeOver: () => void
+    muted?: boolean
+    toggleMute?: () => void
+  }
 }) {
   const karaoke = hasStems && player.trackMode === 'karaoke'
   const [mixerOpen, setMixerOpen] = useState(false)
@@ -1006,12 +1016,66 @@ function Controls({
         <BarButton icon="next" label="切歌" title="切歌（N）" text="切歌" onClick={() => sendCommand({ action: 'next' })} />
         <span className="mx-1 h-8 w-px shrink-0 bg-white/12" aria-hidden="true" />
         <TrackModeToggle size="tv" />
-        <DisplayModeToggle size="tv" />
+        {mirror ? (
+          <DisplayModeToggle size="tv" value={mirror.displayMode} onChange={mirror.setDisplayMode} />
+        ) : (
+          <DisplayModeToggle size="tv" />
+        )}
         <span className="min-w-2 flex-1" aria-hidden="true" />
-        <MixerButton player={player} karaoke={karaoke} open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
-        <KeyControl value={player.key} pending={keyPending} />
-        {extra}
+        {mirror ? (
+          <ScreenRoleControl onMakeMain={mirror.takeOver} muted={mirror.muted} onToggleMute={mirror.toggleMute} />
+        ) : (
+          <>
+            <MixerButton player={player} karaoke={karaoke} open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
+            <KeyControl value={player.key} pending={keyPending} />
+            {extra}
+          </>
+        )}
       </div>
+    </div>
+  )
+}
+
+/** A 大屏 that isn't the 主屏: 设为主屏, and (with 多大屏播放) its own mute switch. */
+function ScreenRoleControl({
+  onMakeMain,
+  muted,
+  onToggleMute,
+  compact,
+}: {
+  onMakeMain: () => void
+  /** undefined: 多大屏播放 is off, there is nothing to toggle. */
+  muted?: boolean
+  onToggleMute?: () => void
+  compact?: boolean
+}) {
+  const h = compact ? 'h-12 rounded-2xl' : 'h-14 rounded-[18px]'
+  return (
+    <div className="flex shrink-0 items-center gap-3">
+      {onToggleMute && (
+        <button
+          type="button"
+          onClick={onToggleMute}
+          aria-pressed={!muted}
+          title={muted ? '这块大屏也发声（和主屏同步）' : '这块大屏静音'}
+          className={clsx('glass flex shrink-0 items-center gap-2 px-4 text-[15px] whitespace-nowrap text-fg-2 hover:bg-white/10', h)}
+        >
+          <Icon name="volume" size={18} className={muted ? 'opacity-50' : undefined} />
+          {muted ? '取消静音' : '静音'}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onMakeMain}
+        title="设为主屏：由这块大屏发声，点歌台和手机遥控改为控制它"
+        className={clsx(
+          'flex shrink-0 items-center gap-2 bg-accent px-5 text-[15px] font-bold whitespace-nowrap text-accent-ink shadow-[0_10px_28px_rgba(255,77,126,0.4)] transition-transform hover:scale-[1.03]',
+          h,
+        )}
+      >
+        <Icon name="tv" size={19} />
+        设为主屏
+      </button>
     </div>
   )
 }
@@ -1043,7 +1107,7 @@ function ScoreToggle({
 }) {
   let hint: string | null = null
   if (on) {
-    if (!window.isSecureContext || micError === 'insecure') hint = '麦克风需要通过 localhost 或 HTTPS 打开主屏'
+    if (!window.isSecureContext || micError === 'insecure') hint = '麦克风需要通过 localhost 或 HTTPS 打开大屏'
     else if (micError === 'denied') hint = '麦克风权限被拒绝，请在浏览器里允许'
     else if (micError === 'unavailable') hint = '没有找到可用的麦克风'
     else if (!hasPitch) hint = '这首歌暂无参考音高（需要伴奏分离）'
@@ -1169,8 +1233,11 @@ function Osd({ msg }: { msg: OsdMsg | null }) {
 const pctText = (v: number) => Math.round(v * 100) + '%'
 
 /** Turn player-state changes (usually from the phone) into short on-screen messages. */
-function useOsd(player: PlayerState) {
+function useOsd(player: PlayerState, announceDisplayMode: boolean) {
   const [msg, setMsg] = useState<OsdMsg | null>(null)
+  // A silent extra screen keeps its own 舞台 / MV mode, so the synced mode isn't news there.
+  const announceMode = useRef(announceDisplayMode)
+  announceMode.current = announceDisplayMode
   const storeReady = useApp((s) => s.ready)
   const prevRef = useRef<PlayerState | null>(null)
   const show = useCallback((text: string, icon?: IconName) => setMsg({ id: Date.now() + Math.random(), text, icon }), [])
@@ -1193,7 +1260,9 @@ function useOsd(player: PlayerState) {
       return
     }
     // 伴唱 / 领唱 / 原唱 changes need no banner: the control bar and header chip already show it.
-    if (prev.displayMode !== player.displayMode) show(player.displayMode === 'mv' ? 'MV 模式' : '舞台模式', player.displayMode === 'mv' ? 'video' : 'lyrics')
+    if (prev.displayMode !== player.displayMode) {
+      if (announceMode.current) show(player.displayMode === 'mv' ? 'MV 模式' : '舞台模式', player.displayMode === 'mv' ? 'video' : 'lyrics')
+    }
     else if (prev.key !== player.key) show(player.key === 0 ? '原调' : player.key > 0 ? `升调 +${player.key}` : `降调 ${player.key}`)
     else if (prev.musicVolume !== player.musicVolume) show(`音量 ${pctText(player.musicVolume)}`, 'volume')
   }, [player, storeReady, show])
@@ -1202,7 +1271,7 @@ function useOsd(player: PlayerState) {
 
 // ---------------- States ----------------
 
-function IdleScreen() {
+function IdleScreen({ onMakeMain }: { onMakeMain?: () => void }) {
   const connected = useApp((s) => s.connected)
   return (
     <motion.div
@@ -1221,6 +1290,11 @@ function IdleScreen() {
         </p>
       </div>
       <QrCard big />
+      {onMakeMain && (
+        <div className="absolute right-[3.75vw] bottom-[5.2vh]">
+          <ScreenRoleControl onMakeMain={onMakeMain} compact />
+        </div>
+      )}
     </motion.div>
   )
 }
@@ -1301,6 +1375,50 @@ function useDelayedFlag(on: boolean, ms: number) {
   return v
 }
 
+/** A fresh song shows the 即将开始 card at least this long before it starts… */
+const START_HOLD_MS = 2400
+/** …and waits for its lyrics at most this long. */
+const START_MAX_WAIT_MS = 6000
+
+/** 即将开始: the song is loaded; it starts when the dots run out. */
+function StartingScreen({ song, singer, since }: { song: Song; singer?: string; since: number }) {
+  const [left, setLeft] = useState(3)
+  useEffect(() => {
+    const tick = () => setLeft(Math.max(1, 3 - Math.floor(((performance.now() - since) / START_HOLD_MS) * 3)))
+    tick()
+    const t = window.setInterval(tick, 100)
+    return () => window.clearInterval(t)
+  }, [since])
+  return (
+    <motion.div
+      initial={{ opacity: 0, scale: 0.98 }}
+      animate={{ opacity: 1, scale: 1 }}
+      transition={{ duration: 0.4 }}
+      className="absolute inset-0 flex items-center justify-center px-[4vw]"
+    >
+      <div className="flex flex-col items-center gap-8 text-center">
+        <Cover song={song} px={600} className="h-[34vh] w-[34vh] rounded-[32px] shadow-[0_30px_80px_rgba(0,0,0,0.55)]" />
+        <div className="flex flex-col items-center gap-3">
+          <div className="text-[clamp(28px,2.6vw,52px)] font-black">即将开始</div>
+          <div className="text-[clamp(18px,1.4vw,28px)] text-fg-2">
+            {song.name} · {artistsText(song)}
+          </div>
+          {singer && <div className="text-base text-muted">演唱：{singer}</div>}
+          <div className="mt-3 flex gap-3" aria-hidden="true">
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="h-3 w-3 rounded-full bg-accent transition-opacity duration-300"
+                style={{ opacity: i < left ? 1 : 0, boxShadow: '0 0 12px rgba(255,77,126,0.8)' }}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
 // ---------------- Page ----------------
 
 export default function Tv() {
@@ -1309,6 +1427,10 @@ export default function Tv() {
   const engine = engineRef.current
   const [unlocked, setUnlocked] = useState(false)
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  /** A fresh song whose audio is loaded but which hasn't started yet (即将开始 card). */
+  const [startGate, setStartGate] = useState<{ key: string; since: number } | null>(null)
+  const startGateRef = useRef(startGate)
+  startGateRef.current = startGate
   // 领唱 segments: the section starts, plus the lines right after a seek (merged into the engine).
   const sectionLead = useRef<LeadSegment[]>([])
   const seekLead = useRef<LeadSegment[]>([])
@@ -1333,9 +1455,37 @@ export default function Tv() {
   const queue = useApp((s) => s.state.queue)
   const connected = useApp((s) => s.connected)
   const tvActive = useApp((s) => s.tvActive)
-  // Only the one active TV plays audio; any other open TV page stays silent.
-  const audible = unlocked && tvActive === true
+  // Every TV page is a 大屏; exactly one is the 主屏 (plays, reports, takes commands, its mode is
+  // what remotes control). Any other 大屏 follows the 主屏's reports: same song, lyrics and MV,
+  // muted unless 多大屏播放 is on and it was unmuted here.
+  const isMain = tvActive === true
+  const mirror = tvActive === false
+  const rawSync = useApp((s) => s.sync)
+  const mirrorClockRef = useRef<MirrorClock | null>(null)
+  if (!mirrorClockRef.current) mirrorClockRef.current = new MirrorClock()
+  const mirrorClock = mirrorClockRef.current
+  useEffect(() => {
+    if (rawSync) mirrorClock.update(rawSync)
+  }, [rawSync, mirrorClock])
   const { data: settings } = useSettings()
+  const unifiedMode = settings?.multiScreenSync ?? false
+  const multiAudio = settings?.multiScreenAudio ?? false
+  const [muted, setMuted] = useState(true)
+  // 多大屏播放 turned off: every 大屏 except the 主屏 goes silent (turning it on unmutes nothing).
+  useEffect(() => {
+    if (!multiAudio) setMuted(true)
+  }, [multiAudio])
+  // A 主屏 that hands over keeps sounding only if 多大屏播放 allows it.
+  const wasMain = useRef(isMain)
+  useEffect(() => {
+    if (wasMain.current && tvActive === false) setMuted(!multiAudio)
+    wasMain.current = tvActive === true
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tvActive])
+  const following = mirror && multiAudio && !muted && unlocked
+  const audible = unlocked && (isMain || following)
+  const isMainRef = useRef(isMain)
+  isMainRef.current = isMain
   const [scoreOn, setScoreOn] = useState(readScorePref)
   const [scoreResult, setScoreResult] = useState<ScoreResult | null>(null)
   const finishRef = useRef<() => ScoreResult | null>(() => null)
@@ -1353,7 +1503,7 @@ export default function Tv() {
 
   useEffect(() => connect('tv'), [])
   useEffect(() => {
-    document.title = '主屏 · Netease KTV'
+    document.title = '大屏 · Netease KTV'
   }, [])
 
   const report = useCallback(() => {
@@ -1378,7 +1528,7 @@ export default function Tv() {
   useEffect(() => {
     if (!connected) return
     connectedAt.current = Date.now()
-    if (unlocked && wasActive.current) sendMessage({ type: 'claim' })
+    if (unlocked && wasActive.current) sendMessage({ type: 'claim', displayMode: displayModeRef.current })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connected])
   useEffect(() => {
@@ -1391,7 +1541,31 @@ export default function Tv() {
   const track = cur ? tracks[cur.song.id] : undefined
   const ready = track?.status === 'ready'
   const hasStems = !!track?.hasStems
-  const mvMode = (player.displayMode ?? 'stage') === 'mv'
+  // Display mode: the sound screen uses (and remotes control) the synced one; a silent screen
+  // keeps its own, starting from whatever it showed when it stopped being the sound screen.
+  const storeReady = useApp((s) => s.ready)
+  const syncedMode: DisplayMode = player.displayMode ?? 'stage'
+  const [localMode, setLocalMode] = useState<DisplayMode | null>(null)
+  useEffect(() => {
+    if (!storeReady) return
+    if (tvActive !== false || unifiedMode || localMode === null) setLocalMode(syncedMode)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storeReady, tvActive, syncedMode, unifiedMode])
+  const ownMode = mirror && !unifiedMode
+  const displayMode: DisplayMode = ownMode ? (localMode ?? syncedMode) : syncedMode
+  const ownModeRef = useRef(ownMode)
+  ownModeRef.current = ownMode
+  const displayModeRef = useRef(displayMode)
+  displayModeRef.current = displayMode
+  const mvMode = displayMode === 'mv'
+  mirrorClock.uid = cur?.uid ?? null
+  mirrorClock.epoch = player.epoch
+  mirrorClock.duration = (cur?.song.duration ?? 0) / 1000
+  const clock: PlaybackClock = mirror ? mirrorClock : engine
+  const clockRef = useRef(clock)
+  clockRef.current = clock
+  const mirrorRef = useRef(mirror)
+  mirrorRef.current = mirror
   const songKey = cur ? `${cur.uid}|${player.epoch}|` : ''
   // Key presses settle for a moment first, so tapping +3 renders one pitch, not three.
   const pitchKey = useDebounced(player.key, 500)
@@ -1435,9 +1609,25 @@ export default function Tv() {
         // else is a fresh song: it starts from 0 now that its accompaniment is ready.
         const p = useApp.getState().state.player
         const fromServer = p.current?.uid === cur.uid && p.epoch === player.epoch && p.position > 0.5
-        const resumeAt = sameSong ? engine.lastPosition : fromServer ? livePosition(p) : 0
+        // A screen taking over from another one continues exactly where the mirror shows it.
+        const resumeAt = sameSong
+          ? engine.lastPosition
+          : fromServer
+            ? mirrorClock.hasTrack
+              ? mirrorClock.position()
+              : livePosition(p)
+            : 0
         const resume = sameSong ? engine.lastPlaying : fromServer ? p.playing : true
         if (!sameSong) seekLead.current = []
+        if (!isMainRef.current) return // following the 主屏: the follow loop starts it in step
+        if (!sameSong && !fromServer) {
+          // A fresh song: hold it at 0 on the 即将开始 card until the lyrics are in, the audio
+          // clock runs and the output has had a moment (the start-gate effect below plays it).
+          engine.seek(0)
+          setStartGate({ key: loadKey, since: performance.now() })
+          report()
+          return
+        }
         if (fromServer && resumeAt > 1) leadAfterSeek(resumeAt)
         if (resume) engine.play(resumeAt)
         else engine.seek(resumeAt)
@@ -1473,15 +1663,16 @@ export default function Tv() {
     return () => window.clearTimeout(t)
   }, [engine, audible, loadState, nextItem, nextTrack?.status, nextTrack?.hasStems])
 
-  const { msg: osd, show: showOsd } = useOsd(player)
+  const { msg: osd, show: showOsd } = useOsd(player, !ownMode)
   // 待机音乐 while nothing is queued (active TV only)
-  useIdleMusic(audible && !cur, player.musicVolume)
+  useIdleMusic(unlocked && isMain && !cur, player.musicVolume)
 
   // server-forwarded commands
   useEffect(
     () =>
       onCommand((c) => {
         if (!engine.hasTrack) return
+        if (startGateRef.current) setStartGate(null)
         switch (c.action) {
           case 'play':
             if (!engine.playing) engine.play()
@@ -1516,9 +1707,49 @@ export default function Tv() {
     [engine, report, showOsd],
   )
 
+  // A following 大屏: start on the 主屏's timeline and re-align when it drifts. Only hard re-syncs
+  // (no rate nudging), so the 领唱 gain schedule stays sample-exact; audio clocks drift a few ms
+  // per minute, so that is rare. A jump of a second or more is a seek: 领唱 helps back in.
+  useEffect(() => {
+    if (!following || loadState !== 'ready') return
+    let off = 0
+    const tick = () => {
+      if (!engine.hasTrack || !mirrorClock.hasTrack) {
+        if (engine.playing) engine.pause()
+        return
+      }
+      if (!mirrorClock.playing) {
+        if (engine.playing) engine.pause()
+        if (Math.abs(engine.position() - mirrorClock.position()) > 0.05) engine.seek(mirrorClock.position())
+        return
+      }
+      const target = (perf: number) => mirrorClock.positionAt(perf)
+      if (!engine.playing) {
+        engine.playAligned(target)
+        off = 0
+        return
+      }
+      const out = engine.outputClock()
+      const want = target(out.perf)
+      if (!Number.isFinite(want)) return
+      const drift = out.position - want
+      if (Math.abs(drift) > 1) leadAfterSeek(want)
+      off = Math.abs(drift) > 0.035 ? off + 1 : 0
+      if (Math.abs(drift) > 0.2 || off >= 2) {
+        engine.playAligned(target)
+        off = 0
+      }
+    }
+    tick()
+    const t = window.setInterval(tick, 250)
+    return () => window.clearInterval(t)
+  }, [following, loadState, engine, mirrorClock, leadAfterSeek])
+
   // periodic report + ended
   useEffect(() => {
     engine.onEnded = () => {
+      // Only the 主屏 ends songs and records scores; a following 大屏 just stops.
+      if (!isMainRef.current) return
       const result = finishRef.current()
       if (result) {
         setScoreResult(result)
@@ -1554,10 +1785,10 @@ export default function Tv() {
           sendCommand({ action: 'toggle' })
           break
         case 'ArrowLeft':
-          sendCommand({ action: 'seek', position: Math.max(0, engine.position() - 5) })
+          sendCommand({ action: 'seek', position: Math.max(0, clockRef.current.position() - 5) })
           break
         case 'ArrowRight':
-          sendCommand({ action: 'seek', position: engine.position() + 5 })
+          sendCommand({ action: 'seek', position: clockRef.current.position() + 5 })
           break
         case 'ArrowUp':
           e.preventDefault()
@@ -1573,7 +1804,8 @@ export default function Tv() {
           break
         case 'm':
         case 'M':
-          sendCommand({ action: 'set', displayMode: p.displayMode === 'mv' ? 'stage' : 'mv' })
+          if (ownModeRef.current) setLocalMode(displayModeRef.current === 'mv' ? 'stage' : 'mv')
+          else sendCommand({ action: 'set', displayMode: p.displayMode === 'mv' ? 'stage' : 'mv' })
           break
         case 'v':
         case 'V': {
@@ -1591,15 +1823,17 @@ export default function Tv() {
     return () => window.removeEventListener('keydown', onKey)
   }, [engine])
 
-  const getMs = useCallback(() => engine.position() * 1000, [engine])
-  const getPos = useCallback(() => engine.position(), [engine])
-  // Audio of the current song is loaded (during a key change the old pitch keeps playing until the swap).
-  const playingAudio =
-    !!songKey && engine.hasTrack && engine.loadedKey.startsWith(songKey) && (loadState === 'ready' || loadState === 'loading')
+  const getMs = useCallback(() => clockRef.current.position() * 1000, [])
+  const getPos = useCallback(() => clockRef.current.position(), [])
+  // The current song is on: its audio is loaded here (during a key change the old pitch keeps
+  // playing until the swap), or, on a silent screen, the sound screen reports playing it.
+  const playingAudio = mirror
+    ? !!songKey && mirrorClock.hasTrack
+    : !!songKey && engine.hasTrack && engine.loadedKey.startsWith(songKey) && (loadState === 'ready' || loadState === 'loading')
   const slowLoad = useDelayedFlag(loadState === 'loading', 500)
   // Key of the audio actually playing (a new key takes a few seconds to render on the server).
   const appliedKey = engine.loadedKey.startsWith(songKey) ? Number(engine.loadedKey.split('|')[2]) : player.key
-  const showPreparing = !playingAudio && (!ready || loadState !== 'loading' || slowLoad)
+  const showPreparing = !playingAudio && (mirror || !ready || loadState !== 'loading' || slowLoad)
 
   // "接下来" side panel, decided purely by the playback position (so seeking back hides it):
   // hidden before 85 % of the song, then 30 s shown / 30 s hidden, repeating.
@@ -1608,34 +1842,92 @@ export default function Tv() {
     setUpNext(false)
     if (!playingAudio) return
     const check = () => {
-      const show = engine.hasTrack && upNextVisible(engine.position(), engine.duration)
+      const c = clockRef.current
+      const show = c.hasTrack && upNextVisible(c.position(), c.duration)
       setUpNext((v) => (v === show ? v : show))
     }
     check()
     const t = window.setInterval(check, 250)
     return () => window.clearInterval(t)
-  }, [playingAudio, engine, songKey])
+  }, [playingAudio, songKey])
 
   const scoringAllowed = settings?.scoringEnabled ?? true
   const scoreTolerance = settings?.scoreTolerance ?? DEFAULT_TOLERANCE
-  const { data: lyricsData } = useQuery({
+  const { data: lyricsData, isPending: lyricsPending } = useQuery({
     queryKey: ['lyrics', cur?.song.id],
     queryFn: () => api.lyrics(cur!.song.id),
     enabled: !!cur,
     staleTime: Infinity,
   })
 
+  // Keep the audio output awake while this 大屏 makes sound, so a song never starts into a
+  // sleeping TV / amplifier / Bluetooth speaker.
+  useEffect(() => {
+    engine.keepAwake(audible)
+    return () => engine.keepAwake(false)
+  }, [engine, audible])
+
+  // Start gate: play a fresh song once its lyrics are loaded (or failed), the audio clock is
+  // running and the card has been up for START_HOLD_MS. Never longer than START_MAX_WAIT_MS.
+  useEffect(() => {
+    if (!startGate) return
+    // Another song, or no longer the 主屏: the hold is over. A key change during the hold reloads
+    // the same song (it stays at 0, paused): keep holding and start it once the new key is in.
+    if (!songKey || !startGate.key.startsWith(songKey) || !isMain) {
+      setStartGate(null)
+      return
+    }
+    if (startGate.key !== loadKey) {
+      setStartGate({ ...startGate, key: loadKey })
+      return
+    }
+    if (loadState !== 'ready') return
+    const waited = performance.now() - startGate.since
+    if (lyricsPending && waited < START_MAX_WAIT_MS) {
+      const t = window.setTimeout(() => setStartGate((g) => (g ? { ...g } : g)), 250)
+      return () => window.clearTimeout(t)
+    }
+    let cancelled = false
+    const t = window.setTimeout(
+      async () => {
+        const running = await engine.ensureRunning()
+        if (cancelled) return
+        setStartGate(null)
+        if (!running) {
+          setUnlocked(false) // the 点击开始 overlay asks for a click to allow sound
+          return
+        }
+        engine.play(0)
+        report()
+      },
+      Math.max(0, START_HOLD_MS - waited),
+    )
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
+    }
+  }, [startGate, songKey, loadKey, loadState, isMain, lyricsPending, engine, report])
+
   // 领唱 segments: computed once the stems are decoded and the lyrics are known, snapped to the
   // actual lead vocal, then handed to the engine which schedules them on the audio clock.
+  // Switching to 领唱 mid-song: the next two lines get the original vocal too, so the change is
+  // heard right away instead of at the next section.
+  const leadWas = useRef<{ on: boolean; key: string }>({ on: false, key: '' })
   useEffect(() => {
     const ok = leadOn && loadState === 'ready' && !!lyricsData && hasLyrics(lyricsData) && engine.hasTrack
     leadCtx.current = { on: ok, lines: ok ? lyricsData!.lines : null }
     sectionLead.current = ok ? leadSegments(lyricsData!.lines, engine.vocalActivity()) : []
+    const switchedOn = ok && !leadWas.current.on && leadWas.current.key === loadKey
+    if (switchedOn) seekLead.current = seekLeadSegments(lyricsData!.lines, engine.vocalActivity(), engine.position(), true)
+    else if (!ok) seekLead.current = []
+    // Remember only settled states (audio and lyrics both in), so a song that starts with 领唱
+    // already on is not mistaken for a switch.
+    if (loadState === 'ready' && lyricsData) leadWas.current = { on: ok, key: loadKey }
     applyLead()
   }, [engine, leadOn, loadState, lyricsData, loadKey, applyLead])
   const scoring = useScoring({
     engine,
-    active: audible && scoreOn && scoringAllowed && playingAudio,
+    active: unlocked && isMain && scoreOn && scoringAllowed && playingAudio,
     songId: cur?.song.id ?? null,
     songKey,
     hasPitch: !!track?.hasPitch,
@@ -1652,7 +1944,7 @@ export default function Tv() {
   const laneShown = scoring.status === 'on'
 
   // idle auto-hide (only once a song is on screen and audio is unlocked)
-  const { idle, holdRef, hoverRef } = useIdle(unlocked && !!cur)
+  const { idle, holdRef, hoverRef } = useIdle((unlocked || mirror) && !!cur)
   const uiShown = !idle
 
   // MV mode: show the title for the first ~5 s of each song
@@ -1670,18 +1962,40 @@ export default function Tv() {
       setUnlocked(true)
       wasActive.current = true
       // Starting this TV makes it the one that plays audio; any other TV goes silent.
-      sendMessage({ type: 'claim' })
+      sendMessage({ type: 'claim', displayMode: displayModeRef.current })
       document.documentElement.requestFullscreen?.().catch(() => {})
     } catch {
       setUnlocked(false)
     }
   }
-  const takeOver = () => {
+  /** 取消静音 / 静音 on a 大屏 that isn't the 主屏 (多大屏播放). The click also unlocks its audio. */
+  const toggleMute = async () => {
+    if (muted) {
+      try {
+        await engine.unlock()
+        setUnlocked(true)
+      } catch {
+        return
+      }
+    }
+    setMuted((m) => !m)
+  }
+  /** 设为主屏: this 大屏 becomes the 主屏 (the click also unlocks its audio). */
+  const takeOver = async () => {
+    try {
+      await engine.unlock()
+      setUnlocked(true)
+    } catch {
+      /* the overlay will ask for a click */
+    }
     wasActive.current = true
-    sendMessage({ type: 'claim' })
+    sendMessage({ type: 'claim', displayMode: displayModeRef.current })
   }
 
-  const duration = useMemo(() => (playingAudio ? engine.duration : (cur?.song.duration ?? 0) / 1000), [playingAudio, engine, cur])
+  const duration = useMemo(
+    () => (playingAudio && !mirror ? engine.duration : (cur?.song.duration ?? 0) / 1000),
+    [playingAudio, mirror, engine, cur],
+  )
   const mvPreload = settings?.mvPreload ?? true
   const onMvMode = useCallback(
     (mode: 'synced' | 'free') => showOsd(mode === 'synced' ? 'MV 已对齐' : 'MV 独立播放', 'video'),
@@ -1689,10 +2003,10 @@ export default function Tv() {
   )
   // Warm up the next song's MV once the current song is playing (when 预载 MV is on).
   const nextMvSong = mvPreload && playingAudio && queue[0] && queue[0].song.mvId > 0 ? queue[0].song : null
-  const getSongDuration = useCallback(
-    () => (engine.hasTrack ? engine.duration : (useApp.getState().state.player.current?.song.duration ?? 0) / 1000),
-    [engine],
-  )
+  const getSongDuration = useCallback(() => {
+    const c = clockRef.current
+    return c.hasTrack && c.duration > 0 ? c.duration : (useApp.getState().state.player.current?.song.duration ?? 0) / 1000
+  }, [])
 
   return (
     <div className={clsx('relative h-full min-h-[560px] w-full overflow-hidden bg-ink-2 text-fg select-none', idle && 'cursor-none')}>
@@ -1700,7 +2014,7 @@ export default function Tv() {
         <MvScreen
           key={cur.uid}
           song={cur.song}
-          engine={engine}
+          engine={clock}
           getSongDuration={getSongDuration}
           preload={mvPreload}
           onModeKnown={onMvMode}
@@ -1708,7 +2022,7 @@ export default function Tv() {
       ) : (
         <>
           {cur ? <Ambient song={cur.song} /> : <IdleAmbient />}
-          {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} engine={engine} preload={mvPreload} />}
+          {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} engine={clock} preload={mvPreload} />}
           <Vignette />
         </>
       )}
@@ -1716,7 +2030,7 @@ export default function Tv() {
       {nextMvSong && <NextMvPreloader key={nextMvSong.id} song={nextMvSong} />}
 
       {!cur ? (
-        <IdleScreen />
+        <IdleScreen onMakeMain={mirror ? takeOver : undefined} />
       ) : (
         <>
           {mvMode ? (
@@ -1725,7 +2039,9 @@ export default function Tv() {
             <Header player={player} track={track} auxShown={uiShown} />
           )}
 
-          {playingAudio ? (
+          {startGate && isMain ? (
+            <StartingScreen song={cur.song} singer={cur.addedBy} since={startGate.since} />
+          ) : playingAudio ? (
             mvMode ? (
               <TwoLineLyrics songId={cur.song.id} getMs={getMs} raised={uiShown} />
             ) : (
@@ -1756,7 +2072,6 @@ export default function Tv() {
               <QrCard />
             </div>
           )}
-          {playingAudio && !player.playing && <PausedBadge />}
 
           <footer className="absolute right-[3.75vw] bottom-[5.2vh] left-[3.75vw] flex flex-col gap-5">
             {!mvMode && laneShown && <PitchLane lane={scoring.lane} getTime={getPos} score={scoring.score} />}
@@ -1767,6 +2082,18 @@ export default function Tv() {
                   player={player}
                   hasStems={hasStems}
                   keyPending={playingAudio && appliedKey !== player.key}
+                  mirror={
+                    mirror
+                      ? {
+                          displayMode,
+                          // 多大屏协同: switching here switches every 大屏 (it is the shared mode).
+                          setDisplayMode: ownMode ? setLocalMode : (m) => sendCommand({ action: 'set', displayMode: m }),
+                          takeOver,
+                          muted: multiAudio ? muted : undefined,
+                          toggleMute: multiAudio ? toggleMute : undefined,
+                        }
+                      : undefined
+                  }
                   extra={
                     scoringAllowed && (
                       <ScoreToggle
@@ -1797,7 +2124,7 @@ export default function Tv() {
       )}
 
       <AnimatePresence>
-        {!unlocked && (
+        {!unlocked && tvActive === true && (
           <motion.div
             initial={{ opacity: 1 }}
             exit={{ opacity: 0 }}
@@ -1815,34 +2142,6 @@ export default function Tv() {
               </span>
               <span className="text-[clamp(28px,2.6vw,48px)] font-black">点击开始 KTV</span>
             </button>
-          </motion.div>
-        )}
-        {unlocked && tvActive === false && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.3 }}
-            className="absolute inset-0 z-40 flex items-center justify-center bg-ink-2/85 backdrop-blur-md"
-          >
-            <div className="flex flex-col items-center gap-6 p-10 text-center">
-              <span className="flex h-24 w-24 items-center justify-center rounded-full bg-white/8 text-fg-2">
-                <Icon name="volume" size={40} />
-              </span>
-              <span className="text-[clamp(26px,2.4vw,44px)] font-black">另一个主屏正在播放</span>
-              <span className="max-w-[560px] text-base leading-7 text-muted">
-                同一时间只有一个主屏发声，避免两个声音叠在一起。这个页面已静音。
-              </span>
-              <button
-                type="button"
-                onClick={takeOver}
-                autoFocus
-                className="mt-2 flex h-14 items-center gap-2 rounded-2xl bg-accent px-7 text-lg font-bold text-accent-ink shadow-[0_14px_40px_rgba(255,77,126,0.45)] transition-transform hover:scale-105"
-              >
-                <Icon name="play" size={22} />
-                在这里播放
-              </button>
-            </div>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1957,20 +2256,6 @@ function UpNextPanel({ shown, mvMode }: { shown: boolean; mvMode: boolean }) {
         </motion.aside>
       )}
     </AnimatePresence>
-  )
-}
-
-/** Stays on screen while paused (even when the controls are hidden), so a paused TV never looks frozen. */
-function PausedBadge() {
-  return (
-    <div className="pointer-events-none absolute top-1/2 left-1/2 z-20 -translate-x-1/2 -translate-y-1/2" aria-live="polite">
-      <div className="glass flex items-center gap-4 rounded-full py-4 pr-8 pl-4 shadow-[0_20px_60px_rgba(0,0,0,0.5)]">
-        <span className="flex h-14 w-14 items-center justify-center rounded-full bg-accent text-accent-ink">
-          <Icon name="pause" size={26} />
-        </span>
-        <span className="text-[28px] font-bold">已暂停</span>
-      </div>
-    </div>
   )
 }
 

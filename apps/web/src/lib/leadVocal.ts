@@ -142,14 +142,22 @@ export function leadSegments(lines: LyricLine[], activity: VocalActivity | null)
 }
 
 /**
- * After a seek the singer has lost their place: the original vocal carries them back in. Landing
- * inside a line → the rest of that line and the next one; landing in a pause → the next line.
+ * Lead-in after a jump: the original vocal carries the singer (back) in.
+ * - After a seek: landing inside a line → the rest of that line and the next one; landing in a
+ *   pause → the next line.
+ * - On switching to 领唱 (`twoLines`): the next two lines either way (the rest of the current
+ *   line counts as one).
  */
-export function seekLeadSegments(lines: LyricLine[], activity: VocalActivity | null, pos: number): LeadSegment[] {
+export function seekLeadSegments(
+  lines: LyricLine[],
+  activity: VocalActivity | null,
+  pos: number,
+  twoLines = false,
+): LeadSegment[] {
   const ms = pos * 1000
   const i = currentLineIndex(lines, ms)
   const inLine = i >= 0 && ms < lineEnd(lines[i]!) - 300
-  const indexes = inLine ? [i, i + 1] : [i + 1]
+  const indexes = inLine ? [i, i + 1] : twoLines ? [i + 1, i + 2] : [i + 1]
   const segs = segmentsFor(lines, indexes, activity)
   if (inLine && segs[0]) segs[0].start = Math.min(segs[0].start, Math.max(0, pos - 0.05))
   return segs

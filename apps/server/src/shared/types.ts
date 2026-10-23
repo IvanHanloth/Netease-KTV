@@ -230,6 +230,16 @@ export interface Settings {
   mvResolution: MvResolution
   /** Max disk space for cached audio, stems and MVs (GB). Oldest unused songs are evicted first. */
   cacheLimitGB: number
+  /**
+   * 多大屏协同: every 大屏 (TV page) shows the same 舞台 / MV mode. Off: each 大屏 other than the
+   * 主屏 keeps its own mode.
+   */
+  multiScreenSync: boolean
+  /**
+   * 多大屏播放: 大屏 other than the 主屏 may unmute and play in sync with it. Turning it on unmutes
+   * nothing by itself; turning it off mutes every 大屏 except the 主屏.
+   */
+  multiScreenAudio: boolean
   /** 待机音乐: played quietly on the TV while nothing is queued. */
   idleEnabled: boolean
   /** Idle-music level as a share of the accompaniment volume (0..1). */
@@ -248,7 +258,7 @@ export interface IdleMusic {
 export type MvResolution = 480 | 720 | 1080
 
 /** Settings the 点歌台 may change (PUT /api/settings). Everything else is ops-only (PUT /api/admin/settings). */
-export type DeskSettings = Pick<Settings, 'scoringEnabled' | 'scoreTolerance'>
+export type DeskSettings = Pick<Settings, 'scoringEnabled' | 'scoreTolerance' | 'multiScreenSync' | 'multiScreenAudio'>
 export type AdminSettings = Omit<Settings, keyof DeskSettings>
 
 /** GET /api/admin/status */
@@ -382,8 +392,11 @@ export type ClientMessage =
   /** Clock sync (TV, 耳返): the server answers with `pong` right away. */
   | { type: 'ping'; id: number }
   | { type: 'ended' }
-  /** Sent by a TV when the user starts it ("点击开始" / "在这里播放"): it becomes the one TV that plays audio. */
-  | { type: 'claim' }
+  /**
+   * Sent by a TV when the user starts it ("点击开始" / "在这里播放"): it becomes the one TV that
+   * plays audio, and its own 舞台 / MV mode becomes the one remotes show and control.
+   */
+  | { type: 'claim'; displayMode?: DisplayMode }
 
 /** Messages sent by the server over the WebSocket. */
 export type ServerMessage =

@@ -9,7 +9,8 @@ const TICK_MS = 50
 
 /**
  * 待机音乐: while nothing is queued, the active TV plays the admin's idle playlist quietly
- * (accompaniment volume × the idle share), looping. Fades in when the idle page comes up and
+ * (accompaniment volume × the idle share), looping over the list forever (a one-song list
+ * repeats that song). Fades in when the idle page comes up and
  * out as soon as someone requests a song; the position is kept for next time.
  */
 export function useIdleMusic(active: boolean, musicVolume: number): Song | null {
@@ -63,8 +64,10 @@ export function useIdleMusic(active: boolean, musicVolume: number): Song | null 
     return () => {
       cancelled = true
     }
+    // `index` too: after a song ends the list moves on, and with a single song (or the list
+    // wrapping round to the same song) the id doesn't change, but it must play again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wanted?.id])
+  }, [wanted?.id, index])
 
   // Next song when one ends (the list loops).
   useEffect(() => {

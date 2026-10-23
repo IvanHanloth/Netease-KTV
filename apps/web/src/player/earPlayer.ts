@@ -75,8 +75,53 @@ export class EarPlayer {
     this.out.gain.setTargetAtTime(Math.max(0, Math.min(1.5, v)), this.ctx.currentTime, 0.05)
   }
 
+  /**
+   * A short beep (1 kHz, 60 ms) at audio-clock time `at`, through the same output as the monitor
+   * audio, so a latency measured with it applies to the monitor. Used by the 蓝牙延迟 calibration.
+   * Returns a function that drops the beep (silences it if it is sounding, or has not started yet).
+   */
+  beep(at: number): () => void {
+    const ctx = this.ctx
+    if (!ctx) return () => {}
+    const osc = ctx.createOscillator()
+    osc.frequency.value = 1000
+    const g = ctx.createGain()
+    g.gain.setValueAtTime(0, at)
+    g.gain.linearRampToValueAtTime(0.5, at + 0.004)
+    g.gain.setValueAtTime(0.5, at + 0.045)
+    g.gain.linearRampToValueAtTime(0, at + 0.06)
+    osc.connect(g).connect(ctx.destination)
+    osc.start(at)
+    osc.stop(at + 0.07)
+    let done = false
+    const end = () => {
+      if (done) return
+      done = true
+      osc.disconnect()
+      g.disconnect()
+    }
+    osc.onended = end
+    return () => {
+      if (done) return
+      g.gain.cancelScheduledValues(ctx.currentTime)
+      g.gain.setValueAtTime(0, ctx.currentTime)
+      try {
+        osc.stop()
+      } catch {
+        /* already stopped */
+      }
+      end()
+    }
+  }
+
+  /** Audio-clock time whose sample comes out of the phone at performance.now() time `perf`. */
+  ctxOf(perf: number): number {
+    const m = outputTimeMap(this.ctx!)
+    return m.ctxTime + (perf - m.perf) / 1000
+  }
+
   /** performance.now() time at which audio-clock time `c` comes out of the phone. */
-  private perfOf(c: number): number {
+  perfOf(c: number): number {
     const m = outputTimeMap(this.ctx!)
     return m.perf + (c - m.ctxTime) * 1000
   }

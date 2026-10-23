@@ -148,7 +148,7 @@ export default function Admin() {
             <div className="mt-auto hidden flex-col gap-1 lg:flex">
               <div className="px-3 pb-1.5 text-xs tracking-[0.12em] text-subtle">前台</div>
               <ExternalNav to="/" icon="search" label="点歌台" />
-              <ExternalNav to="/tv" icon="tv" label="主屏" />
+              <ExternalNav to="/tv" icon="tv" label="大屏" />
             </div>
           </nav>
         </aside>
@@ -402,7 +402,7 @@ function Overview() {
           value={
             s ? (
               <span className="num">
-                主屏 {s.clients.tv}
+                大屏 {s.clients.tv}
                 <span className="text-sm font-medium text-muted">
                   {' '}· 点歌台 {s.clients.desk} · 手机 {s.clients.remote}
                   {s.clients.ear > 0 && ` · 耳返 ${s.clients.ear}`}
@@ -412,7 +412,7 @@ function Overview() {
               '读取中'
             )
           }
-          sub={s && (s.clients.tv > 0 ? '主屏已连接' : '没有打开的主屏，点歌后不会播放')}
+          sub={s && (s.clients.tv > 0 ? (s.clients.tv > 1 ? `${s.clients.tv} 块大屏，其中一块是主屏` : '大屏已连接') : '没有打开的大屏，点歌后不会播放')}
         />
       </div>
 
@@ -524,7 +524,7 @@ function NetworkSection({ draft, set }: { draft: AdminSettings; set: SetFn }) {
   const effective = value || origin
   return (
     <Card title="扫码点歌地址">
-      <Row stack title="局域网地址" help="手机扫主屏二维码打开的地址。留空时用打开主屏的浏览器地址。">
+      <Row stack title="局域网地址" help="手机扫大屏上的二维码打开的地址。留空时用打开大屏的浏览器地址。">
         <input
           value={draft.publicUrl}
           onChange={(e) => set('publicUrl', e.target.value)}
@@ -551,7 +551,7 @@ function NetworkSection({ draft, set }: { draft: AdminSettings; set: SetFn }) {
         {!value && isLocalHost(window.location.hostname) && (
           <span className="flex items-center gap-1.5 text-xs text-warn">
             <Icon name="alert" size={14} />
-            主屏如果也用 localhost 打开，手机会扫不进来，请填写本机局域网 IP。
+            大屏如果也用 localhost 打开，手机会扫不进来，请填写本机局域网 IP。
           </span>
         )}
       </div>

@@ -92,7 +92,7 @@ function RemoteTab() {
       {!tvOnline && (
         <div className="flex items-center gap-2 rounded-2xl border border-[rgba(251,191,36,0.25)] bg-[rgba(251,191,36,0.08)] px-4 py-3 text-[13px] text-warn">
           <Icon name="tv" size={16} />
-          主屏未打开：在电视或电脑浏览器打开 /tv 并点击开始
+          大屏未打开：在电视或电脑浏览器打开 /tv 并点击开始
         </div>
       )}
       <section
