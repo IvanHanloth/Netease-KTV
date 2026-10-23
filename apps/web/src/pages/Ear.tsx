@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { Link } from 'react-router'
+import { useLocation, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import type { LyricLine, PlaybackSync } from '@shared/types'
@@ -7,6 +7,7 @@ import { api, mediaUrl } from '../lib/api'
 import { clockReady, clockRtt, toServerTime } from '../lib/clock'
 import { smoothSync, tvPosition } from '../lib/playbackSync'
 import { artistsText } from '../lib/format'
+import { useDebounced } from '../lib/hooks'
 import { currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
 import { EarPlayer } from '../player/earPlayer'
 import { FIRST_GUESS_MS, LatencyCalibration } from '../components/LatencyCalibration'
@@ -74,6 +75,7 @@ function usePrefs(): [Prefs, (patch: Partial<Prefs>) => void] {
 
 type Status =
   | { kind: 'connecting' }
+  | { kind: 'tvOffline' }
   | { kind: 'idle' }
   | { kind: 'preparing' }
   | { kind: 'paused' }
@@ -92,17 +94,20 @@ export default function Ear() {
   const [prefs, setPrefs] = usePrefs()
   const connected = useApp((s) => s.connected)
   const player = useApp((s) => s.state.player)
-  const tracks = useApp((s) => s.state.tracks)
+  const tvOnline = useApp((s) => s.state.tvOnline)
   const rawSync = useApp((s) => s.sync)
   const cur = player.current
-  const track = cur ? tracks[cur.song.id] : undefined
+  const track = useApp((s) => (cur ? s.state.tracks[cur.song.id] : undefined))
   const ready = track?.status === 'ready'
   const hasStems = !!track?.hasStems
 
   useEffect(() => connect('ear'), [])
   useEffect(() => {
     document.title = '移动耳返 · Netease KTV'
-    return () => ear.stop(0.05)
+    return () => {
+      ear.stop(0.05)
+      if (document.fullscreenElement) void document.exitFullscreen?.().catch(() => {})
+    }
   }, [ear])
 
   // smoothed TV timeline, kept in a ref for the timing loops
@@ -134,19 +139,18 @@ export default function Ear() {
   // what to play
   const wantMode: Mode = prefs.mode === 'vocals' && !hasStems ? 'original' : prefs.mode
   const fellBack = prefs.mode === 'vocals' && !hasStems && ready
-  const url =
-    started && cur && ready && wantMode !== 'off'
-      ? wantMode === 'original'
-        ? mediaUrl(cur.song.id, 'original', player.key)
-        : mediaUrl(cur.song.id, wantMode, player.key)
-      : ''
+  const key = useDebounced(player.key, 500)
+  const url = started && cur && ready && wantMode !== 'off' ? mediaUrl(cur.song.id, wantMode, key) : ''
 
   const [loading, setLoading] = useState(false)
   const [loadError, setLoadError] = useState('')
+  // #82: 重新加载 after a failed load.
+  const [reloadNonce, setReloadNonce] = useState(0)
   useEffect(() => {
     if (!url) {
       ear.setBuffer(null, '')
       setLoading(false)
+      setLoadError('')
       return
     }
     if (ear.bufferUrl === url) return
@@ -169,7 +173,7 @@ export default function Ear() {
     return () => {
       cancelled = true
     }
-  }, [url, ear])
+  }, [url, ear, reloadNonce])
 
   useEffect(() => ear.setVolume(prefs.volume), [ear, prefs.volume, started])
 
@@ -184,13 +188,16 @@ export default function Ear() {
   const lastStart = useRef(0)
   const forceRestart = useRef(false)
   const curUid = cur?.uid
+  const tvOnlineRef = useRef(tvOnline)
+  tvOnlineRef.current = tvOnline
   const tick = useCallback(() => {
     const s = syncRef.current
     const target = (perf: number) => {
       const p = tvPosition(s, perf)
       return p === null ? NaN : p - delayRef.current / 1000
     }
-    const playable = !calibratingRef.current && !!ear.buffer && !!s && s.uid === curUid && s.playing && clockReady()
+    const playable =
+      !calibratingRef.current && tvOnlineRef.current && !!ear.buffer && !!s && s.uid === curUid && s.playing && clockReady()
     if (!playable) {
       if (ear.playing) ear.stop(0.12)
       driftEma.current = null
@@ -212,7 +219,8 @@ export default function Ear() {
     if (Number.isNaN(want)) return
     const d = h.pos - want // + = the phone is ahead
     driftEma.current = driftEma.current === null ? d : driftEma.current * 0.7 + d * 0.3
-    setDrift(driftEma.current)
+    const shownMs = Math.abs(driftEma.current * 1000)
+    setDrift(shownMs < 3 ? 0 : Math.round(shownMs))
     // Big jump (seek, pause/resume, a late report): restart on the line. Otherwise nudge the rate:
     // 0.4 % at most, which moves 4 ms per second and is far below what an ear can hear as pitch.
     if (Math.abs(d) > 0.08 && now - lastStart.current > 800) {
@@ -280,7 +288,9 @@ export default function Ear() {
   // ---- status ----
   const status: Status = !connected
     ? { kind: 'connecting' }
-    : !cur
+    : !tvOnline
+      ? { kind: 'tvOffline' }
+      : !cur
       ? { kind: 'idle' }
       : !ready
         ? { kind: 'preparing' }
@@ -292,11 +302,9 @@ export default function Ear() {
               ? { kind: 'prompter' }
               : loading
                 ? { kind: 'loading' }
-                : !clockReady()
+                : !clockReady() || drift === null
                   ? { kind: 'calibrating' }
-                  : drift === null
-                    ? { kind: 'calibrating' }
-                    : { kind: 'synced', driftMs: Math.abs(drift * 1000) }
+                  : { kind: 'synced', driftMs: drift }
 
   if (!started) return <StartScreen onStart={start} />
 
@@ -308,13 +316,7 @@ export default function Ear() {
         style={{ background: 'radial-gradient(circle, #FF4D7E 0%, rgba(0,0,0,0) 65%)' }}
       />
       <header className="relative flex items-center gap-2 px-3 pt-[max(10px,env(safe-area-inset-top))] pb-2">
-        <Link
-          to="/m"
-          aria-label="返回遥控"
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-fg-2 hover:bg-white/8"
-        >
-          <Icon name="chevronLeft" size={22} />
-        </Link>
+        <BackButton />
         <div className="flex min-w-0 flex-1 flex-col">
           <span className="truncate text-[15px] font-semibold">{cur ? cur.song.name : '移动耳返'}</span>
           <span className="truncate text-xs text-muted">{cur ? artistsText(cur.song) : '等待点歌'}</span>
@@ -324,11 +326,24 @@ export default function Ear() {
 
       <Prompter songId={cur?.song.id ?? null} uid={cur?.uid ?? null} syncRef={syncRef} font={prefs.font} />
 
-      {fellBack && prefs.mode === 'vocals' && (
+      {fellBack && (
         <p className="relative m-0 px-5 pb-2 text-center text-xs text-warn">这首歌没有分离出人声，正在播放原唱</p>
       )}
+      {loadError && wantMode !== 'off' && (
+        <div className="relative flex items-center justify-center gap-3 px-5 pb-2 text-xs text-warn">
+          <span className="truncate">{loadError}</span>
+          <button
+            type="button"
+            onClick={() => setReloadNonce((n) => n + 1)}
+            disabled={loading}
+            className="h-10 shrink-0 rounded-xl bg-white/8 px-4 text-sm font-semibold text-fg disabled:opacity-50"
+          >
+            重新加载音频
+          </button>
+        </div>
+      )}
 
-      <Controls prefs={prefs} setPrefs={setPrefs} rate={ear.currentRate} onCalibrate={() => setCalibrating(true)} />
+      <Controls prefs={prefs} setPrefs={setPrefs} onCalibrate={() => setCalibrating(true)} />
 
       {calibrating && (
         <LatencyCalibration
@@ -351,15 +366,13 @@ export default function Ear() {
 
 function StartScreen({ onStart }: { onStart: () => void }) {
   return (
-    <div className="fixed inset-0 flex flex-col overflow-y-auto bg-ink px-6 pt-[max(16px,env(safe-area-inset-top))] pb-[max(24px,env(safe-area-inset-bottom))] text-fg">
+    <div className="fixed inset-0 flex flex-col overflow-x-hidden overflow-y-auto bg-ink px-6 pt-[max(16px,env(safe-area-inset-top))] pb-[max(24px,env(safe-area-inset-bottom))] text-fg">
       <div
         aria-hidden="true"
         className="pointer-events-none absolute -top-40 left-1/2 h-[520px] w-[520px] -translate-x-1/2 rounded-full opacity-30 blur-[30px]"
         style={{ background: 'radial-gradient(circle, #8B5CF6 0%, rgba(0,0,0,0) 65%)' }}
       />
-      <Link to="/m" className="relative flex h-10 w-10 items-center justify-center rounded-xl text-fg-2 hover:bg-white/8" aria-label="返回遥控">
-        <Icon name="chevronLeft" size={22} />
-      </Link>
+      <BackButton />
       <div className="relative m-auto flex w-full max-w-sm flex-col items-center gap-7 py-8 text-center">
         <div className="flex h-20 w-20 items-center justify-center rounded-[24px] bg-[linear-gradient(135deg,#FF4D7E_0%,#8B5CF6_100%)] text-white shadow-[0_20px_60px_rgba(139,92,246,0.45)]">
           <Icon name="headphones" size={38} strokeWidth={2} />
@@ -381,9 +394,25 @@ function StartScreen({ onStart }: { onStart: () => void }) {
           <Icon name="play" size={20} />
           开始
         </button>
-        <p className="m-0 text-xs leading-5 text-faint">蓝牙耳机延迟较大，如果听起来比主屏晚，把延迟往“提前”调。</p>
+        <p className="m-0 text-xs leading-5 text-faint">蓝牙耳机比主屏晚？开始后用“测量蓝牙延迟”自动调好。</p>
       </div>
     </div>
+  )
+}
+
+/** Back to the remote: the browser's back when we came from it, otherwise to /m without a new entry. */
+function BackButton() {
+  const nav = useNavigate()
+  const loc = useLocation()
+  return (
+    <button
+      type="button"
+      aria-label="返回遥控"
+      onClick={() => (loc.key !== 'default' ? nav(-1) : nav('/m', { replace: true }))}
+      className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-fg-2 hover:bg-white/8"
+    >
+      <Icon name="chevronLeft" size={22} />
+    </button>
   )
 }
 
@@ -406,6 +435,10 @@ function StatusPill({ status }: { status: Status }) {
     case 'connecting':
       text = '连接中'
       spin = true
+      break
+    case 'tvOffline':
+      text = '大屏未打开'
+      tone = 'warn'
       break
     case 'idle':
       text = '等待点歌'
@@ -464,7 +497,7 @@ function Prompter({
   syncRef: React.RefObject<PlaybackSync | null>
   font: number
 }) {
-  const { data } = useQuery({
+  const { data, isError, refetch, isFetching } = useQuery({
     queryKey: ['lyrics', songId],
     queryFn: () => api.lyrics(songId!),
     enabled: songId !== null,
@@ -504,7 +537,14 @@ function Prompter({
       const line = lines[i]
       if (line) {
         const fills = wordFills(line, ms)
-        fills.forEach((f, k) => wordRefs.current[k]?.style.setProperty('--p', `${f}%`))
+        fills.forEach((f, k) => {
+          const v = `${Math.round(f * 10) / 10}%`
+          const el = wordRefs.current[k]
+          if (el && el.dataset.p !== v) {
+            el.dataset.p = v
+            el.style.setProperty('--p', v)
+          }
+        })
       }
     }
     raf = requestAnimationFrame(frame)
@@ -522,7 +562,21 @@ function Prompter({
   if (!lines.length) {
     return (
       <div className="relative flex flex-1 items-center justify-center px-6 text-center">
-        <p className="m-0 text-[15px] text-muted">{data ? '这首歌没有歌词' : '加载歌词…'}</p>
+        {isError && !data ? (
+          <div className="flex flex-col items-center gap-3">
+            <p className="m-0 text-[15px] text-muted">歌词加载失败</p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="h-11 rounded-xl bg-white/8 px-5 text-sm font-semibold disabled:opacity-50"
+            >
+              重试
+            </button>
+          </div>
+        ) : (
+          <p className="m-0 text-[15px] text-muted">{data ? '这首歌没有歌词' : '加载歌词…'}</p>
+        )}
       </div>
     )
   }
@@ -604,15 +658,12 @@ function Dots({ n, total }: { n: number; total: number }) {
 function Controls({
   prefs,
   setPrefs,
-  rate,
   onCalibrate,
 }: {
   prefs: Prefs
   setPrefs: (p: Partial<Prefs>) => void
-  rate: number
   onCalibrate: () => void
 }) {
-  void rate
   const delay = prefs.delayMs
   const setDelay = (v: number) => setPrefs({ delayMs: Math.max(-DELAY_LIMIT, Math.min(DELAY_LIMIT, Math.round(v))) })
   const delayText = delay === 0 ? '与主屏同步' : delay > 0 ? `延后 ${delay} ms` : `提前 ${-delay} ms`
@@ -726,15 +777,15 @@ function Controls({
         inert={!open}
       >
         <div ref={bodyRef} className="flex flex-col gap-4 pt-4">
-          <div className={clsx('flex items-center gap-3', prefs.mode === 'off' && 'pointer-events-none opacity-40')}>
+          <div className={clsx('flex items-center gap-3', prefs.mode === 'off' && 'opacity-40')} inert={prefs.mode === 'off'}>
             <Icon name="volume" size={18} className="shrink-0 text-muted" />
             <div className="flex-1">
               <Range label="耳返音量" value={Math.round(prefs.volume * 100)} onChange={(v) => setPrefs({ volume: v / 100 })} />
             </div>
-            <span className="num w-10 text-right text-sm text-fg-2">{Math.round(prefs.volume * 100)}</span>
+            <span className="num w-10 text-right text-sm text-fg-2">{Math.round(prefs.volume * 100)}%</span>
           </div>
 
-          <div className={clsx('flex flex-col gap-2', prefs.mode === 'off' && 'pointer-events-none opacity-40')}>
+          <div className={clsx('flex flex-col gap-2', prefs.mode === 'off' && 'opacity-40')} inert={prefs.mode === 'off'}>
             <div className="flex items-center justify-between">
               <span className="text-sm text-fg-2">延迟</span>
               <span className={clsx('num text-sm font-semibold', delay === 0 ? 'text-muted' : 'text-accent')}>{delayText}</span>
@@ -746,6 +797,8 @@ function Controls({
                   label="耳返延迟（毫秒）"
                   min={-DELAY_LIMIT}
                   max={DELAY_LIMIT}
+                  step={5}
+                  origin={0}
                   value={delay}
                   onChange={(v) => setDelay(Math.round(v / 5) * 5)}
                 />
@@ -754,17 +807,21 @@ function Controls({
             </div>
             <div className="flex items-center justify-between text-[11px] text-faint">
               <span>← 提前</span>
-              {delay !== 0 && (
-                <button type="button" onClick={() => setDelay(0)} className="rounded-md px-2 py-0.5 text-xs text-accent-soft">
-                  归零
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setDelay(0)}
+                disabled={delay === 0}
+                tabIndex={delay === 0 ? -1 : undefined}
+                className={clsx('h-9 rounded-lg px-3 text-[13px] text-accent-soft', delay === 0 && 'invisible')}
+              >
+                归零
+              </button>
               <span>延后 →</span>
             </div>
             <button
               type="button"
               onClick={onCalibrate}
-              className="flex h-10 items-center justify-center gap-2 rounded-xl bg-white/6 text-sm text-fg-2 active:bg-white/10"
+              className="flex h-11 items-center justify-center gap-2 rounded-xl bg-white/6 text-sm text-fg-2 active:bg-white/10"
             >
               <Icon name="headphones" size={16} />
               测量蓝牙延迟
@@ -791,7 +848,7 @@ function StepButton({ label, onClick, icon, text }: { label: string; onClick: ()
       type="button"
       aria-label={label}
       onClick={onClick}
-      className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/6 text-sm font-semibold text-fg-2 active:bg-white/12"
+      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] bg-white/6 text-sm font-semibold text-fg-2 active:bg-white/12"
     >
       {icon ? <Icon name={icon} size={16} /> : text}
     </button>

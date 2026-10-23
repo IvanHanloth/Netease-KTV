@@ -1,0 +1,38 @@
+{
+  "id": "/m",
+  "name": "Netease KTV 手机点歌",
+  "short_name": "KTV 点歌",
+  "description": "用手机点歌和控制大屏",
+  "start_url": "/m",
+  "display": "standalone",
+  "orientation": "portrait",
+  "scope": "/",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "background_color": "#0A0A0F",
+  "theme_color": "#0A0A0F",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": [
+    "music",
+    "entertainment"
+  ]
+}

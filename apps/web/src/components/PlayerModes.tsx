@@ -38,9 +38,9 @@ export function Segmented<T extends string>({
       role="group"
       aria-label={label}
       className={clsx(
-        'inline-flex items-center gap-1',
+        'items-center gap-1',
         isGlass(size) ? 'glass' : 'bg-white/6',
-        stretch && 'grid w-full grid-flow-col auto-cols-fr',
+        stretch ? 'grid w-full auto-cols-fr grid-flow-col' : 'inline-flex',
         s.wrap,
         className,
       )}

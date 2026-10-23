@@ -17,6 +17,15 @@ export function LoginDialog({ open, onClose }: { open: boolean; onClose: () => v
   const [busy, setBusy] = useState(false)
   const [nonce, setNonce] = useState(0)
 
+  useEffect(() => {
+    if (open) return
+    setManual(false)
+    setCookie('')
+    setQr(null)
+    setStatus('waiting')
+    setError('')
+  }, [open])
+
   // create a QR key whenever the dialog opens / refreshes
   useEffect(() => {
     if (!open || manual) return

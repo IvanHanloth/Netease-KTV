@@ -103,10 +103,12 @@ export class EarPlayer {
     osc.onended = end
     return () => {
       if (done) return
-      g.gain.cancelScheduledValues(ctx.currentTime)
-      g.gain.setValueAtTime(0, ctx.currentTime)
+      const t = ctx.currentTime
+      g.gain.cancelScheduledValues(t)
+      g.gain.setValueAtTime(g.gain.value, t)
+      g.gain.linearRampToValueAtTime(0, t + 0.005) // no click if it is sounding
       try {
-        osc.stop()
+        osc.stop(t + 0.006)
       } catch {
         /* already stopped */
       }

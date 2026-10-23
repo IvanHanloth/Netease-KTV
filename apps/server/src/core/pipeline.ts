@@ -1,12 +1,23 @@
 import fs from 'node:fs'
-import path from 'node:path'
 import { config } from '../config.js'
 import { probeDuration } from '../media/ffmpeg.js'
-import { clearMedia, download, findOriginal, hasPitch, hasStems, mediaDir, pitchPath, stemPath } from '../media/files.js'
+import { busySong } from '../media/busy.js'
+import { invalidateScan } from '../media/cache.js'
+import {
+  clearMedia,
+  download,
+  ensureMediaDir,
+  findOriginal,
+  hasPitch,
+  hasStems,
+  originalPath,
+  pitchPath,
+  stemPath,
+} from '../media/files.js'
 import { resolveAudio, UnavailableError } from '../media/resolve.js'
-import { enforceCacheLimit } from '../media/cache.js'
 import { cachedMv, ensureAlignment, ensureMv, readAlignment } from '../media/mv.js'
 import { getCachedSong, getSong } from '../ncm/service.js'
+import type { AudioSource, Song } from '../shared/types.js'
 import {
   chooseSeparationNode,
   clusterOnline,
@@ -21,6 +32,7 @@ import {
 import { getSettings } from '../settings.js'
 import { hub } from './hub.js'
 import { priorityIds } from './player.js'
+import { enforceCacheLimit } from './storage.js'
 
 /**
  * Prepares accompaniment for queued songs, in queue order:
@@ -53,23 +65,33 @@ function reconcile(songId: number): void {
   else if (findOriginal(songId)) hub.setTrack(songId, { status: 'queued', progress: 0, hasStems: false })
 }
 
+/**
+ * Download a song's original audio into the cache (NetEase, or an unblock source when enabled),
+ * rejecting unblock audio whose duration doesn't match the song (probably another version).
+ */
+async function fetchOriginal(song: Song, onProgress?: (p: number) => void): Promise<AudioSource> {
+  const audio = await resolveAudio(song)
+  ensureMediaDir(song.id)
+  const dest = originalPath(song.id, audio.ext)
+  await download(audio.url, dest, onProgress)
+  invalidateScan()
+  if (audio.source === 'unblock' && song.duration > 0) {
+    const actual = await probeDuration(dest)
+    if (actual > 0 && Math.abs(actual - song.duration) > config.unblockDurationTolerance) {
+      fs.rmSync(dest, { force: true })
+      throw new UnavailableError('no-source', '第三方音源与原曲时长不一致，可能是其他版本')
+    }
+  }
+  return audio.source
+}
+
 async function downloadOne(songId: number): Promise<void> {
   hub.setTrack(songId, { status: 'downloading', progress: 0, message: undefined }, false)
   try {
     const song = await getSong(songId)
-    const audio = await resolveAudio(song)
-    const dest = path.join(mediaDir(songId), `original.${audio.ext}`)
-    await download(audio.url, dest, (p) => hub.setTrack(songId, { progress: p }, false))
-
-    if (audio.source === 'unblock' && song.duration > 0) {
-      const actual = await probeDuration(dest)
-      if (actual > 0 && Math.abs(actual - song.duration) > config.unblockDurationTolerance) {
-        fs.rmSync(dest, { force: true })
-        throw new UnavailableError('no-source', '第三方音源与原曲时长不一致，可能是其他版本')
-      }
-    }
-    hub.setTrack(songId, { status: 'queued', progress: 0, source: audio.source, hasStems: false })
-    enforceCacheLimit()
+    const source = await busySong(songId, fetchOriginal(song, (p) => hub.setTrack(songId, { progress: p }, false)))
+    hub.setTrack(songId, { status: 'queued', progress: 0, source, hasStems: false })
+    void enforceCacheLimit()
     hub.emit('work-mv')
   } catch (err) {
     if (err instanceof UnavailableError) {
@@ -113,16 +135,22 @@ async function separateOne(songId: number, node: SeparatorNodeConfig): Promise<v
   // No await before separateOnNode: it reserves the node slot synchronously, so the dispatcher's
   // next pick in the same pass already sees this node as busy.
   const song = getCachedSong(songId)
+  // Busy until the pitch track has landed too (it may arrive after the song left the queue).
+  let pitchDone: () => void = () => {}
+  void busySong(songId, new Promise<void>((resolve) => (pitchDone = resolve)))
   try {
-    const { pitch } = await separateOnNode(node, {
+    const job = separateOnNode(node, {
       songId,
       songName: song?.name,
       input,
-      outDir: mediaDir(songId),
+      outDir: ensureMediaDir(songId),
       durationMs: song?.duration ?? 0,
       model: getSettings().separatorModel,
       onProgress: (p) => hub.setTrack(songId, { status: 'separating', progress: p }, false),
     })
+    job.then((r) => r.pitch.then(pitchDone, pitchDone), pitchDone)
+    const { pitch } = await job
+    invalidateScan()
     if (!hasStems(songId)) throw new Error('分离服务没有生成伴奏文件')
     attempts.delete(songId)
     // Playable now; the pitch track (for scoring) may still be computing.
@@ -133,9 +161,10 @@ async function separateOne(songId: number, node: SeparatorNodeConfig): Promise<v
       hasPitch: hasPitch(songId),
       message: undefined,
     })
-    enforceCacheLimit()
+    void enforceCacheLimit()
     pitchTried.add(songId)
     void pitch.then(() => {
+      invalidateScan()
       if (hasPitch(songId)) hub.setTrack(songId, { hasPitch: true }, false)
     })
   } catch (err) {
@@ -174,7 +203,8 @@ async function pitchOne(songId: number): Promise<void> {
   pitchTried.add(songId)
   pitchBusy = true
   try {
-    if (await pitchOnCluster(songId, stemPath(songId, 'vocals'), pitchPath(songId))) {
+    if (await busySong(songId, pitchOnCluster(songId, stemPath(songId, 'vocals'), pitchPath(songId)))) {
+      invalidateScan()
       hub.setTrack(songId, { hasPitch: true }, false)
     }
   } catch (err) {
@@ -234,25 +264,54 @@ async function pollSeparator(): Promise<void> {
 
 const fetching = new Map<number, Promise<void>>()
 
-/** Make sure a song's original audio is on disk (待机音乐: not queued, never separated). */
+/**
+ * Make sure a song's original audio is on disk: 待机音乐 (never queued, never separated), and
+ * 原唱 for a song whose original was cleared from the cache while its stems were kept.
+ */
 export function ensureOriginal(songId: number): Promise<void> {
   if (findOriginal(songId)) return Promise.resolve()
   const running = fetching.get(songId)
   if (running) return running
-  const job = (async () => {
-    const song = await getSong(songId)
-    const audio = await resolveAudio(song)
-    await download(audio.url, path.join(mediaDir(songId), `original.${audio.ext}`))
-    enforceCacheLimit()
-  })().finally(() => fetching.delete(songId))
+  const job = busySong(
+    songId,
+    (async () => {
+      await fetchOriginal(await getSong(songId))
+      void enforceCacheLimit()
+    })(),
+  ).finally(() => fetching.delete(songId))
   fetching.set(songId, job)
   return job
 }
 
+/** Forget what this session learned about a song's files (they were removed or are redone). */
+function forgetSong(songId: number): void {
+  pitchTried.delete(songId)
+  attempts.delete(songId)
+  for (const key of alignTried) if (key.startsWith(`${songId}:`)) alignTried.delete(key)
+}
+
 export function retry(songId: number): void {
   clearMedia(songId)
-  hub.setTrack(songId, { status: 'idle', progress: 0, hasStems: false, message: undefined, source: undefined })
+  invalidateScan()
+  forgetSong(songId)
+  hub.setTrack(songId, { status: 'idle', progress: 0, hasStems: false, hasPitch: false, message: undefined, source: undefined })
   hub.emit('work')
+}
+
+/**
+ * A song coming back into the queue gets another chance: an earlier failure (no source, download
+ * error, separation that fell back to the original) is retried instead of remembered forever.
+ * Songs already queued or playing are left alone.
+ */
+export function giveAnotherChance(songId: number): void {
+  if (priorityIds().includes(songId)) return
+  const t = hub.getTrack(songId)
+  if (t.status === 'unavailable' || t.status === 'error') {
+    hub.setTrack(songId, { status: 'idle', progress: 0, message: undefined })
+  } else if (t.status === 'ready' && !t.hasStems && t.message) {
+    forgetSong(songId)
+    hub.setTrack(songId, { status: findOriginal(songId) ? 'queued' : 'idle', progress: 0, message: undefined })
+  }
 }
 
 // ---------- MV preload + alignment ----------
@@ -270,7 +329,7 @@ async function mvStep(): Promise<boolean> {
       if (Date.now() - (mvFailedAt.get(song.mvId) ?? 0) < 10 * 60_000) continue
       try {
         await ensureMv(song.mvId)
-        enforceCacheLimit()
+        void enforceCacheLimit()
       } catch (err) {
         mvFailedAt.set(song.mvId, Date.now())
         console.warn(`[mv] download ${song.mvId} failed:`, (err as Error).message)
@@ -304,6 +363,11 @@ async function mvLoop(): Promise<void> {
 }
 
 export function startPipeline(): void {
+  // Files were cleared from the cache: what this session remembered about them is void.
+  hub.on('media-removed', ({ songIds }: { songIds: number[]; mvIds: number[] }) => {
+    for (const id of songIds) forgetSong(id)
+    if (songIds.length) hub.emit('work')
+  })
   hub.on('work', () => {
     void downloadLoop()
     separateLoop()
@@ -312,7 +376,7 @@ export function startPipeline(): void {
   })
   hub.on('work-separate', () => separateLoop())
   hub.on('work-mv', () => void mvLoop())
-  setTimeout(enforceCacheLimit, 10_000).unref()
+  setTimeout(() => void enforceCacheLimit(), 10_000).unref()
   // Safety net: pick up MV work that was skipped while the separator was still starting.
   setInterval(() => hub.emit('work-mv'), 60_000).unref()
   void pollSeparator().then(() => hub.emit('work'))

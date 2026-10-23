@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import fs from 'node:fs'
+import path from 'node:path'
 import { config } from '../config.js'
 
 function run(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -40,56 +41,118 @@ async function hasRubberband(): Promise<boolean> {
   return rubberband
 }
 
-const inflight = new Map<string, Promise<void>>()
-
-/**
- * Render a pitch-shifted copy (semitones) of `input` into `output` (FLAC).
- * Uses ffmpeg's rubberband filter when available, otherwise asetrate + atempo.
- */
-export function renderPitch(input: string, output: string, semitones: number): Promise<void> {
-  const existing = inflight.get(output)
-  if (existing) return existing
-  const job = (async () => {
-    const ratio = Math.pow(2, semitones / 12)
-    const filter = (await hasRubberband())
-      ? `rubberband=pitch=${ratio.toFixed(6)}:pitchq=quality`
-      : `asetrate=44100*${ratio.toFixed(6)},aresample=44100,atempo=${(1 / ratio).toFixed(6)}`
-    const tmp = `${output}.part.flac`
+async function encodePitch(input: string, output: string, semitones: number): Promise<void> {
+  const ratio = Math.pow(2, semitones / 12)
+  const filter = (await hasRubberband())
+    ? `rubberband=pitch=${ratio.toFixed(6)}:pitchq=quality`
+    : `asetrate=44100*${ratio.toFixed(6)},aresample=44100,atempo=${(1 / ratio).toFixed(6)}`
+  fs.mkdirSync(path.dirname(output), { recursive: true })
+  const tmp = `${output}.part.flac`
+  try {
     const { code, stderr } = await run(config.ffmpeg, [
       '-y', '-v', 'error', '-i', input, '-vn', '-af', filter, '-ar', '44100', '-c:a', 'flac', tmp,
     ])
     if (code !== 0) throw new Error(`ffmpeg pitch failed: ${stderr.slice(-400)}`)
     fs.renameSync(tmp, output)
-  })().finally(() => inflight.delete(output))
-  inflight.set(output, job)
-  return job
+  } catch (err) {
+    fs.rmSync(tmp, { force: true })
+    throw err
+  }
 }
 
-const queued = new Set<string>()
-const background: (() => Promise<void>)[] = []
+interface RenderJob {
+  /** Someone is waiting for this file right now (a key change). */
+  foreground: boolean
+  started: boolean
+  wanted?: () => boolean
+  start: () => void
+  promise: Promise<void>
+}
+
+/** Background renders at once; they only run while no foreground render is running. */
+const MAX_BACKGROUND = 1
+/** Background renders waiting; the oldest are dropped beyond this. */
+const MAX_BACKLOG = 12
+
+let foregroundRunning = 0
 let backgroundRunning = 0
+const inflight = new Map<string, RenderJob>()
+/** Background jobs not started yet, oldest first (the newest is started first). */
+const backlog: RenderJob[] = []
+
+function pump(): void {
+  while (foregroundRunning === 0 && backgroundRunning < MAX_BACKGROUND && backlog.length) backlog.pop()!.start()
+}
 
 /**
- * Render a pitch-shifted copy in the background (at most 2 at a time), unless it already exists or
- * is being rendered. Used to have the neighbouring keys ready before the singer asks for them:
- * a full stem takes ~7 s, which made every +/- press feel broken.
+ * Render a pitch-shifted copy (semitones) of `input` into `output` (FLAC), with ffmpeg's
+ * rubberband filter when available (otherwise asetrate + atempo).
+ *
+ * A render someone waits for starts at once. Background renders (neighbouring keys) run one at a
+ * time, newest first, only while nothing is rendered in the foreground, and are skipped when
+ * `wanted()` says no by the time their turn comes. A foreground request for a file that is still
+ * waiting in the background starts it immediately.
  */
-export function renderPitchLater(input: string, output: string, semitones: number): void {
-  if (queued.has(output) || inflight.has(output) || fs.existsSync(output)) return
-  queued.add(output)
-  background.push(() => renderPitch(input, output, semitones).catch(() => {}).finally(() => queued.delete(output)))
-  pumpBackground()
+export function renderPitch(
+  input: string,
+  output: string,
+  semitones: number,
+  opts: { background?: boolean; wanted?: () => boolean } = {},
+): Promise<void> {
+  const existing = inflight.get(output)
+  if (existing) {
+    if (!opts.background && !existing.started) {
+      const i = backlog.indexOf(existing)
+      if (i >= 0) backlog.splice(i, 1)
+      existing.foreground = true
+      existing.start()
+    }
+    return existing.promise
+  }
+  const job = { foreground: !opts.background, started: false, wanted: opts.wanted } as RenderJob
+  job.promise = new Promise<void>((resolve, reject) => {
+    job.start = () => {
+      if (job.started) return
+      job.started = true
+      const fg = job.foreground
+      if (fg) foregroundRunning++
+      else backgroundRunning++
+      ;(async () => {
+        if (!fg && job.wanted && !job.wanted()) return
+        if (fs.existsSync(output)) return
+        await encodePitch(input, output, semitones)
+      })()
+        .then(resolve, reject)
+        .finally(() => {
+          if (fg) foregroundRunning--
+          else backgroundRunning--
+          inflight.delete(output)
+          pump()
+        })
+    }
+  })
+  inflight.set(output, job)
+  if (job.foreground) job.start()
+  else {
+    backlog.push(job)
+    while (backlog.length > MAX_BACKLOG) {
+      const dropped = backlog.shift()!
+      dropped.wanted = () => false
+      dropped.start()
+    }
+    pump()
+  }
+  return job.promise
 }
 
-function pumpBackground(): void {
-  while (backgroundRunning < 2 && background.length) {
-    const job = background.shift()!
-    backgroundRunning++
-    void job().finally(() => {
-      backgroundRunning--
-      pumpBackground()
-    })
-  }
+/**
+ * Render a pitch-shifted copy in the background, unless it already exists or is on its way.
+ * Used to have the neighbouring keys ready before the singer asks for them: a full stem takes
+ * ~7 s, which made every +/- press feel broken.
+ */
+export function renderPitchLater(input: string, output: string, semitones: number, wanted?: () => boolean): void {
+  if (inflight.has(output) || fs.existsSync(output)) return
+  void renderPitch(input, output, semitones, { background: true, wanted }).catch(() => {})
 }
 
 export async function ffmpegAvailable(): Promise<boolean> {

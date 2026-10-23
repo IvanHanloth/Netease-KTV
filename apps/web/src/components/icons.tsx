@@ -272,7 +272,8 @@ export function Icon({
       strokeWidth={strokeWidth}
       strokeLinecap="round"
       strokeLinejoin="round"
-      aria-hidden="true"
+      aria-hidden={rest['aria-label'] ? undefined : true}
+      role={rest['aria-label'] ? 'img' : undefined}
       focusable="false"
       {...rest}
     >

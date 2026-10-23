@@ -90,9 +90,12 @@ export function LatencyCalibration({
     const cancels: (() => void)[] = []
     const queue = () => {
       const now = performance.now()
+      // Beats that went by while the timer was paused (tab in the background) are not played late.
+      while (t0 + queued * PERIOD_MS < now + 50) queued++
       while (t0 + queued * PERIOD_MS < now + LOOKAHEAD_MS) {
         const at = ear.ctxOf(t0 + queued * PERIOD_MS)
         cancels.push(ear.beep(Math.max(ctx.currentTime + 0.01, at)))
+        if (cancels.length > 4) cancels.shift() // older ones have sounded
         queued++
       }
     }
@@ -108,6 +111,12 @@ export function LatencyCalibration({
       const core = coreRef.current
       if (!ring || !core) return
       const x = (t - t0 - latencyRef.current) / PERIOD_MS
+      if (x < -0.5) {
+        // Before the approach to the first beat's crossing: nothing to see yet.
+        ring.setAttribute('opacity', '0')
+        core.setAttribute('fill-opacity', '0')
+        return
+      }
       const p = x - Math.round(x) // in [-0.5, 0.5): 0 at the crossing, negative = still outside
       ring.setAttribute('r', String(R_INNER - (R_FROM - R_TO) * p))
       ring.setAttribute('opacity', String(1 - (2 * p) ** 4)) // in from nothing, out to nothing
@@ -168,7 +177,7 @@ export function LatencyCalibration({
           <p className="m-0 text-[15px] leading-7 text-fg-2">
             戴上耳机。开始后每秒响一声“嘀”，每听到一声就点一下。
             <br />
-            圆圈相交的时刻会跟着你的点击走；当相交和“嘀”同时发生，延迟就对了。
+            两个圈重合的时刻会跟着你的点击走；当重合和“嘀”同时发生，延迟就对了。
           </p>
           <div className="flex w-full flex-col gap-3">
             <button
@@ -212,9 +221,9 @@ export function LatencyCalibration({
           </div>
 
           <p className="m-0 text-center text-[13px] leading-6 text-muted">
-            相交的时刻会对齐到你点的时刻。
+            重合的时刻会对齐到你点的时刻。
             <br />
-            相交和“嘀”同时发生时，点“结束测试”。
+            重合和“嘀”同时发生时，点“结束测试”。
           </p>
 
           <button

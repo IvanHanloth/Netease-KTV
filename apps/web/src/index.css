@@ -77,6 +77,12 @@
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
   }
+  /* 大屏: re-blurring a playing video behind every panel each frame is expensive on TV boxes. */
+  .tv-root .glass {
+    background: rgba(20, 20, 28, 0.74);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
   .num {
     font-family: var(--font-num);
     font-variant-numeric: tabular-nums;
@@ -97,14 +103,17 @@
     background: transparent;
     margin: 0;
   }
+  /* The fill runs from --range-from (0% unless the slider has a centre, e.g. a delay) to the thumb. */
   .ktv-range::-webkit-slider-runnable-track {
     height: 6px;
     border-radius: 3px;
     background: linear-gradient(
       90deg,
-      var(--range-fill, #ff4d7e) 0%,
-      var(--range-fill, #ff4d7e) var(--range-pct, 50%),
-      rgba(255, 255, 255, 0.14) var(--range-pct, 50%)
+      rgba(255, 255, 255, 0.14) 0%,
+      rgba(255, 255, 255, 0.14) min(var(--range-from, 0%), var(--range-pct, 50%)),
+      var(--range-fill, #ff4d7e) min(var(--range-from, 0%), var(--range-pct, 50%)),
+      var(--range-fill, #ff4d7e) max(var(--range-from, 0%), var(--range-pct, 50%)),
+      rgba(255, 255, 255, 0.14) max(var(--range-from, 0%), var(--range-pct, 50%))
     );
   }
   .ktv-range::-moz-range-track {
@@ -132,6 +141,21 @@
     border: 0;
     border-radius: 50%;
     background: #fff;
+  }
+  /* Fingers: a 44px tall hit area and a bigger thumb. */
+  @media (pointer: coarse) {
+    .ktv-range {
+      height: 44px;
+    }
+    .ktv-range::-webkit-slider-thumb {
+      width: 26px;
+      height: 26px;
+      margin-top: -10px;
+    }
+    .ktv-range::-moz-range-thumb {
+      width: 26px;
+      height: 26px;
+    }
   }
 }
 

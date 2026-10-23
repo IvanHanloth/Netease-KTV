@@ -148,6 +148,11 @@ export function useCacheInfo(enabled = true) {
   return useQuery({ queryKey: ['cache'], queryFn: api.cache, enabled, staleTime: 5_000 })
 }
 
+/** Cached songs with their size per kind (后台 → 视频与缓存). */
+export function useCachedSongs(enabled = true) {
+  return useQuery({ queryKey: ['cache', 'songs'], queryFn: api.cachedSongs, enabled, staleTime: 5_000 })
+}
+
 export function useAccount() {
   return useQuery({ queryKey: ['account'], queryFn: api.account, staleTime: 60_000 })
 }

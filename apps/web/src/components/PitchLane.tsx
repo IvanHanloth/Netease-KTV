@@ -102,18 +102,23 @@ export function PitchLane({
         const hit = data.keeper.hits.has(i)
         const past = n.t1 <= now
         const live = n.t0 <= now && now < n.t1
-        ctx.shadowBlur = 0
+        const w = Math.max(2 * dpr, x1 - x0 - 2 * dpr)
+        const bar = (grow: number) => {
+          ctx.beginPath()
+          if (ctx.roundRect) ctx.roundRect(x0 - grow, y - grow, w + 2 * grow, barH + 2 * grow, barH / 2 + grow)
+          else ctx.rect(x0 - grow, y - grow, w + 2 * grow, barH + 2 * grow)
+          ctx.fill()
+        }
         if (hit) {
+          // Glow: a larger, faint bar behind the hit note.
           ctx.fillStyle = ACCENT
-          ctx.shadowColor = ACCENT
-          ctx.shadowBlur = (live ? 18 : 8) * dpr
+          ctx.globalAlpha = live ? 0.45 : 0.3
+          bar((live ? 5 : 3) * dpr)
+          ctx.globalAlpha = 1
+          ctx.fillStyle = ACCENT
         } else ctx.fillStyle = past ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.26)'
-        ctx.beginPath()
-        if (ctx.roundRect) ctx.roundRect(x0, y, Math.max(2 * dpr, x1 - x0 - 2 * dpr), barH, barH / 2)
-        else ctx.rect(x0, y, Math.max(2 * dpr, x1 - x0 - 2 * dpr), barH)
-        ctx.fill()
+        bar(0)
       })
-      ctx.shadowBlur = 0
 
       // singer trace
       const fold = (m: number) => {
@@ -122,12 +127,8 @@ export function PitchLane({
         while (v > hi) v -= 12
         return v
       }
-      ctx.lineWidth = 3 * dpr
       ctx.lineJoin = 'round'
       ctx.lineCap = 'round'
-      ctx.strokeStyle = '#FFD1DE'
-      ctx.shadowColor = ACCENT
-      ctx.shadowBlur = 12 * dpr
       ctx.beginPath()
       let pen = false
       let lastY = 0
@@ -143,8 +144,13 @@ export function PitchLane({
         pen = true
         lastY = y
       }
+      // Halo, then the core line, on the same path.
+      ctx.strokeStyle = 'rgba(255,77,126,0.28)'
+      ctx.lineWidth = 9 * dpr
       ctx.stroke()
-      ctx.shadowBlur = 0
+      ctx.strokeStyle = '#FFD1DE'
+      ctx.lineWidth = 3 * dpr
+      ctx.stroke()
 
       // now line
       const g = ctx.createLinearGradient(0, 0, 0, H)
@@ -157,13 +163,15 @@ export function PitchLane({
       // singer dot
       const lastPt = data.trace[data.trace.length - 1]
       if (lastPt && lastPt.m !== null && now - lastPt.t < 0.15) {
-        ctx.fillStyle = '#FFFFFF'
-        ctx.shadowColor = ACCENT
-        ctx.shadowBlur = 16 * dpr
+        const dotY = Y(fold(lastPt.m))
+        ctx.fillStyle = 'rgba(255,77,126,0.35)'
         ctx.beginPath()
-        ctx.arc(nowX, Y(fold(lastPt.m)), 5 * dpr, 0, Math.PI * 2)
+        ctx.arc(nowX, dotY, 11 * dpr, 0, Math.PI * 2)
         ctx.fill()
-        ctx.shadowBlur = 0
+        ctx.fillStyle = '#FFFFFF'
+        ctx.beginPath()
+        ctx.arc(nowX, dotY, 5 * dpr, 0, Math.PI * 2)
+        ctx.fill()
       }
 
       raf = requestAnimationFrame(draw)

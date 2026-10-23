@@ -3,12 +3,13 @@ import path from 'node:path'
 import cors from '@fastify/cors'
 import fastifyStatic from '@fastify/static'
 import websocket from '@fastify/websocket'
-import Fastify from 'fastify'
+import Fastify, { LogController } from 'fastify'
 import { pruneApiCache } from './apiCache.js'
 import { config } from './config.js'
 import { hub } from './core/hub.js'
 import { startPipeline } from './core/pipeline.js'
 import { loadPlayer } from './core/player.js'
+import { clearMediaKind, syncAllTracksFromDisk } from './core/storage.js'
 import { getDb } from './db.js'
 import { seedHistory } from './history.js'
 import { registerRoutes } from './http/routes.js'
@@ -23,13 +24,20 @@ async function main() {
   hub.loadTracks()
   seedHistory()
   loadPlayer(getCachedSong)
+  // Files may have gone missing while the server was down (or a dir was removed by hand).
+  syncAllTracksFromDisk()
   await initNcm()
 
   if (!(await ffmpegAvailable())) {
     console.warn('[ktv] ffmpeg not found — key change and duration checks will fail. Set FFMPEG_PATH.')
   }
 
-  const app = Fastify({ logger: { level: process.env.LOG_LEVEL ?? 'info' }, bodyLimit: 1024 * 1024 })
+  const app = Fastify({
+    logger: { level: process.env.LOG_LEVEL ?? 'info' },
+    // Clients poll and stream all the time; per-request lines drown everything else (LOG_REQUESTS=1 to see them).
+    logController: new LogController({ disableRequestLogging: process.env.LOG_REQUESTS !== '1' }),
+    bodyLimit: 1024 * 1024,
+  })
   await app.register(cors, { origin: true })
   await app.register(websocket)
 
@@ -50,7 +58,16 @@ async function main() {
   // Serve the built web app with SPA fallback.
   const indexHtml = path.join(config.webDist, 'index.html')
   if (fs.existsSync(indexHtml)) {
-    await app.register(fastifyStatic, { root: config.webDist, index: ['index.html'] })
+    await app.register(fastifyStatic, {
+      root: config.webDist,
+      index: ['index.html'],
+      cacheControl: false,
+      // Built assets have content hashes in their names: cache them for good. index.html is revalidated.
+      setHeaders: (res, file) => {
+        const immutable = /[\\/]assets[\\/]/.test(file)
+        res.header('Cache-Control', immutable ? 'public, max-age=31536000, immutable' : 'no-cache')
+      },
+    })
     app.setNotFoundHandler((req, reply) => {
       const pathname = req.url.split('?')[0] ?? ''
       // Only page routes (/tv, /m, ...) fall back to the SPA; missing files stay 404.
@@ -64,6 +81,8 @@ async function main() {
   }
 
   startPipeline()
+  // Leftovers of writes that were cut off by the last shutdown.
+  setTimeout(() => void clearMediaKind('temp').catch(() => {}), 30_000).unref()
   pruneApiCache()
   setInterval(pruneApiCache, 6 * 60 * 60 * 1000).unref()
   await app.listen({ port: config.port, host: config.host })

@@ -88,6 +88,7 @@ export function ImportPlaylistDialog({
               if (state.kind !== 'loading') setState({ kind: 'idle' })
             }}
             onKeyDown={(e) => {
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return // confirming an IME candidate
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault()
                 void resolve()
@@ -95,7 +96,7 @@ export function ImportPlaylistDialog({
             }}
             rows={3}
             placeholder="例如：分享歌单 https://163cn.tv/xxxxxx 或 https://music.163.com/playlist?id=123456"
-            className="w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-[15px] leading-6 text-fg outline-none placeholder:text-subtle focus:border-white/25"
+            className="w-full resize-none rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-base leading-6 sm:text-[15px] text-fg outline-none placeholder:text-subtle focus:border-white/25"
           />
         </label>
 

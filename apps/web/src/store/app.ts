@@ -172,13 +172,26 @@ export function connect(r: ClientRole) {
   open()
 }
 
-export function sendMessage(msg: ClientMessage) {
-  if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(msg))
-  else if (msg.type !== 'report') outbox.push(msg)
+/**
+ * Send now; returns false when offline. Only the 大屏's own lifecycle messages (the latest claim,
+ * a song end) wait for the reconnect: a user's command replayed later would be a surprise.
+ */
+export function sendMessage(msg: ClientMessage): boolean {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(msg))
+    return true
+  }
+  if (msg.type === 'claim') {
+    const i = outbox.findIndex((m) => m.type === 'claim')
+    if (i >= 0) outbox.splice(i, 1)
+    outbox.push(msg)
+  } else if (msg.type === 'ended') outbox.push(msg)
+  return false
 }
 
-export function sendCommand(command: PlayerCommand) {
-  sendMessage({ type: 'command', command })
+/** Send a player command; false when offline (it is dropped, not queued). */
+export function sendCommand(command: PlayerCommand): boolean {
+  return sendMessage({ type: 'command', command })
 }
 
 export function onCommand(listener: CommandListener) {

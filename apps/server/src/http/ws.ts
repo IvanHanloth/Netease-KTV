@@ -52,6 +52,8 @@ function removeTv(tv: TvConn): void {
   if (activeTv === tv.id) activeTv = tvs.at(-1)?.id ?? null
   syncTvCount()
   announceRoles()
+  // The sound screen is gone: the song pauses where it was instead of "playing" on unheard.
+  if (activeTv === null) player.tvGone()
 }
 
 function claim(tv: TvConn): void {
@@ -133,6 +135,7 @@ export async function registerWs(app: FastifyInstance) {
               typeof msg.at === 'number' ? msg.at : undefined,
               typeof msg.uid === 'string' ? msg.uid : undefined,
               typeof msg.epoch === 'number' ? msg.epoch : undefined,
+              msg.starting === true,
             )
           }
           break

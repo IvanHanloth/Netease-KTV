@@ -234,8 +234,13 @@ async function downloadOutput(node: SeparatorNodeConfig, jobId: string, name: st
   if (!res.ok || !res.body) throw new NodeError(`下载 ${name} 失败（${res.status}）`, res.status >= 500)
   fs.mkdirSync(path.dirname(dest), { recursive: true })
   const tmp = `${dest}.part`
-  await pipeline(Readable.fromWeb(res.body as unknown as WebReadableStream), fs.createWriteStream(tmp))
-  fs.renameSync(tmp, dest)
+  try {
+    await pipeline(Readable.fromWeb(res.body as unknown as WebReadableStream), fs.createWriteStream(tmp))
+    fs.renameSync(tmp, dest)
+  } catch (err) {
+    fs.rmSync(tmp, { force: true })
+    throw err
+  }
 }
 
 function dropJob(node: SeparatorNodeConfig, jobId: string): void {

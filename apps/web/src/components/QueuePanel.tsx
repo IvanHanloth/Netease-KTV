@@ -9,7 +9,7 @@ import { useDragReorder } from '../lib/useDragReorder'
 import { livePosition, sendCommand, useApp } from '../store/app'
 import { Icon } from './icons'
 import { DisplayModeButton, VocalModeButton } from './PlayerModes'
-import { Cover, dotColor, EmptyNote, Eq, IconButton, ProgressBar } from './ui'
+import { ConfirmDialog, Cover, dotColor, EmptyNote, Eq, IconButton, ProgressBar } from './ui'
 
 export function useNow(interval = 1000) {
   const [now, setNow] = useState(() => Date.now())
@@ -164,7 +164,7 @@ const reorderFailed = (e: unknown) => toast(`排序失败：${errorText(e)}`, 'e
 export function QueueList() {
   const queue = useApp((s) => s.state.queue)
   const { ordered, dragKey, rowRef, handleProps } = useDragReorder(queue, queueKey, commitOrder, reorderFailed)
-  if (!queue.length) return <EmptyNote>队列是空的，从曲库挑一首吧</EmptyNote>
+  if (!queue.length) return <EmptyNote>后面还没有歌，从曲库挑一首吧</EmptyNote>
   return (
     <ol className={clsx('m-0 flex list-none flex-col gap-1 p-0', dragKey && 'select-none')}>
       <AnimatePresence initial={false}>
@@ -206,6 +206,9 @@ export function ShuffleButton({ count, className }: { count: number; className?:
 export function QueuePanel() {
   const queue = useApp((s) => s.state.queue)
   const current = useApp((s) => s.state.player.current)
+  const [confirmClear, setConfirmClear] = useState(false)
+  const clearing = useIsPending('queue:clear')
+  const empty = !current && !queue.length
   return (
     <div className="flex h-full flex-col gap-5">
       <div className="flex items-center justify-between">
@@ -216,21 +219,47 @@ export function QueuePanel() {
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <ShuffleButton count={queue.length} />
-          <button
-            type="button"
-            disabled={!queue.length}
-            onClick={() => safe('queue:clear', () => api.queueClear())}
-            className="h-11 px-2 text-sm whitespace-nowrap text-muted hover:text-fg disabled:opacity-40"
-          >
-            清空
-          </button>
+          {!empty && (
+            <>
+              <ShuffleButton count={queue.length} />
+              <button
+                type="button"
+                disabled={!queue.length}
+                onClick={() => setConfirmClear(true)}
+                className="h-11 px-2 text-sm whitespace-nowrap text-muted hover:text-fg disabled:opacity-40"
+              >
+                清空
+              </button>
+            </>
+          )}
         </div>
       </div>
-      <NowSingingCard />
-      <div className="min-h-0 flex-1 overflow-y-auto">
-        <QueueList />
-      </div>
+      {empty ? (
+        <div className="rounded-[20px] border border-dashed border-white/12 p-6 text-center text-sm leading-6 text-muted">
+          还没有点歌
+          <br />
+          从左边的曲库挑一首，或者用手机扫大屏上的二维码点歌
+        </div>
+      ) : (
+        <>
+          <NowSingingCard />
+          <div className="min-h-0 flex-1 overflow-y-auto">
+            <QueueList />
+          </div>
+        </>
+      )}
+      <ConfirmDialog
+        open={confirmClear}
+        title="清空已点列表？"
+        message={`已点的 ${queue.length} 首歌会全部移除，正在唱的不受影响。`}
+        confirmLabel="清空"
+        busy={clearing}
+        onConfirm={async () => {
+          await safe('queue:clear', () => api.queueClear())
+          setConfirmClear(false)
+        }}
+        onClose={() => setConfirmClear(false)}
+      />
     </div>
   )
 }

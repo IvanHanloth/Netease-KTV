@@ -1,7 +1,11 @@
 import type { ReactNode } from 'react'
 import clsx from 'clsx'
+import type { AdminSettings } from '@shared/types'
 
 /** Building blocks shared by the 后台管理 sections. */
+
+/** Change one field of the unsaved admin draft. */
+export type SetFn = <K extends keyof AdminSettings>(k: K, v: AdminSettings[K]) => void
 
 export function Card({ title, action, children, className }: { title?: string; action?: ReactNode; children: ReactNode; className?: string }) {
   return (

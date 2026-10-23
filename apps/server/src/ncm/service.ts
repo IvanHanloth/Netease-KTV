@@ -1,5 +1,6 @@
 import { cached, DAY, HOUR, MIN } from '../apiCache.js'
 import { getDb } from '../db.js'
+import { singleFlight, TtlCache } from '../util.js'
 import type { Account, AlbumDetail, ArtistDetail, Lyrics, PlaylistSummary, QrStatus, Song } from '../shared/types.js'
 import { call, clearCookie, getCookie, NcmError, setCookie } from './client.js'
 import { buildLyrics } from './lyrics.js'
@@ -12,28 +13,40 @@ const SONG_TTL = 12 * 60 * 60 * 1000
 // ---------- account ----------
 
 let accountCache: { at: number; account: Account } | null = null
+const accountFlight = singleFlight<'account', Account>()
 
 export async function getAccount(force = false): Promise<Account> {
   if (!getCookie()) return { loggedIn: false }
   if (!force && accountCache && Date.now() - accountCache.at < 60_000) return accountCache.account
-  try {
-    const res = await call('login_status')
-    const data = res.body?.data ?? res.body
-    const profile = data?.profile
-    const account: Account = profile
-      ? {
-          loggedIn: true,
-          userId: Number(profile.userId),
-          nickname: String(profile.nickname ?? ''),
-          avatarUrl: String(profile.avatarUrl ?? ''),
-          vipType: Number(profile.vipType ?? data?.account?.vipType ?? 0),
-        }
-      : { loggedIn: false }
-    accountCache = { at: Date.now(), account }
-    return account
-  } catch {
-    return { loggedIn: false }
-  }
+  return accountFlight('account', async () => {
+    try {
+      const res = await call('login_status')
+      const data = res.body?.data ?? res.body
+      const profile = data?.profile
+      const account: Account = profile
+        ? {
+            loggedIn: true,
+            userId: Number(profile.userId),
+            nickname: String(profile.nickname ?? ''),
+            avatarUrl: String(profile.avatarUrl ?? ''),
+            vipType: Number(profile.vipType ?? data?.account?.vipType ?? 0),
+          }
+        : { loggedIn: false }
+      accountCache = { at: Date.now(), account }
+      return account
+    } catch {
+      // A NetEase hiccup: keep the last known account instead of flipping everything to logged out.
+      return accountCache?.account ?? { loggedIn: false }
+    }
+  })
+}
+
+/** Logged in, out, or as someone else: what depends on the account is stale now. */
+function accountChanged(): void {
+  accountCache = null
+  clearLinks()
+  // Playability (VIP, trial clips) is part of the song details.
+  getDb().prepare('UPDATE songs SET updated_at = 0').run()
 }
 
 export async function createQr(): Promise<{ key: string; qrUrl: string }> {
@@ -57,7 +70,7 @@ export async function checkQr(key: string): Promise<{ status: QrStatus; account?
   if (code === 803) {
     const cookie = String(res.body?.cookie ?? res.cookie?.join(';') ?? '')
     if (cookie) setCookie(cookie)
-    accountCache = null
+    accountChanged()
     return { status: 'ok', account: await getAccount(true) }
   }
   return { status: 'waiting' }
@@ -66,7 +79,7 @@ export async function checkQr(key: string): Promise<{ status: QrStatus; account?
 export async function loginWithCookie(cookie: string): Promise<Account> {
   const value = cookie.includes('MUSIC_U=') ? cookie : `MUSIC_U=${cookie.trim()}`
   setCookie(value)
-  accountCache = null
+  accountChanged()
   const account = await getAccount(true)
   if (!account.loggedIn) {
     clearCookie()
@@ -82,7 +95,7 @@ export async function logout(): Promise<void> {
     // ignore
   }
   clearCookie()
-  accountCache = null
+  accountChanged()
 }
 
 // ---------- songs ----------
@@ -100,24 +113,57 @@ export function getCachedSong(id: number): Song | undefined {
   return row ? (JSON.parse(row.data) as Song) : undefined
 }
 
-export async function getSongs(ids: number[], fresh = false): Promise<Song[]> {
-  const result = new Map<number, Song>()
-  const missing: number[] = []
-  const db = getDb()
-  for (const id of ids) {
-    const row = db.prepare('SELECT data, updated_at FROM songs WHERE id = ?').get(id) as
-      | { data: string; updated_at: number }
-      | undefined
-    if (row && !fresh && Date.now() - row.updated_at < SONG_TTL) result.set(id, JSON.parse(row.data))
-    else missing.push(id)
-  }
-  for (let i = 0; i < missing.length; i += 500) {
-    const chunk = missing.slice(i, i + 500)
+async function fetchSongs(ids: number[]): Promise<Song[]> {
+  const out: Song[] = []
+  for (let i = 0; i < ids.length; i += 500) {
+    const chunk = ids.slice(i, i + 500)
     const res = await call('song_detail', { ids: chunk.join(',') })
     const songs = mapSongs(res.body?.songs, res.body?.privileges)
     cacheSongs(songs)
-    for (const s of songs) result.set(s.id, s)
+    out.push(...songs)
   }
+  return out
+}
+
+/** Songs whose stale details are being refreshed in the background. */
+const refreshing = new Set<number>()
+
+/**
+ * Song details in the order of `ids` (unknown ids are left out). Details older than SONG_TTL are
+ * returned as they are and refreshed in the background; `fresh` waits for NetEase instead (where
+ * playability must be current, e.g. before queueing).
+ */
+export async function getSongs(ids: number[], fresh = false): Promise<Song[]> {
+  const result = new Map<number, Song>()
+  const missing: number[] = []
+  const stale: number[] = []
+  const rows = (
+    ids.length
+      ? getDb()
+          .prepare('SELECT id, data, updated_at FROM songs WHERE id IN (SELECT value FROM json_each(?))')
+          .all(JSON.stringify(ids))
+      : []
+  ) as { id: number; data: string; updated_at: number }[]
+  const byId = new Map(rows.map((r) => [Number(r.id), r]))
+  const now = Date.now()
+  for (const id of new Set(ids)) {
+    const row = byId.get(id)
+    if (!row || fresh) {
+      missing.push(id)
+      continue
+    }
+    result.set(id, JSON.parse(row.data) as Song)
+    if (now - row.updated_at >= SONG_TTL && !refreshing.has(id)) stale.push(id)
+  }
+  if (stale.length) {
+    for (const id of stale) refreshing.add(id)
+    void fetchSongs(stale)
+      .catch(() => {})
+      .finally(() => {
+        for (const id of stale) refreshing.delete(id)
+      })
+  }
+  if (missing.length) for (const s of await fetchSongs(missing)) result.set(s.id, s)
   return ids.map((id) => result.get(id)).filter((s): s is Song => !!s)
 }
 
@@ -324,11 +370,22 @@ export async function lyrics(id: number): Promise<Lyrics> {
   })
 }
 
+/** MVs NetEase recently said it has no stream for (so the TV stops asking for a while). */
+const unavailableMvs = new TtlCache<number, true>(10 * MIN, 500)
+
 export async function mvUrl(mvId: number, resolution = 1080): Promise<string> {
   const res = await call('mv_url', { id: mvId, r: resolution })
   const url = res.body?.data?.url
-  if (!url) throw new NcmError('MV 暂不可用', 404)
+  if (!url) {
+    unavailableMvs.set(mvId, true)
+    throw new NcmError('MV 暂不可用', 404)
+  }
+  unavailableMvs.delete(mvId)
   return String(url)
+}
+
+export function mvUnavailable(mvId: number): boolean {
+  return !!unavailableMvs.get(mvId)
 }
 
 /**
@@ -340,4 +397,42 @@ export async function previewUrl(songId: number): Promise<string> {
   const url = res.body?.data?.[0]?.url
   if (!url) throw new NcmError('暂无试听', 404)
   return String(url)
+}
+
+// ---------- signed stream links ----------
+
+/**
+ * NetEase stream URLs (MV, 试听) are signed and expire, so they are kept for 10 minutes and shared
+ * by concurrent requests. A link the upstream rejects is dropped (forgetLink) and fetched again.
+ */
+const links = new TtlCache<string, Promise<string>>(10 * MIN, 300)
+
+function link(key: string, resolve: () => Promise<string>): Promise<string> {
+  let p = links.get(key)
+  if (!p) {
+    p = resolve()
+    links.set(key, p)
+    p.catch(() => links.delete(key))
+  }
+  return p
+}
+
+export const mvLinkKey = (mvId: number, res: number) => `mv:${mvId}:${res}`
+export const previewLinkKey = (songId: number) => `preview:${songId}`
+
+export function mvStreamUrl(mvId: number, res: number): Promise<string> {
+  return link(mvLinkKey(mvId, res), () => mvUrl(mvId, res))
+}
+
+export function previewStreamUrl(songId: number): Promise<string> {
+  return link(previewLinkKey(songId), () => previewUrl(songId))
+}
+
+export function forgetLink(key: string): void {
+  links.delete(key)
+}
+
+export function clearLinks(): void {
+  links.clear()
+  unavailableMvs.clear()
 }

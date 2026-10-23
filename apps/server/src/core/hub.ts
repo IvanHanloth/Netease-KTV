@@ -59,6 +59,12 @@ class Hub extends EventEmitter {
     return next
   }
 
+  /** Drop a track that is back to idle with nothing on disk (absent = idle for everyone). */
+  forgetTrack(songId: number): void {
+    if (!this.tracks.delete(songId)) return
+    getDb().prepare('DELETE FROM tracks WHERE song_id = ?').run(songId)
+  }
+
   setSeparator(status: SeparatorStatus): void {
     const prev = this.separator
     this.separator = status

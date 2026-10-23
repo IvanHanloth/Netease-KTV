@@ -481,11 +481,43 @@ def worker() -> None:
             run_job(job)
             if job.stems_ready and stage == "error":
                 stage, stage_error = "ready", None
-        # Forget finished jobs after an hour.
-        cutoff = time.time() - 3600
-        for jid in [j.id for j in jobs.values() if j.finished_at and j.finished_at < cutoff]:
-            drop_job(jobs.pop(jid))
-        sweep_uploads(cutoff)
+
+
+# Finished jobs whose host never collected them (it went away, or crashed) are forgotten after this.
+FORGET_AFTER_S = 3600
+SWEEP_EVERY_S = 600
+
+
+def sweep() -> None:
+    """Free disk space that nothing will ask for any more."""
+    cutoff = time.time() - FORGET_AFTER_S
+    for jid in [j.id for j in list(jobs.values()) if j.finished_at and j.finished_at < cutoff]:
+        job = jobs.pop(jid, None)
+        if job:
+            drop_job(job)
+    sweep_uploads(cutoff)
+    # Output dirs of jobs this process doesn't know: left over from before a restart.
+    folder = JOBS_DIR / "jobs"
+    if folder.exists():
+        for d in folder.iterdir():
+            try:
+                if d.name not in jobs and d.stat().st_mtime < cutoff:
+                    shutil.rmtree(d, ignore_errors=True)
+            except OSError:
+                pass
+
+
+def sweeper() -> None:
+    # Scratch dirs of earlier processes (each start makes a new one).
+    for d in Path(tempfile.gettempdir()).glob("ktv-sep-*"):
+        if d != _work_dir:
+            shutil.rmtree(d, ignore_errors=True)
+    while True:
+        try:
+            sweep()
+        except Exception:  # never let cleanup kill the thread
+            log.exception("sweep failed")
+        time.sleep(SWEEP_EVERY_S)
 
 
 app = FastAPI(title="Netease-KTV separator")
@@ -494,6 +526,7 @@ app = FastAPI(title="Netease-KTV separator")
 @app.on_event("startup")
 def _start_worker() -> None:
     threading.Thread(target=worker, daemon=True, name="separator-worker").start()
+    threading.Thread(target=sweeper, daemon=True, name="separator-sweeper").start()
 
 
 def auth(request: Request) -> None:

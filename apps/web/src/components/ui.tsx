@@ -108,6 +108,10 @@ export const dotColor: Record<PillKind, string> = {
 
 // ---------- Small pieces ----------
 
+/** Status colours for dots and tiles (后台, 耳返). */
+export type Tone = 'ok' | 'warn' | 'bad' | 'idle'
+export const TONE_DOT: Record<Tone, string> = { ok: 'bg-ok-dot', warn: 'bg-warn-dot', bad: 'bg-accent', idle: 'bg-faint' }
+
 export function ProgressBar({ value, color = '#FBBF24', className }: { value: number; color?: string; className?: string }) {
   return (
     <div aria-hidden="true" className={clsx('h-1 overflow-hidden rounded-full bg-white/12', className)}>
@@ -170,26 +174,36 @@ export function Range({
   label,
   min = 0,
   max = 100,
+  step,
+  origin,
   color = '#FF4D7E',
+  disabled,
 }: {
   value: number
   onChange: (v: number) => void
   label: string
   min?: number
   max?: number
+  step?: number
+  /** The fill starts here instead of at `min` (a centred slider, e.g. 提前 / 延后). */
+  origin?: number
   color?: string
+  disabled?: boolean
 }) {
   const pct = ((value - min) / (max - min)) * 100
+  const from = origin === undefined ? 0 : ((origin - min) / (max - min)) * 100
   return (
     <input
       type="range"
       aria-label={label}
       min={min}
       max={max}
+      step={step}
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange(Number(e.target.value))}
-      className="ktv-range"
-      style={{ ['--range-pct' as string]: pct + '%', ['--range-fill' as string]: color }}
+      className="ktv-range disabled:cursor-not-allowed disabled:opacity-45"
+      style={{ ['--range-pct' as string]: pct + '%', ['--range-from' as string]: from + '%', ['--range-fill' as string]: color }}
     />
   )
 }
@@ -213,6 +227,7 @@ export function Dialog({
   sheet?: boolean
 }) {
   const ref = useRef<HTMLDialogElement>(null)
+  const downOnBackdrop = useRef(false)
   useEffect(() => {
     const d = ref.current
     if (!d) return
@@ -223,9 +238,12 @@ export function Dialog({
     <dialog
       ref={ref}
       onClose={onClose}
-      onCancel={onClose}
+      onPointerDown={(e) => {
+        downOnBackdrop.current = e.target === ref.current
+      }}
       onClick={(e) => {
-        if (e.target === ref.current) onClose()
+        if (downOnBackdrop.current && e.target === ref.current) onClose()
+        downOnBackdrop.current = false
       }}
       className={clsx(
         'm-auto max-h-[90vh] w-[calc(100%-32px)] overflow-visible rounded-3xl border border-white/10 bg-panel p-0 text-fg shadow-[0_30px_80px_rgba(0,0,0,0.6)] backdrop:bg-black/60 backdrop:backdrop-blur-sm',
@@ -247,16 +265,66 @@ export function Dialog({
   )
 }
 
-export function Switch({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
+/** A yes/no question before something that cannot be undone. */
+export function ConfirmDialog({
+  open,
+  title,
+  message,
+  confirmLabel,
+  busy,
+  onConfirm,
+  onClose,
+}: {
+  open: boolean
+  title: string
+  message: string
+  confirmLabel: string
+  busy?: boolean
+  onConfirm: () => void
+  onClose: () => void
+}) {
+  return (
+    <Dialog open={open} onClose={onClose} title={title} width={420}>
+      <p className="m-0 mb-6 text-[15px] leading-7 text-fg-2">{message}</p>
+      <div className="flex justify-end gap-3">
+        <button type="button" onClick={onClose} className="h-11 rounded-xl bg-white/8 px-5 text-sm whitespace-nowrap hover:bg-white/12">
+          取消
+        </button>
+        <button
+          type="button"
+          onClick={onConfirm}
+          disabled={busy}
+          className="flex h-11 items-center gap-2 rounded-xl bg-[#F87171] px-5 text-sm font-bold whitespace-nowrap text-ink disabled:opacity-60"
+        >
+          {busy && <Spinner size={16} />}
+          {confirmLabel}
+        </button>
+      </div>
+    </Dialog>
+  )
+}
+
+export function Switch({
+  checked,
+  onChange,
+  label,
+  disabled,
+}: {
+  checked: boolean
+  onChange: (v: boolean) => void
+  label: string
+  disabled?: boolean
+}) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      disabled={disabled}
       onClick={() => onChange(!checked)}
       className={clsx(
-        'relative h-7 w-12 shrink-0 rounded-full transition-colors',
+        'relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
         checked ? 'bg-accent' : 'bg-white/15',
       )}
     >

@@ -8,6 +8,9 @@ import type {
   IdleMusic,
   AppState,
   CacheInfo,
+  CacheKind,
+  CachedSongInfo,
+  MediaCacheKind,
   Lyrics,
   MvInfo,
   PitchTrack,
@@ -222,8 +225,22 @@ export const api = {
     put<SeparatorNodeView>('/admin/separators/' + encodeURIComponent(id), body),
   removeSeparator: (id: string) => del<{ ok: boolean }>('/admin/separators/' + encodeURIComponent(id)),
   cache: () => get<CacheInfo>('/admin/cache'),
-  clearCache: () => del<{ removed?: number }>('/admin/cache'),
-  clearDataCache: () => del<{ removed: number; cache: CacheInfo }>('/admin/cache/data'),
+  cachedSongs: () => get<{ songs: CachedSongInfo[] }>('/admin/cache/songs'),
+  /** All media (current / queued songs and 待机音乐 are kept). */
+  clearMediaCache: () => del<CacheCleared>('/admin/cache'),
+  /** All NetEase data. */
+  clearDataCache: () => del<CacheCleared>('/admin/cache/data'),
+  clearCacheKind: (kind: CacheKind) => del<CacheCleared>('/admin/cache/kinds/' + kind),
+  /** One song's media: some kinds, or everything (its MV included). */
+  clearSongCache: (songId: number, kinds?: MediaCacheKind[]) =>
+    del<CacheCleared>(`/admin/cache/songs/${songId}${kinds ? `?kinds=${kinds.join(',')}` : ''}`),
+}
+
+/** Result of a cache clear: bytes freed (media) or rows removed (data), and the cache now. */
+export interface CacheCleared {
+  freed?: number
+  removed?: number
+  cache: CacheInfo
 }
 
 /** Low-quality audio for previewing a song on this device (never touches the TV / queue). */

@@ -7,7 +7,7 @@ import { artistsText } from '../lib/format'
 import { errorText, toast } from '../lib/hooks'
 import { useApp } from '../store/app'
 import { Icon } from './icons'
-import { Cover, Dialog, QueryError, Spinner } from './ui'
+import { ConfirmDialog, Cover, QueryError, Spinner } from './ui'
 
 /** GET /api/scores, refetched whenever the server announces a leaderboard change. */
 export function useLeaderboard() {
@@ -41,44 +41,6 @@ const fmtDate = (at: number) => {
   const d = new Date(at)
   const p = (n: number) => String(n).padStart(2, '0')
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
-}
-
-export function ConfirmDialog({
-  open,
-  title,
-  message,
-  confirmLabel,
-  busy,
-  onConfirm,
-  onClose,
-}: {
-  open: boolean
-  title: string
-  message: string
-  confirmLabel: string
-  busy?: boolean
-  onConfirm: () => void
-  onClose: () => void
-}) {
-  return (
-    <Dialog open={open} onClose={onClose} title={title} width={420}>
-      <p className="m-0 mb-6 text-[15px] leading-7 text-fg-2">{message}</p>
-      <div className="flex justify-end gap-3">
-        <button type="button" onClick={onClose} className="h-11 rounded-xl bg-white/8 px-5 text-sm whitespace-nowrap hover:bg-white/12">
-          取消
-        </button>
-        <button
-          type="button"
-          onClick={onConfirm}
-          disabled={busy}
-          className="flex h-11 items-center gap-2 rounded-xl bg-[#F87171] px-5 text-sm font-bold whitespace-nowrap text-ink disabled:opacity-60"
-        >
-          {busy && <Spinner size={16} />}
-          {confirmLabel}
-        </button>
-      </div>
-    </Dialog>
-  )
 }
 
 function EntryRow({ e, rank }: { e: ScoreEntry; rank: number }) {

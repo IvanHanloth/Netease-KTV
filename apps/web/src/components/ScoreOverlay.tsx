@@ -91,11 +91,12 @@ function CountUp({ to, run }: { to: number; run: boolean }) {
 /** End-of-song result card. Purely visual: never blocks playback or the next song. */
 export function ScoreOverlay({ result, onDone }: { result: ScoreResult | null; onDone: () => void }) {
   const reduce = useReducedMotion()
+  const id = result?.id
   useEffect(() => {
-    if (!result) return
-    const t = setTimeout(onDone, 6000)
+    if (id === undefined) return
+    const t = setTimeout(onDone, 4500)
     return () => clearTimeout(t)
-  }, [result, onDone])
+  }, [id, onDone])
   const r = result ? rating(result.score) : null
   return (
     <AnimatePresence>

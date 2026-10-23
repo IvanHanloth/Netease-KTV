@@ -5,7 +5,7 @@ import type { SeparatorNodeView } from '@shared/types'
 import { api, type SeparatorNodeInput } from '../../lib/api'
 import { errorText, toast } from '../../lib/hooks'
 import { Icon } from '../icons'
-import { ProgressBar, Spinner, Switch } from '../ui'
+import { ProgressBar, Spinner, Switch, TONE_DOT, type Tone } from '../ui'
 import { Card, inputCls, MODELS } from './parts'
 
 /**
@@ -113,14 +113,12 @@ function Dot() {
   return <span className="mt-[9px] h-1.5 w-1.5 shrink-0 rounded-full bg-[#8B7BFF]" />
 }
 
-type Tone = 'ok' | 'bad' | 'warn' | 'idle'
-const TONE: Record<Tone, string> = { ok: 'bg-ok-dot', bad: 'bg-accent', warn: 'bg-warn-dot', idle: 'bg-faint' }
 
 function Stat({ label, value, tone, note }: { label: string; value: string; tone: Tone; note?: string }) {
   return (
     <div className="flex min-w-0 flex-col gap-1.5 rounded-2xl border border-white/7 bg-white/[0.025] p-3.5 sm:p-4">
       <span className="flex items-center gap-2 text-xs text-subtle">
-        <span className={clsx('h-1.5 w-1.5 rounded-full', TONE[tone])} />
+        <span className={clsx('h-1.5 w-1.5 rounded-full', TONE_DOT[tone])} />
         {label}
       </span>
       <span className="num truncate text-xl font-bold">{value}</span>
@@ -181,7 +179,7 @@ function NodeCard({ node: n, onEdit }: { node: SeparatorNodeView; onEdit: () => 
       )}
     >
       <div className="flex items-start gap-3">
-        <span className={clsx('mt-[7px] h-2.5 w-2.5 shrink-0 rounded-full', TONE[st.tone])} />
+        <span className={clsx('mt-[7px] h-2.5 w-2.5 shrink-0 rounded-full', TONE_DOT[st.tone])} />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-[15px] font-semibold">{n.name}</span>
@@ -307,6 +305,10 @@ function NodeForm({ node, onDone }: { node?: SeparatorNodeView; onDone: () => vo
   const customModel = !!model && !MODELS.some((m) => m.value === model)
   const [custom, setCustom] = useState(customModel)
   const urlOk = /^https?:\/\/[^\s/]+/i.test(url.trim())
+  const [urlTouched, setUrlTouched] = useState(false)
+  const [nameTouched, setNameTouched] = useState(false)
+  const urlInvalid = urlTouched && !urlOk
+  const nameMissing = nameTouched && !name.trim()
 
   async function runTest() {
     setTesting(true)
@@ -347,7 +349,16 @@ function NodeForm({ node, onDone }: { node?: SeparatorNodeView; onDone: () => vo
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1.6fr]">
         <label className="flex flex-col gap-1.5">
           <span className="text-xs text-muted">名称</span>
-          <input value={name} onChange={(e) => setName(e.target.value)} placeholder="书房的台式机" maxLength={40} className={inputCls} />
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => setNameTouched(true)}
+            aria-invalid={nameMissing}
+            placeholder="书房的台式机"
+            maxLength={40}
+            className={clsx(inputCls, nameMissing && 'border-[rgba(255,77,126,0.6)]!')}
+          />
+          {nameMissing && <span className="text-xs text-accent-soft">给这台服务器起个名字</span>}
         </label>
         <label className="flex flex-col gap-1.5">
           <span className="text-xs text-muted">地址</span>
@@ -357,12 +368,15 @@ function NodeForm({ node, onDone }: { node?: SeparatorNodeView; onDone: () => vo
               setUrl(e.target.value)
               setTest(null)
             }}
+            onBlur={() => setUrlTouched(true)}
+            aria-invalid={urlInvalid}
             placeholder="http://192.168.1.20:9000"
-            className={clsx(inputCls, 'num')}
+            className={clsx(inputCls, 'num', urlInvalid && 'border-[rgba(255,77,126,0.6)]!')}
             inputMode="url"
             autoCapitalize="off"
             spellCheck={false}
           />
+          {urlInvalid && <span className="text-xs text-accent-soft">填写完整地址，例如 http://192.168.1.20:9000</span>}
         </label>
       </div>
       <label className="flex flex-col gap-1.5">
@@ -452,9 +466,16 @@ function NodeForm({ node, onDone }: { node?: SeparatorNodeView; onDone: () => vo
         <button type="button" onClick={onDone} className="h-10 rounded-xl px-3.5 text-sm text-muted hover:text-fg">
           取消
         </button>
+        {(!name.trim() || !urlOk) && (nameTouched || urlTouched) && (
+          <span className="text-xs text-muted">{!name.trim() ? '还缺名称' : '地址不完整'}</span>
+        )}
         <button
           type="button"
           onClick={save}
+          onPointerDown={() => {
+            setNameTouched(true)
+            setUrlTouched(true)
+          }}
           disabled={!name.trim() || !urlOk || saving}
           className="flex h-10 items-center gap-2 rounded-xl bg-accent px-4 text-sm font-bold whitespace-nowrap text-accent-ink disabled:opacity-50"
         >

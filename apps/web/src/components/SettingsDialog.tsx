@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import type { DeskSettings } from '@shared/types'
 import { api } from '../lib/api'
@@ -15,23 +15,37 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const { data } = useSettings()
   const [draft, setDraft] = useState<DeskSettings | null>(null)
   const [saving, setSaving] = useState(false)
+  // Seeded once per open: a change made elsewhere meanwhile doesn't wipe what is being edited.
+  const base = useRef<DeskSettings | null>(null)
   useEffect(() => {
-    if (open && data)
-      setDraft({
+    if (!open) {
+      base.current = null
+      return
+    }
+    if (data && !base.current) {
+      base.current = {
         scoringEnabled: data.scoringEnabled,
         scoreTolerance: data.scoreTolerance,
         multiScreenSync: data.multiScreenSync ?? false,
         multiScreenAudio: data.multiScreenAudio ?? false,
-      })
+      }
+      setDraft(base.current)
+    }
   }, [open, data])
 
   const set = <K extends keyof DeskSettings>(k: K, v: DeskSettings[K]) => setDraft((d) => (d ? { ...d, [k]: v } : d))
 
   async function save() {
     if (!draft) return
+    // Only what was changed here, so a concurrent change to another setting is not undone.
+    const changed = (Object.keys(draft) as (keyof DeskSettings)[]).filter((k) => draft[k] !== base.current?.[k])
+    if (!changed.length) {
+      onClose()
+      return
+    }
     setSaving(true)
     try {
-      const res = await api.saveSettings(draft)
+      const res = await api.saveSettings(Object.fromEntries(changed.map((k) => [k, draft[k]])) as Partial<DeskSettings>)
       qc.setQueryData(['settings'], res)
       toast('设置已保存')
       onClose()
@@ -122,7 +136,7 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
 function ToleranceControl({ value, onChange, disabled }: { value: number; onChange: (v: number) => void; disabled?: boolean }) {
   const v = Math.round(value * 10) / 10
   return (
-    <div className={'flex flex-col gap-2.5' + (disabled ? ' pointer-events-none opacity-45' : '')} aria-disabled={disabled}>
+    <div className={'flex flex-col gap-2.5' + (disabled ? ' opacity-45' : '')} inert={disabled}>
       <div className="flex items-center justify-between gap-3">
         <span className="text-sm text-fg-2">打分容错</span>
         <span className="num text-sm font-semibold whitespace-nowrap text-accent">±{v.toFixed(1)} 个半音</span>

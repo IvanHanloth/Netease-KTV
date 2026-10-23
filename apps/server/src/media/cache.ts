@@ -1,176 +1,213 @@
-import fs from 'node:fs'
+import fsp from 'node:fs/promises'
 import path from 'node:path'
-import { apiCacheStats } from '../apiCache.js'
 import { paths } from '../config.js'
-import { hub } from '../core/hub.js'
-import { priorityIds } from '../core/player.js'
-import { getCachedSong } from '../ncm/service.js'
-import { getSettings } from '../settings.js'
-import type { CacheInfo } from '../shared/types.js'
+import type { MediaCacheKind } from '../shared/types.js'
+import { ACCESS_MARK, isPartial, kindOfSongFile, parseMvFile } from './files.js'
 
 /**
- * Disk cache for song audio / stems (data/media/<songId>/) and MVs (data/mv/<mvId>_<res>.mp4).
- * When the total exceeds settings.cacheLimitGB, the least recently used entries are removed —
- * never the current song or anything in the queue.
+ * The media cache on disk, as data: what is there, how big, when last used. Scans are async
+ * (they never block playback) and shared for a few seconds; anything that writes or deletes calls
+ * invalidateScan(). Policy (what may be removed, in which order) lives in core/storage.ts.
  */
 
-const GB = 1024 ** 3
-const ACCESS_MARK = '.access'
+export interface CacheFile {
+  path: string
+  kind: MediaCacheKind
+  bytes: number
+  mtime: number
+  /** Relative to its song dir, with forward slashes ('pitch/vocals_+2.flac'); file name otherwise. */
+  rel: string
+}
 
-function dirSize(dir: string): number {
-  let total = 0
-  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
-    const p = path.join(dir, ent.name)
-    if (ent.isDirectory()) total += dirSize(p)
-    else {
+export interface SongCache {
+  songId: number
+  dir: string
+  /** Files this version knows (the access marker and unknown files are left out). */
+  files: CacheFile[]
+  /** Everything in the dir, known or not. */
+  bytes: number
+  lastUsed: number
+}
+
+export interface MvCache {
+  mvId: number
+  res: number
+  file: CacheFile
+}
+
+export interface CacheScan {
+  songs: SongCache[]
+  mvs: MvCache[]
+  /** data/tmp/* and unfinished MV downloads. */
+  loose: CacheFile[]
+}
+
+interface RawFile {
+  path: string
+  rel: string
+  bytes: number
+  mtime: number
+}
+
+async function walk(dir: string, base = '', out: RawFile[] = []): Promise<RawFile[]> {
+  let entries
+  try {
+    entries = await fsp.readdir(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const e of entries) {
+    const p = path.join(dir, e.name)
+    const rel = base ? `${base}/${e.name}` : e.name
+    if (e.isDirectory()) await walk(p, rel, out)
+    else if (e.isFile()) {
       try {
-        total += fs.statSync(p).size
+        const st = await fsp.stat(p)
+        out.push({ path: p, rel, bytes: st.size, mtime: st.mtimeMs })
       } catch {
         /* removed meanwhile */
       }
     }
   }
-  return total
+  return out
 }
 
-function mtime(p: string): number {
+async function scanSongs(): Promise<SongCache[]> {
+  const root = paths.mediaRoot()
+  let names: string[]
   try {
-    return fs.statSync(p).mtimeMs
+    names = await fsp.readdir(root)
   } catch {
-    return 0
+    return []
+  }
+  const songs: SongCache[] = []
+  for (const name of names) {
+    const songId = Number(name)
+    if (!Number.isInteger(songId) || songId <= 0) continue
+    const dir = path.join(root, name)
+    const raw = await walk(dir)
+    let lastUsed = 0
+    let bytes = 0
+    const files: CacheFile[] = []
+    for (const f of raw) {
+      bytes += f.bytes
+      if (f.rel === ACCESS_MARK) {
+        lastUsed = Math.max(lastUsed, f.mtime)
+        continue
+      }
+      const kind = kindOfSongFile(f.rel)
+      if (kind) files.push({ ...f, kind })
+    }
+    // Never played (no marker yet): last written.
+    if (!lastUsed) lastUsed = raw.reduce((m, f) => Math.max(m, f.mtime), 0)
+    songs.push({ songId, dir, files, bytes, lastUsed })
+  }
+  return songs
+}
+
+async function scanMvs(): Promise<{ mvs: MvCache[]; parts: CacheFile[] }> {
+  const mvs: MvCache[] = []
+  const parts: CacheFile[] = []
+  for (const f of await walk(paths.mvRoot())) {
+    if (f.rel.includes('/')) continue
+    const id = parseMvFile(f.rel)
+    if (id) mvs.push({ mvId: id.mvId, res: id.res, file: { ...f, kind: 'mv' } })
+    else if (isPartial(f.rel)) parts.push({ ...f, kind: 'temp' })
+  }
+  return { mvs, parts }
+}
+
+async function doScan(): Promise<CacheScan> {
+  const [songs, mv, tmp] = await Promise.all([scanSongs(), scanMvs(), walk(paths.tmp())])
+  return { songs, mvs: mv.mvs, loose: [...mv.parts, ...tmp.map((f) => ({ ...f, kind: 'temp' as const }))] }
+}
+
+const MEMO_MS = 10_000
+let memo: { at: number; scan: Promise<CacheScan> } | null = null
+
+/** The cache contents, at most `maxAgeMs` old. */
+export function scanCache(maxAgeMs = MEMO_MS): Promise<CacheScan> {
+  if (memo && Date.now() - memo.at < maxAgeMs) return memo.scan
+  const scan = doScan()
+  const entry = { at: Date.now(), scan }
+  memo = entry
+  scan.catch(() => {
+    if (memo === entry) memo = null
+  })
+  return scan
+}
+
+/** Something was written or deleted: the next scan reads the disk again. */
+export function invalidateScan(): void {
+  memo = null
+}
+
+/** Delete files; returns the bytes freed. Song dirs left with nothing in them are removed too. */
+export async function removeFiles(files: CacheFile[]): Promise<number> {
+  let freed = 0
+  const dirs = new Set<string>()
+  for (const f of files) {
+    try {
+      await fsp.rm(f.path, { force: true })
+      freed += f.bytes
+      dirs.add(path.dirname(f.path))
+    } catch {
+      /* in use or gone */
+    }
+  }
+  for (const dir of dirs) await removeIfEmpty(dir)
+  invalidateScan()
+  return freed
+}
+
+/** Remove a dir under media/ that holds nothing but the access marker, then its parent likewise. */
+async function removeIfEmpty(dir: string): Promise<void> {
+  const mediaRoot = path.resolve(paths.mediaRoot())
+  let current = path.resolve(dir)
+  while (current.startsWith(mediaRoot + path.sep)) {
+    let names: string[]
+    try {
+      names = await fsp.readdir(current)
+    } catch {
+      return
+    }
+    if (names.some((n) => n !== ACCESS_MARK)) return
+    await fsp.rm(current, { recursive: true, force: true }).catch(() => {})
+    current = path.dirname(current)
   }
 }
 
-/** Remember that a song's files were just used (LRU). */
+export async function removeSongDir(songId: number): Promise<void> {
+  await fsp.rm(paths.media(songId), { recursive: true, force: true })
+  invalidateScan()
+}
+
+// ---------- LRU marks ----------
+
+const TOUCH_EVERY_MS = 60_000
+const touched = new Map<string, number>()
+
+function due(key: string): boolean {
+  const now = Date.now()
+  if (now - (touched.get(key) ?? 0) < TOUCH_EVERY_MS) return false
+  if (touched.size > 2000) touched.clear()
+  touched.set(key, now)
+  return true
+}
+
+/**
+ * Remember that a song's files were just used (LRU). Cheap enough for every media request: at
+ * most once a minute per song, async, and it never creates the song dir.
+ */
 export function touchSong(songId: number): void {
-  const dir = paths.media(songId)
-  if (!fs.existsSync(dir)) return
-  const mark = path.join(dir, ACCESS_MARK)
+  if (!due(`song:${songId}`)) return
+  const mark = path.join(paths.media(songId), ACCESS_MARK)
   const now = new Date()
-  try {
-    if (fs.existsSync(mark)) fs.utimesSync(mark, now, now)
-    else fs.writeFileSync(mark, '')
-  } catch {
-    /* best effort */
-  }
+  void fsp.utimes(mark, now, now).catch(() => fsp.writeFile(mark, '').catch(() => {}))
 }
 
 export function touchFile(file: string): void {
+  if (!due(file)) return
   const now = new Date()
-  try {
-    fs.utimesSync(file, now, now)
-  } catch {
-    /* best effort */
-  }
-}
-
-interface Entry {
-  kind: 'song' | 'mv'
-  id: number
-  path: string
-  bytes: number
-  lastUsed: number
-}
-
-function scan(): Entry[] {
-  const entries: Entry[] = []
-  const mediaRoot = paths.mediaRoot()
-  if (fs.existsSync(mediaRoot)) {
-    for (const name of fs.readdirSync(mediaRoot)) {
-      const id = Number(name)
-      const dir = path.join(mediaRoot, name)
-      if (!Number.isInteger(id) || !fs.statSync(dir).isDirectory()) continue
-      entries.push({
-        kind: 'song',
-        id,
-        path: dir,
-        bytes: dirSize(dir),
-        lastUsed: Math.max(mtime(path.join(dir, ACCESS_MARK)), mtime(dir)),
-      })
-    }
-  }
-  const mvRoot = paths.mvRoot()
-  if (fs.existsSync(mvRoot)) {
-    for (const name of fs.readdirSync(mvRoot)) {
-      const m = /^(\d+)_\d+\.mp4$/.exec(name)
-      if (!m) continue
-      const file = path.join(mvRoot, name)
-      entries.push({ kind: 'mv', id: Number(m[1]), path: file, bytes: fs.statSync(file).size, lastUsed: mtime(file) })
-    }
-  }
-  return entries
-}
-
-function protectedSets(): { songs: Set<number>; mvs: Set<number> } {
-  const songs = new Set(priorityIds())
-  const mvs = new Set<number>()
-  for (const id of songs) {
-    const mv = getCachedSong(id)?.mvId
-    if (mv) mvs.add(mv)
-  }
-  return { songs, mvs }
-}
-
-function remove(e: Entry): void {
-  fs.rmSync(e.path, { recursive: true, force: true })
-  if (e.kind === 'song') {
-    // The song has to be downloaded and separated again next time it is requested.
-    hub.setTrack(e.id, { status: 'idle', progress: 0, hasStems: false, hasPitch: false, message: undefined, source: undefined })
-  }
-}
-
-export function cacheInfo(): CacheInfo {
-  const entries = scan()
-  const audioBytes = entries.filter((e) => e.kind === 'song').reduce((a, e) => a + e.bytes, 0)
-  const mvBytes = entries.filter((e) => e.kind === 'mv').reduce((a, e) => a + e.bytes, 0)
-  const data = apiCacheStats()
-  return {
-    usedBytes: audioBytes + mvBytes,
-    limitBytes: getSettings().cacheLimitGB * GB,
-    audioBytes,
-    mvBytes,
-    songs: entries.filter((e) => e.kind === 'song').length,
-    mvs: entries.filter((e) => e.kind === 'mv').length,
-    dataEntries: data.entries,
-    dataBytes: data.bytes,
-  }
-}
-
-let enforcing = false
-
-/** Evict least-recently-used songs / MVs until the cache fits the limit. */
-export function enforceCacheLimit(): void {
-  if (enforcing) return
-  enforcing = true
-  try {
-    const limit = getSettings().cacheLimitGB * GB
-    const entries = scan()
-    let used = entries.reduce((a, e) => a + e.bytes, 0)
-    if (used <= limit) return
-    const keep = protectedSets()
-    const candidates = entries
-      .filter((e) => (e.kind === 'song' ? !keep.songs.has(e.id) : !keep.mvs.has(e.id)))
-      .sort((a, b) => a.lastUsed - b.lastUsed)
-    for (const e of candidates) {
-      if (used <= limit) break
-      remove(e)
-      used -= e.bytes
-      console.log(`[cache] evicted ${e.kind} ${e.id} (${(e.bytes / 1024 ** 2).toFixed(0)} MB)`)
-    }
-  } catch (err) {
-    console.warn('[cache] enforce failed:', (err as Error).message)
-  } finally {
-    enforcing = false
-  }
-}
-
-/** Remove everything except the current / queued songs and their MVs. */
-export function clearCache(): CacheInfo {
-  const keep = protectedSets()
-  for (const e of scan()) {
-    if (e.kind === 'song' ? keep.songs.has(e.id) : keep.mvs.has(e.id)) continue
-    remove(e)
-  }
-  fs.rmSync(paths.tmp(), { recursive: true, force: true })
-  return cacheInfo()
+  void fsp.utimes(file, now, now).catch(() => {})
 }

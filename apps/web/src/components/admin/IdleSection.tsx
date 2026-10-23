@@ -7,9 +7,7 @@ import { artistsText, fmtMs } from '../../lib/format'
 import { useDebounced } from '../../lib/hooks'
 import { Icon } from '../icons'
 import { Cover, Range, Spinner, Switch } from '../ui'
-import { Card, inputCls, Row } from './parts'
-
-type SetFn = <K extends keyof AdminSettings>(k: K, v: AdminSettings[K]) => void
+import { Card, inputCls, Row, type SetFn } from './parts'
 
 /** 待机音乐: what the TV plays quietly while nothing is queued (part of the admin draft). */
 export function IdleSection({ draft, set }: { draft: AdminSettings; set: SetFn }) {
@@ -45,7 +43,7 @@ export function IdleSection({ draft, set }: { draft: AdminSettings; set: SetFn }
           <Switch checked={draft.idleEnabled} onChange={(v) => set('idleEnabled', v)} label="启用待机音乐" />
         </Row>
         <Row stack title="音量" help="相对于伴奏音量的比例；伴奏音量调大调小，待机音乐也跟着变。">
-          <div className={clsx('flex items-center gap-4', !draft.idleEnabled && 'pointer-events-none opacity-45')}>
+          <div className={clsx('flex items-center gap-4', !draft.idleEnabled && 'opacity-45')} inert={!draft.idleEnabled}>
             <div className="flex-1">
               <Range label="待机音乐音量（%）" min={0} max={100} value={pct} onChange={(v) => set('idleVolume', v / 100)} color="#8B7BFF" />
             </div>

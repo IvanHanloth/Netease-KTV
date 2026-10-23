@@ -17,6 +17,7 @@ import './index.css'
 import { Toasts } from './components/Toasts'
 import { Spinner } from './components/ui'
 import { isRetryable } from './lib/api'
+import { registerServiceWorker, syncManifest } from './lib/pwa'
 import { useApp } from './store/app'
 
 const Desk = lazy(() => import('./pages/Desk'))
@@ -81,6 +82,10 @@ const router = createBrowserRouter([
   { path: '/ear', element: page(<Ear />) },
   { path: '*', element: page(<Desk />) },
 ])
+
+syncManifest(router.state.location.pathname)
+router.subscribe((state) => syncManifest(state.location.pathname))
+registerServiceWorker()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

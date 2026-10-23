@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { Link } from 'react-router'
 import type { PlayerCommand, Song } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtMs, fmtTime } from '../lib/format'
-import { errorText, useDebounced, useHistory, useStatusOf } from '../lib/hooks'
+import { errorText, toast, useDebounced, useHistory, useStatusOf } from '../lib/hooks'
 import { stopPreview } from '../lib/preview'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
@@ -14,11 +14,16 @@ import { Leaderboard } from '../components/Leaderboard'
 import { NICKNAME_MAX, useNickname } from '../lib/nickname'
 import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
 import { SongActions } from '../components/SongTable'
-import { QueueList, ShuffleButton, useNow } from '../components/QueuePanel'
+import { NowSingingCard, QueueList, ShuffleButton, useNow } from '../components/QueuePanel'
 import { ImportedPlaylistChips, ImportPlaylistDialog } from '../components/ImportPlaylist'
 import { removeImportedPlaylist, useImportedPlaylists, type ImportedPlaylist } from '../lib/importedPlaylists'
 
 type Tab = 'remote' | 'search' | 'queue' | 'rank'
+
+/** A command from this phone; says so when it could not be sent (nothing is replayed later). */
+function command(c: PlayerCommand) {
+  if (!sendCommand(c)) toast('连接中断，这次操作没有发出', 'error')
+}
 
 /** Local slider state that streams throttled `set` commands. */
 function useLiveValue(remote: number, toCommand: (v: number) => PlayerCommand) {
@@ -32,11 +37,11 @@ function useLiveValue(remote: number, toCommand: (v: number) => PlayerCommand) {
     clearTimeout(timer.current)
     if (now - last.current > 120) {
       last.current = now
-      sendCommand(toCommand(v))
+      command(toCommand(v))
     } else {
       timer.current = window.setTimeout(() => {
         last.current = Date.now()
-        sendCommand(toCommand(v))
+        command(toCommand(v))
       }, 120)
     }
     clearTimeout(idle.current)
@@ -73,7 +78,7 @@ function RoundButton({
   )
 }
 
-function RemoteTab() {
+function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShowQueue: () => void }) {
   const player = useApp((s) => s.state.player)
   const tvOnline = useApp((s) => s.state.tvOnline)
   const track = useApp((s) => (player.current ? s.state.tracks[player.current.song.id] : undefined))
@@ -81,11 +86,13 @@ function RemoteTab() {
   const statusOf = useStatusOf()
   const now = useNow(1000)
   const cur = player.current
-  const pos = livePosition(player, now)
   const dur = cur ? cur.song.duration / 1000 : 0
+  // Never shown past the end, whatever the server's line says.
+  const pos = Math.min(livePosition(player, now), dur > 0 ? dur : Infinity)
   const hasStems = !!track?.hasStems
   const [music, setMusic] = useLiveValue(Math.round(player.musicVolume * 100), (v) => ({ action: 'set', musicVolume: v / 100 }))
-  const setKey = (k: number) => sendCommand({ action: 'set', key: Math.max(-6, Math.min(6, k)) })
+  const setKey = (k: number) => command({ action: 'set', key: Math.max(-6, Math.min(6, k)) })
+  const volLabel = hasStems && player.trackMode === 'karaoke' ? '伴奏音量' : '音量'
 
   return (
     <div className="flex flex-col gap-3.5">
@@ -126,20 +133,25 @@ function RemoteTab() {
                 <span>{fmtTime(dur)}</span>
               </div>
             )}
+            <div className="mt-3 flex items-center justify-center gap-7">
+              <RoundButton icon="replay" label="重唱" onClick={() => command({ action: 'restart' })} />
+              <RoundButton
+                icon={player.playing ? 'pause' : 'play'}
+                label={player.playing ? '暂停' : '播放'}
+                primary
+                onClick={() => command({ action: 'toggle' })}
+              />
+              <RoundButton icon="next" label="切歌" onClick={() => command({ action: 'next' })} />
+            </div>
           </>
         ) : (
-          <div className="py-3 text-center text-sm text-fg-2">还没有在唱的歌，去“点歌”挑一首吧</div>
+          <div className="flex flex-col items-center gap-3 py-3 text-sm text-fg-2">
+            还没有在唱的歌
+            <button type="button" onClick={onPickSong} className="h-11 rounded-full bg-accent px-6 font-semibold text-accent-ink">
+              去点歌
+            </button>
+          </div>
         )}
-        <div className="mt-3 flex items-center justify-center gap-7">
-          <RoundButton icon="replay" label="重唱" onClick={() => sendCommand({ action: 'restart' })} />
-          <RoundButton
-            icon={player.playing ? 'pause' : 'play'}
-            label={player.playing ? '暂停' : '播放'}
-            primary
-            onClick={() => sendCommand({ action: 'toggle' })}
-          />
-          <RoundButton icon="next" label="切歌" onClick={() => sendCommand({ action: 'next' })} />
-        </div>
       </section>
 
       <Link
@@ -167,11 +179,11 @@ function RemoteTab() {
           <span className="flex items-center justify-between text-sm">
             <span className="flex items-center gap-2">
               <Icon name="volume" size={18} />
-              {hasStems && player.trackMode === 'karaoke' ? '伴奏音量' : '音量'}
+              {volLabel}
             </span>
             <span className="num text-[#C8C8D0]">{music}%</span>
           </span>
-          <Range label="伴奏音量" value={music} onChange={setMusic} />
+          <Range label={volLabel} value={music} onChange={setMusic} />
         </label>
         <div className="flex items-center justify-between">
           <span className="text-sm">升降调</span>
@@ -211,10 +223,15 @@ function RemoteTab() {
       <section aria-label="接下来" className="flex flex-col gap-1.5">
         <div className="flex items-center justify-between px-0.5">
           <h2 className="m-0 text-[15px] font-semibold">接下来</h2>
-          <span className="text-[13px] text-muted">已点 {queue.length + (cur ? 1 : 0)} 首</span>
+          {queue.length > 0 && (
+            <button type="button" onClick={onShowQueue} className="-my-2 -mr-2 flex h-10 items-center gap-0.5 px-2 text-[13px] text-muted active:text-fg">
+              全部 {queue.length} 首
+              <Icon name="chevronLeft" size={14} className="rotate-180" />
+            </button>
+          )}
         </div>
         {queue.length === 0 ? (
-          <p className="m-0 py-4 text-center text-[13px] text-muted">队列是空的</p>
+          <p className="m-0 py-4 text-center text-[13px] text-muted">{cur ? '这首唱完就没有了，去点歌吧' : '还没有点歌'}</p>
         ) : (
           queue.slice(0, 3).map((q) => {
             const st = statusOf(q.song)
@@ -231,6 +248,7 @@ function RemoteTab() {
                   ) : (
                     <span className="truncate text-xs text-muted">
                       {artistsText(q.song)} · {st.label}
+                      {q.addedBy && q.addedBy !== '匿名' && <span className="text-[#FFC2D1]"> · {q.addedBy}</span>}
                     </span>
                   )}
                 </div>
@@ -257,7 +275,7 @@ function SongList({ songs }: { songs: Song[] }) {
               {artistsText(s)}
             </span>
           </div>
-          <SongActions song={s} compact />
+          <SongActions song={s} touch />
         </div>
       ))}
     </div>
@@ -334,23 +352,31 @@ function HistoryList() {
   return songs.length ? <SongList songs={songs} /> : <EmptyNote>还没有点过歌</EmptyNote>
 }
 
-function SearchTab() {
-  const [value, setValue] = useState('')
+interface SearchState {
+  value: string
+  openPl: ImportedPlaylist | null
+  list: 'rec' | 'history'
+}
+
+function SearchTab({ search, setSearch }: { search: SearchState; setSearch: (patch: Partial<SearchState>) => void }) {
+  const { value, openPl, list } = search
+  const setValue = (v: string) => setSearch({ value: v })
+  const setOpenPl = (p: ImportedPlaylist | null) => setSearch({ openPl: p })
+  const setList = (l: SearchState['list']) => setSearch({ list: l })
   const q = useDebounced(value.trim(), 350)
-  const [openPl, setOpenPl] = useState<ImportedPlaylist | null>(null)
   const [importOpen, setImportOpen] = useState(false)
-  const [list, setList] = useState<'rec' | 'history'>('rec')
   // Close an opened playlist if it was removed (e.g. from another tab of this browser).
   const imported = useImportedPlaylists()
   useEffect(() => {
     if (openPl && !imported.some((p) => p.id === openPl.id)) setOpenPl(null)
-  }, [imported, openPl])
+  }, [imported, openPl]) // eslint-disable-line react-hooks/exhaustive-deps
   const results = useInfiniteQuery({
     queryKey: ['search', q],
     queryFn: ({ pageParam }) => api.search(q, pageParam, 30),
     initialPageParam: 0,
     getNextPageParam: (last, pages) => (last.hasMore ? pages.reduce((n, p) => n + p.songs.length, 0) : undefined),
     enabled: q.length > 0,
+    placeholderData: keepPreviousData,
   })
   const rec = useQuery({ queryKey: ['recommend', 'm'], queryFn: api.recommend, enabled: q.length === 0 })
   const songs = useMemo(() => results.data?.pages.flatMap((p) => p.songs) ?? [], [results.data])
@@ -365,11 +391,11 @@ function SearchTab() {
           onChange={(e) => setValue(e.target.value)}
           placeholder="搜索歌曲、歌手"
           enterKeyHint="search"
-          className="h-full min-w-0 flex-1 border-0 bg-transparent text-[15px] text-fg outline-none placeholder:text-subtle"
+          className="h-full min-w-0 flex-1 border-0 bg-transparent text-base text-fg outline-none placeholder:text-subtle"
         />
       </label>
       {q ? (
-        results.isLoading ? (
+        results.isLoading || (results.isPlaceholderData && !songs.length) ? (
           <div className="flex justify-center py-10 text-muted">
             <Spinner />
           </div>
@@ -382,7 +408,9 @@ function SearchTab() {
           />
         ) : songs.length ? (
           <>
-            <SongList songs={songs} />
+            <div className={clsx('transition-opacity', results.isPlaceholderData && 'opacity-50')}>
+              <SongList songs={songs} />
+            </div>
             {results.hasNextPage && (
               <button
                 type="button"
@@ -405,7 +433,7 @@ function SearchTab() {
             <h2 className="m-0 px-0.5 text-[15px] font-semibold">临时歌单</h2>
             <ImportedPlaylistChips onOpen={setOpenPl} onImport={() => setImportOpen(true)} />
           </div>
-          <div role="tablist" aria-label="歌曲列表" className="flex items-center gap-1.5 px-0.5">
+          <div role="tablist" aria-label="歌曲列表" className="flex items-center gap-2 px-0.5">
             {(
               [
                 ['rec', rec.data?.daily ? '每日推荐' : '热门推荐'],
@@ -419,7 +447,7 @@ function SearchTab() {
                 aria-selected={list === k}
                 onClick={() => setList(k)}
                 className={clsx(
-                  'h-8 rounded-full px-3.5 text-[15px] transition-colors',
+                  'h-10 rounded-full px-4 text-[15px] transition-colors',
                   list === k ? 'bg-white/10 font-semibold text-fg' : 'text-muted',
                 )}
               >
@@ -454,6 +482,19 @@ function SearchTab() {
 
 export default function Remote() {
   const [tab, setTab] = useState<Tab>('remote')
+  const [search, setSearchState] = useState<SearchState>({ value: '', openPl: null, list: 'rec' })
+  const setSearch = (patch: Partial<SearchState>) => setSearchState((s) => ({ ...s, ...patch }))
+  // Each tab keeps its own scroll position.
+  const mainRef = useRef<HTMLElement>(null)
+  const scrolls = useRef<Partial<Record<Tab, number>>>({})
+  const switchTab = (t: Tab) => {
+    if (t === tab) return
+    if (mainRef.current) scrolls.current[tab] = mainRef.current.scrollTop
+    setTab(t)
+  }
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: scrolls.current[tab] ?? 0 })
+  }, [tab])
   const connected = useApp((s) => s.connected)
   const queue = useApp((s) => s.state.queue)
   const current = useApp((s) => s.state.player.current)
@@ -519,13 +560,14 @@ export default function Remote() {
         </div>
       )}
 
-      <main className="relative min-h-0 flex-1 overflow-y-auto px-5 pb-6">
-        {tab === 'remote' && <RemoteTab />}
-        {tab === 'search' && <SearchTab />}
+      <main ref={mainRef} className="relative min-h-0 flex-1 overflow-y-auto px-5 pb-6">
+        {tab === 'remote' && <RemoteTab onPickSong={() => switchTab('search')} onShowQueue={() => switchTab('queue')} />}
+        {tab === 'search' && <SearchTab search={search} setSearch={setSearch} />}
         {tab === 'queue' && (
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-3">
+            {current && <NowSingingCard />}
             <div className="flex items-center justify-between">
-              <h2 className="m-0 px-0.5 text-[15px] font-semibold">已点歌曲</h2>
+              <h2 className="m-0 px-0.5 text-[15px] font-semibold">接下来</h2>
               <ShuffleButton count={queue.length} className="-mr-2" />
             </div>
             <QueueList />
@@ -541,13 +583,13 @@ export default function Remote() {
 
       <nav
         aria-label="底部导航"
-        className="relative grid h-[74px] shrink-0 grid-cols-4 border-t border-white/8 bg-ink/85 px-3 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl"
+        className="relative grid h-[calc(64px+env(safe-area-inset-bottom))] shrink-0 grid-cols-4 border-t border-white/8 bg-ink/85 px-3 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl"
       >
         {tabs.map((t) => (
           <button
             key={t.id}
             type="button"
-            onClick={() => setTab(t.id)}
+            onClick={() => switchTab(t.id)}
             aria-current={tab === t.id ? 'page' : undefined}
             className={clsx(
               'flex flex-col items-center justify-center gap-1 text-xs whitespace-nowrap',

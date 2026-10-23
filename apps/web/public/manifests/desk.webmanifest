@@ -1,0 +1,71 @@
+{
+  "id": "/",
+  "name": "Netease KTV 点歌台",
+  "short_name": "KTV 点歌台",
+  "description": "用自己的网易云账号唱 K：AI 伴奏、逐字歌词、手机点歌",
+  "start_url": "/",
+  "display": "standalone",
+  "shortcuts": [
+    {
+      "name": "手机点歌",
+      "short_name": "点歌",
+      "url": "/m",
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "大屏",
+      "url": "/tv",
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    },
+    {
+      "name": "移动耳返",
+      "short_name": "耳返",
+      "url": "/ear",
+      "icons": [
+        {
+          "src": "/icons/icon-192.png",
+          "sizes": "192x192"
+        }
+      ]
+    }
+  ],
+  "scope": "/",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "background_color": "#0A0A0F",
+  "theme_color": "#0A0A0F",
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "categories": [
+    "music",
+    "entertainment"
+  ]
+}

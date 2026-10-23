@@ -6,7 +6,15 @@ import type { Settings, SoundLevel } from './shared/types.js'
 const KEY = 'settings'
 const LEVELS: SoundLevel[] = ['standard', 'higher', 'exhigh', 'lossless', 'hires']
 
+/** Parsed settings, kept until the next update (read on hot paths: pipeline loops, every MV lookup). */
+let current: Settings | null = null
+
 export function getSettings(): Settings {
+  current ??= load()
+  return current
+}
+
+function load(): Settings {
   const saved = kv.get<Partial<Settings>>(KEY) ?? {}
   return {
     unblockEnabled: saved.unblockEnabled ?? config.defaults.unblockEnabled,
@@ -29,7 +37,7 @@ export function getSettings(): Settings {
 }
 
 export function updateSettings(patch: Partial<Settings>, allowedSources: string[]): Settings {
-  const next = { ...getSettings() }
+  const next = { ...getSettings(), idleSongs: [...getSettings().idleSongs], unblockSources: [...getSettings().unblockSources] }
   if (typeof patch.unblockEnabled === 'boolean') next.unblockEnabled = patch.unblockEnabled
   if (Array.isArray(patch.unblockSources)) {
     next.unblockSources = patch.unblockSources.filter((s) => allowedSources.includes(s))
@@ -58,6 +66,7 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
     next.idleSongs = [...new Set(patch.idleSongs.filter((id) => Number.isInteger(id) && id > 0))].slice(0, 100)
   }
   kv.set(KEY, next)
+  current = null
   hub.broadcast({ type: 'settings' })
-  return next
+  return getSettings()
 }

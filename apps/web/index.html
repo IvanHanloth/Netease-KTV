@@ -6,6 +6,13 @@
     <meta name="theme-color" content="#0A0A0F" />
     <title>Netease KTV</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- Installable app: main.tsx points the manifest at the page being used (点歌台 / 大屏 / 手机 / 耳返). -->
+    <link rel="manifest" href="/manifests/desk.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="KTV 点歌台" />
   </head>
   <body>
     <div id="root"></div>

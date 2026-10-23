@@ -15,7 +15,9 @@ import { Cover, Eq, IconButton, Spinner, StatusPill } from './ui'
 const cols =
   'grid-cols-[28px_minmax(0,1fr)_auto] @2xl:grid-cols-[32px_minmax(0,1fr)_136px_168px] @4xl:grid-cols-[36px_minmax(0,2.2fr)_minmax(0,1fr)_52px_136px_168px]'
 
-export function SongActions({ song, compact }: { song: Song; compact?: boolean }) {
+/** `touch`: phone rows (40px targets, 插播 shown from 320px wide). */
+export function SongActions({ song, compact, touch }: { song: Song; compact?: boolean; touch?: boolean }) {
+  const h = touch ? 'h-10' : 'h-9'
   const statusOf = useStatusOf()
   const enqueue = useEnqueue()
   const st = statusOf(song)
@@ -23,26 +25,26 @@ export function SongActions({ song, compact }: { song: Song; compact?: boolean }
   const nextPending = useIsPending(enqueueKey(song.id, 'next'))
   if (st.isCurrent)
     return (
-      <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] bg-[rgba(255,77,126,0.12)] px-3.5 text-sm font-semibold whitespace-nowrap text-accent-soft">
+      <span className={clsx('inline-flex shrink-0 items-center gap-2 rounded-[10px] bg-[rgba(255,77,126,0.12)] px-3.5 text-sm font-semibold whitespace-nowrap text-accent-soft', h)}>
         <Eq />
         演唱中
       </span>
     )
   if (st.inQueue)
     return (
-      <div className="flex shrink-0 items-center gap-1.5">
-        <PreviewButton song={song} />
-        <span className="inline-flex h-9 items-center rounded-[10px] bg-white/6 px-3.5 text-sm whitespace-nowrap text-muted">已点</span>
+      <div className={clsx('flex shrink-0 items-center', touch ? 'gap-2' : 'gap-1.5')}>
+        <PreviewButton song={song} size={touch ? 40 : undefined} />
+        <span className={clsx('inline-flex items-center rounded-[10px] bg-white/6 px-3.5 text-sm whitespace-nowrap text-muted', h)}>已点</span>
       </div>
     )
   if (st.kind === 'vip')
     return (
-      <div className="flex shrink-0 items-center gap-1.5">
-      <PreviewButton song={song} />
+      <div className={clsx('flex shrink-0 items-center', touch ? 'gap-2' : 'gap-1.5')}>
+      <PreviewButton song={song} size={touch ? 40 : undefined} />
       <button
         type="button"
         disabled
-        className="h-9 shrink-0 rounded-[10px] border border-white/10 px-3.5 text-sm whitespace-nowrap text-subtle"
+        className={clsx('shrink-0 rounded-[10px] border border-white/10 px-3.5 text-sm whitespace-nowrap text-subtle', h)}
         title="这首歌需要会员，账号没有权限播放完整版"
       >
         不可点
@@ -50,20 +52,24 @@ export function SongActions({ song, compact }: { song: Song; compact?: boolean }
       </div>
     )
   return (
-    <div className="flex shrink-0 items-center gap-1.5">
-      <PreviewButton song={song} />
+    <div className={clsx('flex shrink-0 items-center', touch ? 'gap-2' : 'gap-1.5')}>
+      <PreviewButton song={song} size={touch ? 40 : undefined} />
       <IconButton
         icon="top"
         label={`插播 ${song.name}`}
         disabled={nextPending}
         onClick={() => enqueue(song, 'next')}
-        className={clsx('bg-white/6 text-fg-2', compact && 'hidden @md:inline-flex')}
+        size={touch ? 40 : undefined}
+        className={clsx('bg-white/6 text-fg-2', touch ? 'hidden @xs:inline-flex' : compact && 'hidden @md:inline-flex')}
       />
       <button
         type="button"
         onClick={() => enqueue(song, 'end')}
         disabled={addPending}
-        className="flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] bg-accent px-4 text-sm font-bold whitespace-nowrap text-accent-ink transition-transform hover:brightness-110 active:scale-95 disabled:opacity-70"
+        className={clsx(
+          'flex shrink-0 items-center gap-1.5 rounded-[10px] bg-accent text-sm font-bold whitespace-nowrap text-accent-ink transition-transform hover:brightness-110 active:scale-95 disabled:opacity-70',
+          touch ? 'h-10 px-3.5' : 'h-9 px-4',
+        )}
       >
         {addPending && <Spinner size={14} />}
         点歌

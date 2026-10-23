@@ -256,7 +256,7 @@ export function latestSync(): PlaybackSync | null {
   return lastSync && lastSync.uid === player.current?.uid ? lastSync : null
 }
 
-export function report(position: number, playing: boolean, at?: number, uid?: string, epoch?: number): void {
+export function report(position: number, playing: boolean, at?: number, uid?: string, epoch?: number, starting = false): void {
   const cur = player.current
   if (!cur) return
   // A report about the previous song (sent while the TV was switching) is ignored.
@@ -264,9 +264,10 @@ export function report(position: number, playing: boolean, at?: number, uid?: st
   const changed = playing !== player.playing
   const t = at !== undefined && Math.abs(at - serverNow()) < 5000 ? at : serverNow()
   player = { ...player, position: Math.max(0, position), positionAt: Math.round(t), playing }
-  lastSync = { uid: cur.uid, epoch: player.epoch, position, at: t, playing }
+  lastSync = { uid: cur.uid, epoch: player.epoch, position, at: t, playing, ...(starting ? { starting: true } : {}) }
   hub.emit('sync', lastSync)
   const now = Date.now()
+  lastReportAt = now
   if (changed || now - lastReportBroadcast > 900) {
     lastReportBroadcast = now
     hub.broadcast({ type: 'player', player })
@@ -279,6 +280,8 @@ export function report(position: number, playing: boolean, at?: number, uid?: st
 }
 
 let lastSave = 0
+/** Date.now() of the last report the active TV sent (it reports every second while it plays). */
+let lastReportAt = 0
 
 export function ended(): void {
   next()
@@ -288,3 +291,47 @@ export function ended(): void {
 hub.on('unavailable', (songId: number) => {
   if (player.current?.song.id === songId) next()
 })
+
+// ---------- nobody is playing ----------
+
+/** Where the song is right now (seconds; extrapolated while playing), as remotes compute it. */
+function livePosition(now = Date.now()): number {
+  return player.playing ? player.position + (now - player.positionAt) / 1000 : player.position
+}
+
+/**
+ * Nothing plays the current song any more: pause it where it was (never past its end). The
+ * play/pause state otherwise only changes on a TV report, so a TV that closed, reloaded (and is
+ * waiting for its click) or went silent left `playing` set, and remotes kept counting past the
+ * end of a song that never ended. The TV, if it is still playing, overrides this with its next
+ * report; a TV that comes back resumes paused where the song was.
+ */
+function freeze(): void {
+  const cur = player.current
+  if (!cur || !player.playing) return
+  const duration = cur.song.duration / 1000
+  const position = Math.max(0, Math.min(duration > 0 ? duration : Infinity, livePosition()))
+  player = { ...player, playing: false, position, positionAt: Date.now() }
+  lastSync = { uid: cur.uid, epoch: player.epoch, position, at: serverNow(), playing: false }
+  hub.emit('sync', lastSync)
+  emitPlayer()
+}
+
+/** The active TV went away and no other TV is left. */
+export function tvGone(): void {
+  freeze()
+}
+
+/** An active TV that has not reported for this long is not playing (page reloaded, tab frozen…). */
+const SILENCE_MS = 6000
+
+setInterval(() => {
+  const cur = player.current
+  if (!cur || !player.playing) return
+  if (hub.tvOnline) {
+    if (Date.now() - lastReportAt > SILENCE_MS) freeze()
+  } else if (livePosition() >= cur.song.duration / 1000) {
+    // With no TV the server stands in for one (remotes still play / pause): only as far as the end.
+    freeze()
+  }
+}, 2000).unref()

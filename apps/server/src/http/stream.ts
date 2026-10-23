@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { Readable } from 'node:stream'
 import type { FastifyReply, FastifyRequest } from 'fastify'
+import { BROWSER_UA } from '../media/files.js'
 
 const TYPES: Record<string, string> = {
   '.flac': 'audio/flac',
@@ -14,13 +15,43 @@ const TYPES: Record<string, string> = {
   '.mp4': 'video/mp4',
 }
 
-/** Send a local file with HTTP Range support. */
+/** Does any entity tag in an If-None-Match / If-Range header match ours? */
+function etagMatches(header: string | undefined, etag: string): boolean {
+  if (!header) return false
+  if (header.trim() === '*') return true
+  const bare = etag.replace(/^W\//, '')
+  return header.split(',').some((t) => t.trim().replace(/^W\//, '') === bare)
+}
+
+/**
+ * Send a local file with HTTP Range support and validators. Cached media can be replaced under
+ * the same URL (re-separation, a cleared and re-downloaded original), so browsers revalidate
+ * every time (`no-cache`) and get a cheap 304 when the file is unchanged.
+ */
 export function sendFile(req: FastifyRequest, reply: FastifyReply, file: string) {
   const stat = fs.statSync(file)
   const type = TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream'
-  reply.header('Accept-Ranges', 'bytes').header('Content-Type', type).header('Cache-Control', 'private, max-age=86400')
+  const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`
+  const lastModified = stat.mtime.toUTCString()
+  reply
+    .header('Accept-Ranges', 'bytes')
+    .header('Content-Type', type)
+    .header('Cache-Control', 'private, no-cache')
+    .header('ETag', etag)
+    .header('Last-Modified', lastModified)
+
   const range = req.headers.range
-  const m = range ? /bytes=(\d*)-(\d*)/.exec(range) : null
+  if (!range) {
+    const inm = req.headers['if-none-match']
+    const ims = req.headers['if-modified-since']
+    const notModified = inm ? etagMatches(inm, etag) : !!ims && Date.parse(ims) >= Math.floor(stat.mtimeMs / 1000) * 1000
+    if (notModified) return reply.code(304).send()
+  }
+
+  // A range of an older copy of the file is useless: send it whole instead.
+  const ifRange = [req.headers['if-range']].flat()[0]
+  const rangeValid = !ifRange || etagMatches(ifRange, etag) || ifRange === lastModified
+  const m = range && rangeValid ? /bytes=(\d*)-(\d*)/.exec(range) : null
   if (m) {
     let start = m[1] ? Number(m[1]) : 0
     let end = m[2] ? Number(m[2]) : stat.size - 1
@@ -44,21 +75,21 @@ export function sendFile(req: FastifyRequest, reply: FastifyReply, file: string)
 
 const PASS_HEADERS = ['content-type', 'content-length', 'content-range', 'accept-ranges', 'last-modified', 'etag']
 
-/** Proxy a remote resource (MV video, cover image) through the server. */
+/**
+ * Proxy a remote resource (MV video, preview, cover image) through the server. `onRefused` runs
+ * when the upstream answers with an error (e.g. to drop an expired signed URL).
+ */
 export async function proxy(
   req: FastifyRequest,
   reply: FastifyReply,
   url: string,
-  extraHeaders: Record<string, string> = {},
-  cacheControl = 'private, max-age=600',
+  opts: { cacheControl?: string; onRefused?: () => void } = {},
 ) {
-  const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
-    ...extraHeaders,
-  }
+  const headers: Record<string, string> = { 'User-Agent': BROWSER_UA }
   if (req.headers.range) headers.Range = req.headers.range
   const upstream = await fetch(url, { headers })
   if (!upstream.ok && upstream.status !== 206) {
+    opts.onRefused?.()
     return reply.code(upstream.status === 404 ? 404 : 502).send({ error: `upstream ${upstream.status}` })
   }
   reply.code(upstream.status)
@@ -66,7 +97,7 @@ export async function proxy(
     const v = upstream.headers.get(h)
     if (v) reply.header(h, v)
   }
-  reply.header('Cache-Control', cacheControl)
+  reply.header('Cache-Control', opts.cacheControl ?? 'private, max-age=600')
   if (!upstream.body) return reply.send()
   return reply.send(Readable.fromWeb(upstream.body as any))
 }

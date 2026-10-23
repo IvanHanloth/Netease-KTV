@@ -10,6 +10,27 @@ export function fmtTime(sec: number) {
 
 export const fmtMs = (ms: number) => fmtTime(ms / 1000)
 
+/** 1.3 GB, 950 MB, 469 KB. */
+export function fmtBytes(bytes: number): string {
+  const KB = 1024
+  const MB = KB * 1024
+  const GB = MB * 1024
+  if (bytes >= GB) return `${(bytes / GB).toFixed(bytes >= 10 * GB ? 0 : 1)} GB`
+  if (bytes >= MB) return `${(bytes / MB).toFixed(bytes >= 10 * MB ? 0 : 1)} MB`
+  return `${Math.max(bytes > 0 ? 1 : 0, Math.round(bytes / KB))} KB`
+}
+
+/** 刚刚, 5 分钟前, 3 小时前, 2 天前, 2026-09-14. */
+export function fmtAgo(at: number, now = Date.now()): string {
+  const s = Math.max(0, (now - at) / 1000)
+  if (s < 60) return '刚刚'
+  if (s < 3600) return `${Math.floor(s / 60)} 分钟前`
+  if (s < 86400) return `${Math.floor(s / 3600)} 小时前`
+  if (s < 30 * 86400) return `${Math.floor(s / 86400)} 天前`
+  const d = new Date(at)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export type PillKind =
   | 'ready'
   | 'original'
@@ -65,3 +86,6 @@ export function queueStatusText(s: SongStatus) {
 export const isPlayableNow = (s: SongStatus) => s.kind === 'ready' || s.kind === 'original' || s.kind === 'third'
 
 export const canEnqueue = (song: Song) => song.playable !== 'vip'
+
+/** 原调, 升 2 调, 降 1 调. */
+export const keyText = (k: number) => (k === 0 ? '原调' : k > 0 ? `升 ${k} 调` : `降 ${-k} 调`)

@@ -293,6 +293,8 @@ export interface MvInfo {
   url: string
   /** True when the MV file is fully cached on the server. */
   cached: boolean
+  /** False when NetEase recently had no stream for it (and it isn't cached): don't wait for it. */
+  available: boolean
   /**
    * Result of audio alignment between the MV and the song, when available:
    * videoTime = audioTime + offset (seconds). null = not aligned (yet).
@@ -302,17 +304,63 @@ export interface MvInfo {
   confidence: number | null
 }
 
-/** GET /api/cache */
+/**
+ * Kinds of cached media on disk (see apps/server/src/media/files.ts for the layout):
+ * - original: downloaded song audio (re-downloaded on demand)
+ * - stems: separated instrumental + vocals (re-separation takes minutes)
+ * - pitched: key-shifted renders (ffmpeg, seconds; evicted first)
+ * - analysis: reference pitch for scoring + MV alignment (small; recomputed when the song is queued)
+ * - mv: MV videos
+ * - temp: scratch files and unfinished downloads
+ */
+export type MediaCacheKind = 'original' | 'stems' | 'pitched' | 'analysis' | 'mv' | 'temp'
+
+/**
+ * Kinds of cached NetEase data (SQLite):
+ * - search: search results and suggestions
+ * - library: playlists, albums, artists, the account's playlist list
+ * - recommend: daily picks and toplists
+ * - lyrics
+ * - songs: song details (marked stale, not deleted: the queue is restored from them)
+ */
+export type DataCacheKind = 'search' | 'library' | 'recommend' | 'lyrics' | 'songs'
+
+export type CacheKind = MediaCacheKind | DataCacheKind
+
+export interface CacheGroup {
+  kind: CacheKind
+  bytes: number
+  /** Files (media) or rows (data). */
+  count: number
+  /** Part of `bytes` that clearing keeps: the current / queued songs and 待机音乐. */
+  protectedBytes: number
+}
+
+/** GET /api/admin/cache */
 export interface CacheInfo {
+  /** Media on disk (what the limit applies to). */
   usedBytes: number
   limitBytes: number
-  audioBytes: number
-  mvBytes: number
   songs: number
   mvs: number
-  /** Cached NetEase data (toplists, playlists, daily picks, search, lyrics…). */
-  dataEntries: number
-  dataBytes: number
+  media: CacheGroup[]
+  data: CacheGroup[]
+}
+
+/** One song's media in the cache (GET /api/admin/cache/songs). */
+export interface CachedSongInfo {
+  songId: number
+  name?: string
+  artists?: string
+  cover?: string
+  bytes: number
+  /** Bytes per kind (only kinds present). */
+  kinds: Partial<Record<MediaCacheKind, number>>
+  /** Keys with pitch-shifted renders, e.g. [-2, 1]. */
+  keys: number[]
+  lastUsed: number
+  /** Why clearing skips it, if it does. */
+  keep?: 'playing' | 'queued' | 'idle-music' | 'busy'
 }
 
 /** One finished, scored performance. */
@@ -388,7 +436,7 @@ export type ClientMessage =
    * Sent only by the TV, ~1/s and on every state change. `at` (server clock, ms) is when the
    * sample at `position` came out of the TV's speakers; `uid` / `epoch` identify what it plays.
    */
-  | { type: 'report'; position: number; playing: boolean; at?: number; uid?: string; epoch?: number }
+  | { type: 'report'; position: number; playing: boolean; at?: number; uid?: string; epoch?: number; starting?: boolean }
   /** Clock sync (TV, 耳返): the server answers with `pong` right away. */
   | { type: 'ping'; id: number }
   | { type: 'ended' }
@@ -434,6 +482,8 @@ export interface PlaybackSync {
   position: number
   at: number
   playing: boolean
+  /** The 主屏 is showing 即将开始 (the song is held at 0 until it starts): other 大屏 show it too. */
+  starting?: boolean
 }
 
 export type Stem = 'instrumental' | 'vocals' | 'original'

@@ -6,12 +6,9 @@ import { mvUrl } from '../ncm/service.js'
 import { alignOnCluster } from '../separator.js'
 import { getSettings } from '../settings.js'
 import type { MvResolution, Song } from '../shared/types.js'
-import { download, findOriginal, mediaDir } from './files.js'
-
-/** Cached MV file for a resolution. */
-export function mvPath(mvId: number, res: MvResolution): string {
-  return path.join(paths.mvRoot(), `${mvId}_${res}.mp4`)
-}
+import { busyMv, busySong } from './busy.js'
+import { invalidateScan } from './cache.js'
+import { alignPath, download, ensureMediaDir, findOriginal, mvPath } from './files.js'
 
 /** Best cached file: the configured resolution first, then any other one. */
 export function cachedMv(mvId: number): string | null {
@@ -31,13 +28,16 @@ export function ensureMv(mvId: number): Promise<string> {
   if (existing) return Promise.resolve(existing)
   const running = inflight.get(mvId)
   if (running) return running
-  const job = (async () => {
-    const res = getSettings().mvResolution
-    fs.mkdirSync(paths.mvRoot(), { recursive: true })
-    const dest = mvPath(mvId, res)
-    await download(await mvUrl(mvId, res), dest)
-    return dest
-  })().finally(() => inflight.delete(mvId))
+  const job = busyMv(
+    mvId,
+    (async () => {
+      const res = getSettings().mvResolution
+      const dest = mvPath(mvId, res)
+      await download(await mvUrl(mvId, res), dest)
+      invalidateScan()
+      return dest
+    })(),
+  ).finally(() => inflight.delete(mvId))
   inflight.set(mvId, job)
   return job
 }
@@ -49,8 +49,6 @@ export interface MvAlignment {
   offset: number
   confidence: number
 }
-
-const alignPath = (songId: number) => path.join(paths.media(songId), 'mv_align.json')
 
 export function readAlignment(songId: number, mvId: number): MvAlignment | null {
   try {
@@ -90,6 +88,8 @@ export async function ensureAlignment(song: Song): Promise<MvAlignment | null> {
   const mv = cachedMv(song.mvId)
   if (!original || !mv || aligning.has(song.id)) return null
   aligning.add(song.id)
+  let finished: () => void = () => {}
+  void busySong(song.id, new Promise<void>((resolve) => (finished = resolve)))
   const tmp = paths.tmp()
   fs.mkdirSync(tmp, { recursive: true })
   const songWav = path.join(tmp, `${song.id}_song.wav`)
@@ -97,7 +97,7 @@ export async function ensureAlignment(song: Song): Promise<MvAlignment | null> {
   try {
     await toWav(original, songWav)
     await toWav(mv, mvWav)
-    mediaDir(song.id)
+    ensureMediaDir(song.id)
     const raw = await alignOnCluster(song.id, songWav, mvWav, song.duration, alignPath(song.id))
     const result: MvAlignment = { mvId: song.mvId, offset: raw.offset, confidence: raw.confidence }
     fs.writeFileSync(alignPath(song.id), JSON.stringify(result))
@@ -107,5 +107,7 @@ export async function ensureAlignment(song: Song): Promise<MvAlignment | null> {
     aligning.delete(song.id)
     fs.rmSync(songWav, { force: true })
     fs.rmSync(mvWav, { force: true })
+    invalidateScan()
+    finished()
   }
 }

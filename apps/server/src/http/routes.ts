@@ -4,11 +4,23 @@ import { z } from 'zod'
 import { config } from '../config.js'
 import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
-import { ensureOriginal, retry } from '../core/pipeline.js'
+import { ensureOriginal, giveAnotherChance, retry } from '../core/pipeline.js'
+import {
+  CacheError,
+  cacheInfo,
+  clearAllMedia,
+  clearData,
+  clearMediaKind,
+  clearSongMedia,
+  enforceCacheLimit,
+  listCachedSongs,
+} from '../core/storage.js'
 import { renderPitch, renderPitchLater } from '../media/ffmpeg.js'
-import { bypassCache, clearApiCache } from '../apiCache.js'
-import { cacheInfo, clearCache, enforceCacheLimit, touchFile, touchSong } from '../media/cache.js'
+import { bypassCache } from '../apiCache.js'
+import { busySong } from '../media/busy.js'
+import { invalidateScan, touchFile, touchSong } from '../media/cache.js'
 import { pitchedPath, pitchPath, stemFile } from '../media/files.js'
+import { DATA_CACHE_KINDS, MEDIA_CACHE_KINDS } from '../shared/constants.js'
 import { cachedMv, readAlignment } from '../media/mv.js'
 import { listUnblockSources } from '../media/resolve.js'
 import { NcmError } from '../ncm/client.js'
@@ -17,7 +29,7 @@ import { listHistory, recordPick } from '../history.js'
 import { addScore, leaderboard, resetScores, songRanking } from '../scores.js'
 import { addNode, clusterSummary, getNodes, nodeViews, pollNodes, removeNode, testNode, updateNode } from '../separator.js'
 import { getSettings, updateSettings } from '../settings.js'
-import type { AdminStatus, IdleMusic, MvInfo, PlayerCommand, Song, Stem } from '../shared/types.js'
+import type { AdminStatus, DataCacheKind, IdleMusic, MediaCacheKind, MvInfo, PlayerCommand, Song, Stem } from '../shared/types.js'
 import { proxy, sendFile } from './stream.js'
 import { clientCounts } from './ws.js'
 
@@ -44,12 +56,10 @@ export const commandSchema: z.ZodType<PlayerCommand> = z.union([
 function fail(reply: FastifyReply, err: unknown) {
   if (err instanceof z.ZodError) return reply.code(400).send({ error: '参数错误', issues: err.issues })
   if (err instanceof NcmError) return reply.code(err.status).send({ error: err.message })
+  if (err instanceof CacheError) return reply.code(err.status).send({ error: err.message })
   console.error(err)
   return reply.code(500).send({ error: (err as Error).message ?? '服务器错误' })
 }
-
-const mvCache = new Map<number, { url: string; at: number }>()
-const previewCache = new Map<number, { url: string; at: number }>()
 
 export async function registerRoutes(app: FastifyInstance) {
   app.setErrorHandler((err, _req, reply) => fail(reply, err))
@@ -121,10 +131,12 @@ export async function registerRoutes(app: FastifyInstance) {
     const song = await ncm.getSong(p.id)
     if (!song.mvId) return reply.code(404).send({ error: '这首歌没有 MV' })
     const align = readAlignment(song.id, song.mvId)
+    const cached = !!cachedMv(song.mvId)
     return {
       mvId: song.mvId,
       url: `/api/mv/${song.mvId}/stream`,
-      cached: !!cachedMv(song.mvId),
+      cached,
+      available: cached || !ncm.mvUnavailable(song.mvId),
       offset: align?.offset ?? null,
       confidence: align?.confidence ?? null,
     }
@@ -137,21 +149,13 @@ export async function registerRoutes(app: FastifyInstance) {
       return sendFile(req, reply, local)
     }
     const res = getSettings().mvResolution
-    let cached = mvCache.get(p.id)
-    if (!cached || Date.now() - cached.at > 10 * 60 * 1000) {
-      cached = { url: await ncm.mvUrl(p.id, res), at: Date.now() }
-      mvCache.set(p.id, cached)
-    }
-    return proxy(req, reply, cached.url)
+    const url = await ncm.mvStreamUrl(p.id, res)
+    return proxy(req, reply, url, { onRefused: () => ncm.forgetLink(ncm.mvLinkKey(p.id, res)) })
   })
   app.get('/api/songs/:id/preview', async (req, reply) => {
     const p = z.object({ id }).parse(req.params)
-    let cached = previewCache.get(p.id)
-    if (!cached || Date.now() - cached.at > 10 * 60 * 1000) {
-      cached = { url: await ncm.previewUrl(p.id), at: Date.now() }
-      previewCache.set(p.id, cached)
-    }
-    return proxy(req, reply, cached.url)
+    const url = await ncm.previewStreamUrl(p.id)
+    return proxy(req, reply, url, { onRefused: () => ncm.forgetLink(ncm.previewLinkKey(p.id)) })
   })
   app.get('/api/img', async (req, reply) => {
     const q = z.object({ u: z.string().url(), s: z.coerce.number().int().min(32).max(1200).optional() }).parse(req.query)
@@ -159,7 +163,7 @@ export async function registerRoutes(app: FastifyInstance) {
     if (!/(^|\.)music\.126\.net$/.test(url.hostname)) return reply.code(400).send({ error: '只允许网易云图片地址' })
     url.protocol = 'https:'
     if (q.s) url.searchParams.set('param', `${q.s}y${q.s}`)
-    return proxy(req, reply, url.toString(), {}, 'public, max-age=604800')
+    return proxy(req, reply, url.toString(), { cacheControl: 'public, max-age=604800' })
   })
 
   // ---------- queue ----------
@@ -176,6 +180,7 @@ export async function registerRoutes(app: FastifyInstance) {
     if (song.playable === 'no-source' && !getSettings().unblockEnabled) {
       return reply.code(409).send({ error: '网易云暂无音源（可在后台管理中开启第三方音源）' })
     }
+    giveAnotherChance(song.id)
     const item = player.addToQueue(song, body.position, body.addedBy)
     recordPick(song.id)
     return item
@@ -239,15 +244,26 @@ export async function registerRoutes(app: FastifyInstance) {
   app.get('/api/media/:id/:stem', async (req, reply) => {
     const p = z.object({ id, stem: z.enum(['instrumental', 'vocals', 'original']) }).parse(req.params)
     const { key } = z.object({ key: z.coerce.number().int().min(-6).max(6).default(0) }).parse(req.query)
-    const file = stemFile(p.id, p.stem as Stem)
+    const stem = p.stem as Stem
+    let file = stemFile(p.id, stem)
+    // The original may have been cleared from the cache while the stems were kept: fetch it again.
+    if (!file && stem === 'original' && hub.getTrack(p.id).status === 'ready') {
+      await ensureOriginal(p.id)
+      file = stemFile(p.id, stem)
+    }
     if (!file) return reply.code(404).send({ error: '音频还没有准备好' })
     touchSong(p.id)
     if (key === 0) return sendFile(req, reply, file)
-    const pitched = pitchedPath(p.id, p.stem as Stem, key)
-    if (!fs.existsSync(pitched)) await renderPitch(file, pitched, key)
-    // The singer is adjusting the key: get the next steps either way ready in the background.
+    const pitched = pitchedPath(p.id, stem, key)
+    if (!fs.existsSync(pitched)) {
+      await busySong(p.id, renderPitch(file, pitched, key))
+      invalidateScan()
+    }
+    // The singer is adjusting the key: get the next steps either way ready in the background,
+    // unless the song is no longer the one being sung by the time a render slot frees up.
+    const stillCurrent = () => player.getPlayer().current?.song.id === p.id
     for (const k of [key + 1, key - 1]) {
-      if (k !== 0 && k >= -6 && k <= 6) renderPitchLater(file, pitchedPath(p.id, p.stem as Stem, k), k)
+      if (k !== 0 && k >= -6 && k <= 6) renderPitchLater(file, pitchedPath(p.id, stem, k), k, stillCurrent)
     }
     return sendFile(req, reply, pitched)
   })
@@ -374,16 +390,47 @@ export async function registerRoutes(app: FastifyInstance) {
       .parse(req.body)
     const sources = listUnblockSources()
     const saved = updateSettings(body, sources)
-    if (body.cacheLimitGB !== undefined) enforceCacheLimit()
+    if (body.cacheLimitGB !== undefined) void enforceCacheLimit()
     if (body.mvPreload) hub.emit('work-mv')
     return { ...saved, unblockSourceOptions: sources }
   })
 
+  // ---------- admin: cache ----------
+  // Clearing never touches the current / queued songs, 待机音乐 or files being written.
   app.get('/api/admin/cache', async () => cacheInfo())
-  app.delete('/api/admin/cache', async () => clearCache())
-  // NetEase data cache only (lists, search, lyrics…); audio, stems and MVs are untouched.
+  app.get('/api/admin/cache/songs', async () => ({ songs: await listCachedSongs() }))
+  // All media (audio, stems, renders, MVs, leftovers).
+  app.delete('/api/admin/cache', async () => {
+    const freed = await clearAllMedia()
+    return { freed, cache: await cacheInfo() }
+  })
+  // All NetEase data (lists, search, lyrics, song details).
   app.delete('/api/admin/cache/data', async () => {
-    const removed = clearApiCache()
-    return { removed, cache: cacheInfo() }
+    const removed = clearData()
+    return { removed, cache: await cacheInfo() }
+  })
+  // One kind, media or data.
+  app.delete('/api/admin/cache/kinds/:kind', async (req) => {
+    const { kind } = z
+      .object({ kind: z.enum([...MEDIA_CACHE_KINDS, ...DATA_CACHE_KINDS] as [string, ...string[]]) })
+      .parse(req.params)
+    if ((MEDIA_CACHE_KINDS as readonly string[]).includes(kind)) {
+      const freed = await clearMediaKind(kind as MediaCacheKind)
+      return { freed, cache: await cacheInfo() }
+    }
+    const removed = clearData(kind as DataCacheKind)
+    return { removed, cache: await cacheInfo() }
+  })
+  // One song: some kinds (?kinds=pitched,mv) or everything, its MV included.
+  app.delete('/api/admin/cache/songs/:id', async (req) => {
+    const { id: songId } = z.object({ id }).parse(req.params)
+    const { kinds } = z
+      .object({ kinds: z.string().optional() })
+      .parse(req.query)
+    const list = kinds
+      ? z.array(z.enum(MEDIA_CACHE_KINDS as unknown as [MediaCacheKind, ...MediaCacheKind[]])).parse(kinds.split(','))
+      : undefined
+    const freed = await clearSongMedia(songId, list)
+    return { freed, cache: await cacheInfo() }
   })
 }
