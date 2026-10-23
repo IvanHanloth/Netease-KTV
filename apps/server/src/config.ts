@@ -37,6 +37,9 @@ export const config = {
     publicUrl: process.env.PUBLIC_URL ?? '',
     scoringEnabled: bool(process.env.SCORING_ENABLED, true),
     scoreTolerance: Number(process.env.SCORE_TOLERANCE ?? 1) || 1,
+    mvPreload: bool(process.env.MV_PRELOAD, true),
+    mvResolution: ([480, 720, 1080].includes(Number(process.env.MV_RESOLUTION)) ? Number(process.env.MV_RESOLUTION) : 720) as 480 | 720 | 1080,
+    cacheLimitGB: Number(process.env.CACHE_LIMIT_GB ?? 20) || 20,
   },
   /** Allowed difference between NetEase duration and unblock audio duration. */
   unblockDurationTolerance: Number(process.env.UNBLOCK_DURATION_TOLERANCE ?? 3000),
@@ -46,4 +49,7 @@ export const config = {
 export const paths = {
   db: () => path.join(config.dataDir, 'ktv.db'),
   media: (songId: number) => path.join(config.dataDir, 'media', String(songId)),
+  mediaRoot: () => path.join(config.dataDir, 'media'),
+  mvRoot: () => path.join(config.dataDir, 'mv'),
+  tmp: () => path.join(config.dataDir, 'tmp'),
 }

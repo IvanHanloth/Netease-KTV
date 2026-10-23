@@ -1,11 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import type { Settings, SoundLevel } from '@shared/types'
+import type { MvResolution, Settings, SoundLevel } from '@shared/types'
 import { api } from '../lib/api'
-import { errorText, toast, useSettings } from '../lib/hooks'
-import { NICKNAME_MAX, useNickname } from '../lib/nickname'
+import { errorText, toast, useCacheInfo, useSettings } from '../lib/hooks'
 import { DEFAULT_TOLERANCE, TOLERANCE_PRESETS } from '../player/scoring'
-import { Dialog, Range, Switch } from './ui'
+import { Dialog, ProgressBar, Range, Spinner, Switch } from './ui'
 import { Icon } from './icons'
 
 const levels: { value: SoundLevel; label: string }[] = [
@@ -24,14 +23,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
   const { data } = useSettings()
   const [draft, setDraft] = useState<Settings | null>(null)
   const [saving, setSaving] = useState(false)
-  const nickname = useNickname((s) => s.nickname)
-  const setNickname = useNickname((s) => s.setNickname)
-  const [nick, setNick] = useState(nickname)
-
-  useEffect(() => {
-    if (open) setNick(nickname)
-  }, [open, nickname])
-
   useEffect(() => {
     if (open && data) {
       const { unblockSourceOptions: _ignored, ...rest } = data
@@ -46,7 +37,6 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
     if (!draft) return
     setSaving(true)
     try {
-      if (nick.trim() !== nickname) setNickname(nick)
       const res = await api.saveSettings(draft)
       qc.setQueryData(['settings'], res)
       toast('设置已保存')
@@ -123,18 +113,9 @@ export function SettingsDialog({ open, onClose }: { open: boolean; onClose: () =
               onChange={(v) => set('scoreTolerance', v)}
               disabled={draft.scoringEnabled === false}
             />
-            <label className="flex flex-col gap-2">
-              <span className="text-sm text-fg-2">我的昵称</span>
-              <input
-                value={nick}
-                maxLength={NICKNAME_MAX}
-                onChange={(e) => setNick(e.target.value)}
-                placeholder="点歌时显示，并记入排行榜"
-                className={inputCls}
-              />
-              <span className="text-xs text-muted">只保存在这台设备上，用这台设备点的歌会标上这个名字。</span>
-            </label>
           </section>
+
+          <VideoCacheSection draft={draft} set={set} open={open} />
 
           <section className="flex flex-col gap-4">
             <h3 className="m-0 text-xs tracking-[0.12em] text-subtle">无音源歌曲</h3>
@@ -241,5 +222,160 @@ function ToleranceControl({ value, onChange, disabled }: { value: number; onChan
         音高误差在这个范围内拿满分，超出后逐渐减分（到 3 倍时为 0）。越大越宽松，不区分八度。
       </span>
     </div>
+  )
+}
+
+const GB = 1024 ** 3
+const gb = (bytes: number) => (bytes / GB).toFixed(bytes >= 10 * GB ? 0 : 1)
+const resolutions: MvResolution[] = [480, 720, 1080]
+
+/** 视频与缓存: MV preload, MV resolution, cache size limit + usage + 清空缓存. */
+function VideoCacheSection({
+  draft,
+  set,
+  open,
+}: {
+  draft: Settings
+  set: <K extends keyof Settings>(k: K, v: Settings[K]) => void
+  open: boolean
+}) {
+  const qc = useQueryClient()
+  const cache = useCacheInfo(open)
+  const [confirming, setConfirming] = useState(false)
+  const [clearing, setClearing] = useState(false)
+  useEffect(() => {
+    if (!open) setConfirming(false)
+  }, [open])
+  const limitGB = Math.round(draft.cacheLimitGB ?? 20)
+  const used = cache.data?.usedBytes ?? 0
+  const ratio = Math.min(1, used / (limitGB * GB))
+
+  async function clear() {
+    setClearing(true)
+    try {
+      await api.clearCache()
+      toast('缓存已清空（正在唱和已点的歌会保留）')
+      await qc.invalidateQueries({ queryKey: ['cache'] })
+    } catch (e) {
+      toast(errorText(e), 'error')
+    } finally {
+      setClearing(false)
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <section className="flex flex-col gap-4">
+      <h3 className="m-0 text-xs tracking-[0.12em] text-subtle">视频与缓存</h3>
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <span className="text-[15px] font-semibold">预载 MV</span>
+          <span className="text-xs text-muted">提前下载已点歌曲的 MV，播放更流畅，并用于自动对齐</span>
+        </div>
+        <Switch checked={draft.mvPreload ?? true} onChange={(v) => set('mvPreload', v)} label="预载 MV" />
+      </div>
+
+      <div className="flex flex-col gap-2.5">
+        <span className="text-sm text-fg-2">MV 清晰度</span>
+        <div role="radiogroup" aria-label="MV 清晰度" className="grid grid-cols-3 gap-1 rounded-xl bg-white/5 p-1">
+          {resolutions.map((r) => {
+            const on = (draft.mvResolution ?? 720) === r
+            return (
+              <button
+                key={r}
+                type="button"
+                role="radio"
+                aria-checked={on}
+                onClick={() => set('mvResolution', r)}
+                className={
+                  'num h-9 rounded-lg text-sm whitespace-nowrap transition-colors ' +
+                  (on ? 'bg-fg font-semibold text-ink' : 'text-fg-2 hover:bg-white/8')
+                }
+              >
+                {r}P
+              </button>
+            )
+          })}
+        </div>
+        <span className="text-xs text-muted">清晰度越高越占空间，网络慢时建议 720P 或 480P。</span>
+      </div>
+
+      <div className="flex flex-col gap-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm text-fg-2">缓存上限</span>
+          <label className="flex items-center gap-1.5">
+            <span className="sr-only-x">缓存上限（GB）</span>
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={500}
+              step={1}
+              value={limitGB}
+              onChange={(e) => {
+                const n = Math.round(Number(e.target.value))
+                if (Number.isFinite(n)) set('cacheLimitGB', Math.min(500, Math.max(1, n)))
+              }}
+              className="num h-9 w-20 rounded-lg border border-white/10 bg-white/5 px-2 text-right text-sm text-fg outline-none focus:border-white/25"
+            />
+            <span className="text-sm text-muted">GB</span>
+          </label>
+        </div>
+        <Range label="缓存上限（GB）" min={1} max={500} value={limitGB} onChange={(n) => set('cacheLimitGB', n)} />
+        <div className="flex flex-col gap-2 rounded-2xl border border-white/8 bg-white/4 p-3.5">
+          {cache.isLoading ? (
+            <span className="flex items-center gap-2 text-xs text-muted">
+              <Spinner size={13} /> 读取缓存占用…
+            </span>
+          ) : cache.isError ? (
+            <span className="flex items-center gap-2 text-xs text-muted">
+              缓存占用读取失败
+              <button type="button" onClick={() => cache.refetch()} className="text-accent-soft hover:underline">
+                重试
+              </button>
+            </span>
+          ) : (
+            <>
+              <ProgressBar value={ratio} color={ratio > 0.9 ? '#FBBF24' : '#FF4D7E'} />
+              <span className="num text-xs leading-5 text-fg-2">
+                已用 {gb(used)} GB / 上限 {limitGB} GB（音频 {gb(cache.data?.audioBytes ?? 0)} GB · MV {gb(cache.data?.mvBytes ?? 0)} GB）
+              </span>
+            </>
+          )}
+          <span className="text-xs leading-5 text-muted">超出上限时自动清理最久没唱的歌；正在唱和已点的歌不会被清理。</span>
+          <div className="flex justify-end gap-2">
+            {confirming ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setConfirming(false)}
+                  className="h-9 rounded-lg px-3 text-sm whitespace-nowrap text-muted hover:text-fg"
+                >
+                  取消
+                </button>
+                <button
+                  type="button"
+                  onClick={clear}
+                  disabled={clearing}
+                  className="flex h-9 items-center gap-1.5 rounded-lg bg-[rgba(255,77,126,0.16)] px-3 text-sm font-semibold whitespace-nowrap text-accent-soft disabled:opacity-60"
+                >
+                  {clearing && <Spinner size={13} />}
+                  确认清空
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirming(true)}
+                className="flex h-9 items-center gap-1.5 rounded-lg bg-white/6 px-3 text-sm whitespace-nowrap text-fg-2 hover:bg-white/10"
+              >
+                <Icon name="trash" size={15} />
+                清空缓存
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
   )
 }

@@ -45,5 +45,9 @@ export const useNickname = create<NicknameStore>((set) => ({
   },
 }))
 
-/** Current nickname for API calls (outside React). */
-export const currentNickname = () => useNickname.getState().nickname || undefined
+/**
+ * Nickname for 点歌 requests (outside React). Only the phone remote (/m) can set one; songs
+ * requested from the desk are always "匿名" (the server fills that in when this is undefined).
+ */
+export const currentNickname = () =>
+  location.pathname.startsWith('/m') ? useNickname.getState().nickname || undefined : undefined

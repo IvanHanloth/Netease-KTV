@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { AnimatePresence, motion } from 'motion/react'
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import clsx from 'clsx'
-import type { LyricLine, PlayerState, Song, TrackState } from '@shared/types'
-import { api, imgUrl, mediaUrl, tokenized } from '../lib/api'
+import type { LyricLine, MvInfo, PlayerState, Song, TrackState } from '@shared/types'
+import { api, imgUrl, isRetryable, mediaUrl, tokenized } from '../lib/api'
 import { ambientColor, companionColor } from '../lib/color'
 import { artistsText, deriveStatus, fmtTime } from '../lib/format'
 import { useIsLocalhostOrigin, useRemoteUrl, useSettings } from '../lib/hooks'
-import { currentLineIndex, hasLyrics, lineWords, wordFills } from '../lib/lyrics'
+import { COUNTDOWN_DOTS, currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
 import { AudioEngine } from '../player/engine'
 import { useScoring } from '../player/useScoring'
 import { DEFAULT_TOLERANCE } from '../player/scoring'
@@ -64,36 +64,140 @@ function Ambient({ song }: { song: Song | null }) {
   )
 }
 
-function useMv(song: Song) {
+/** MV info for a song. While the server is still caching / aligning it, poll for a few minutes. */
+function useMv(song: Pick<Song, 'id' | 'mvId'>) {
+  const pollUntil = useRef(Date.now() + 5 * 60_000)
   return useQuery({
     queryKey: ['mv', song.id],
     queryFn: () => api.mv(song.id),
     enabled: song.mvId > 0,
-    retry: false,
-    staleTime: 10 * 60_000,
+    retry: (count, e) => isRetryable(e) && count < 3,
+    staleTime: 15_000,
+    refetchInterval: (q) => {
+      const d = q.state.data
+      const settled = d && d.cached && d.confidence !== null
+      return settled || Date.now() > pollUntil.current ? false : 15_000
+    },
   })
 }
 
-/** Stage mode: the MV as a dimmed, free-looping backdrop. */
-function MvBackdrop({ song, engine }: { song: Song; engine: AudioEngine }) {
-  const { data } = useMv(song)
-  const [failed, setFailed] = useState(false)
-  const videoRef = useRef<HTMLVideoElement | null>(null)
-  useEffect(() => setFailed(false), [data?.url])
-  // The backdrop loops on its own, but must pause / resume together with the song.
+type MvSync = { mode: 'synced'; offset: number } | { mode: 'free' }
+
+/** Synced when the server aligned the MV confidently, or the durations match (same version). */
+function mvSyncFor(info: MvInfo | undefined, videoDuration: number, songDuration: number): MvSync {
+  if (info && info.confidence !== null && info.confidence >= 0.5 && info.offset !== null) return { mode: 'synced', offset: info.offset }
+  if (Number.isFinite(videoDuration) && songDuration > 0 && Math.abs(videoDuration - songDuration) <= 3) return { mode: 'synced', offset: 0 }
+  return { mode: 'free' }
+}
+
+/** True when `t` lies inside an already-buffered range (with a little headroom). */
+function isBuffered(v: HTMLVideoElement, t: number) {
+  for (let i = 0; i < v.buffered.length; i++) {
+    if (t >= v.buffered.start(i) && t <= v.buffered.end(i) - 0.5) return true
+  }
+  return false
+}
+
+const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x))
+
+/**
+ * Keeps a video element in step with the audio engine.
+ * - free: just mirrors play / pause (the MV loops on its own).
+ * - synced: video time = audio time + offset. Small drift is absorbed by nudging the
+ *   playback rate (0.9–1.1); large drift seeks, but only into buffered data (or a cached
+ *   file) so a slow network doesn't turn into endless re-seeking. While the video is
+ *   stalled nothing is forced; once it plays again it is re-aligned once.
+ */
+function useMvSync(
+  videoRef: MutableRefObject<HTMLVideoElement | null>,
+  engine: AudioEngine,
+  sync: MvSync | null,
+  cached: boolean,
+  stalledRef: MutableRefObject<boolean>,
+  realignRef: MutableRefObject<boolean>,
+) {
+  const mode = sync?.mode
+  const offset = sync?.mode === 'synced' ? sync.offset : 0
   useEffect(() => {
-    if (!data?.url || failed) return
+    if (!sync) return
+    let lastSeek = 0
+    let heldAt: 'start' | 'end' | null = null
+    const seek = (v: HTMLVideoElement, t: number) => {
+      v.currentTime = t
+      lastSeek = performance.now()
+    }
     const tick = () => {
       const v = videoRef.current
       if (!v) return
       const playing = engine.playing && engine.hasTrack
-      if (playing && v.paused) v.play().catch(() => {})
-      else if (!playing && !v.paused) v.pause()
+      if (mode === 'free' || !Number.isFinite(v.duration)) {
+        if (v.playbackRate !== 1) v.playbackRate = 1
+        if (playing && v.paused) v.play().catch(() => {})
+        else if (!playing && !v.paused) v.pause()
+        return
+      }
+      const target = engine.position() + offset
+      // Outside the MV (song intro before the MV starts, or past its end): hold a frame.
+      if (target < 0 || target > v.duration - 0.05) {
+        const edge = target < 0 ? 'start' : 'end'
+        if (!v.paused) v.pause()
+        if (heldAt !== edge && !v.seeking) {
+          seek(v, edge === 'start' ? 0 : Math.max(0, v.duration - 0.05))
+          heldAt = edge
+        }
+        return
+      }
+      heldAt = null
+      const drift = target - v.currentTime // > 0: video is behind the song
+      const canSeek = !v.seeking && performance.now() - lastSeek > 2000 && (cached || isBuffered(v, target))
+      if (!playing) {
+        if (!v.paused) v.pause()
+        if (v.playbackRate !== 1) v.playbackRate = 1
+        if (Math.abs(drift) > 0.3 && canSeek) seek(v, target)
+        return
+      }
+      if (v.paused) v.play().catch(() => {})
+      if (stalledRef.current) {
+        // Buffering: let it load instead of piling up seeks.
+        if (v.playbackRate !== 1) v.playbackRate = 1
+        return
+      }
+      if (realignRef.current) {
+        realignRef.current = false
+        if (Math.abs(drift) > 0.3 && !v.seeking && (cached || isBuffered(v, target))) {
+          seek(v, target)
+          return
+        }
+      }
+      const a = Math.abs(drift)
+      if (a <= 0.15) {
+        if (v.playbackRate !== 1) v.playbackRate = 1
+      } else if (a <= 1.5) {
+        v.playbackRate = 1 + clamp(drift * 0.2, -0.1, 0.1)
+      } else if (canSeek) {
+        v.playbackRate = 1
+        seek(v, target)
+      } else {
+        // Far behind and the target isn't buffered yet: run fast and let it catch up.
+        v.playbackRate = drift > 0 ? 1.1 : 0.9
+      }
     }
     tick()
     const t = window.setInterval(tick, 250)
     return () => window.clearInterval(t)
-  }, [data?.url, failed, engine])
+  }, [sync, mode, offset, cached, engine, videoRef, stalledRef, realignRef])
+}
+
+function MvBackdrop({ song, engine, preload }: { song: Song; engine: AudioEngine; preload: boolean }) {
+  const { data } = useMv(song)
+  const [failed, setFailed] = useState(false)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
+  const stalledRef = useRef(false)
+  const realignRef = useRef(false)
+  useEffect(() => setFailed(false), [data?.url])
+  // The backdrop loops on its own, but must pause / resume together with the song.
+  const free = useMemo<MvSync>(() => ({ mode: 'free' }), [])
+  useMvSync(videoRef, engine, data?.url && !failed ? free : null, false, stalledRef, realignRef)
   if (!data?.url || failed) return null
   return (
     <motion.div
@@ -110,6 +214,7 @@ function MvBackdrop({ song, engine }: { song: Song; engine: AudioEngine }) {
         muted
         loop
         playsInline
+        preload={preload ? 'auto' : 'metadata'}
         onError={() => setFailed(true)}
         className="h-full w-full object-cover opacity-55"
       />
@@ -119,42 +224,87 @@ function MvBackdrop({ song, engine }: { song: Song; engine: AudioEngine }) {
 }
 
 /**
- * MV mode: the video shown directly (contain, on black). When the MV is the same
- * version as the audio (duration within ±3 s) it follows the audio clock; otherwise
- * it loops freely. No MV → blurred cover + ambient fallback.
+ * Warms up the next song's MV while the current one plays (when 预载 MV is on): an
+ * invisible muted <video preload="auto"> makes the browser fetch its start, so the real
+ * element starts from a warm HTTP cache when the song comes up.
  */
-function MvScreen({ song, engine, getSongDuration }: { song: Song; engine: AudioEngine; getSongDuration: () => number }) {
+function NextMvPreloader({ song }: { song: Song }) {
+  const { data } = useMv(song)
+  if (!data?.url) return null
+  return (
+    <video
+      aria-hidden="true"
+      src={tokenized(data.url)}
+      muted
+      playsInline
+      preload="auto"
+      className="pointer-events-none absolute -z-10 h-px w-px opacity-0"
+    />
+  )
+}
+
+/**
+ * MV mode: the video shown directly (contain, on black). It follows the audio clock when
+ * the server aligned it (MvInfo.offset/confidence) or when it is the same version as the
+ * audio (duration within ±3 s); otherwise it loops freely. No MV → blurred cover + ambient.
+ */
+function MvScreen({
+  song,
+  engine,
+  getSongDuration,
+  preload,
+  onModeKnown,
+}: {
+  song: Song
+  engine: AudioEngine
+  getSongDuration: () => number
+  preload: boolean
+  /** Called once per song when it is known whether the MV is aligned to the audio. */
+  onModeKnown?: (mode: MvSync['mode']) => void
+}) {
   const { data, isLoading } = useMv(song)
   const [failed, setFailed] = useState(false)
-  const [syncable, setSyncable] = useState<boolean | null>(null)
+  const [videoDuration, setVideoDuration] = useState(NaN)
+  const [buffering, setBuffering] = useState(false)
   const videoRef = useRef<HTMLVideoElement | null>(null)
+  const stalledRef = useRef(false)
+  const realignRef = useRef(false)
   const url = data?.url
   useEffect(() => {
     setFailed(false)
-    setSyncable(null)
+    setVideoDuration(NaN)
   }, [url])
   const hasVideo = !!url && !failed
 
+  const offset = data?.offset ?? null
+  const confidence = data?.confidence ?? null
+  const sync = useMemo<MvSync | null>(() => {
+    if (!hasVideo || !Number.isFinite(videoDuration)) return null
+    return mvSyncFor(data, videoDuration, getSongDuration())
+    // `data` identity changes on every poll; depend on the values that matter.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasVideo, videoDuration, offset, confidence, getSongDuration])
+
+  useMvSync(videoRef, engine, sync, !!data?.cached, stalledRef, realignRef)
+
+  // Tell the page whether this MV is aligned (once per song, and again if it becomes aligned later).
+  const reported = useRef<MvSync['mode'] | null>(null)
   useEffect(() => {
-    const v = videoRef.current
-    if (!v || !hasVideo || syncable === null) return
-    const tick = () => {
-      const playing = engine.playing && engine.hasTrack
-      if (syncable) {
-        const target = engine.position()
-        if (Number.isFinite(v.duration) && target >= v.duration - 0.05) {
-          if (!v.paused) v.pause()
-          return
-        }
-        if (!v.seeking && Math.abs(v.currentTime - target) > 0.3) v.currentTime = target
-      }
-      if (playing && v.paused) v.play().catch(() => {})
-      else if (!playing && !v.paused) v.pause()
+    if (!sync || reported.current === sync.mode) return
+    if (reported.current === null || sync.mode === 'synced') onModeKnown?.(sync.mode)
+    reported.current = sync.mode
+  }, [sync, onModeKnown])
+
+  // "MV 缓冲中": only while the song is playing and the video has been waiting a moment.
+  const [waiting, setWaiting] = useState(false)
+  useEffect(() => {
+    if (!waiting) {
+      setBuffering(false)
+      return
     }
-    tick()
-    const t = window.setInterval(tick, 250)
-    return () => window.clearInterval(t)
-  }, [hasVideo, syncable, engine])
+    const t = window.setTimeout(() => setBuffering(engine.playing), 600)
+    return () => window.clearTimeout(t)
+  }, [waiting, engine])
 
   if (hasVideo)
     return (
@@ -165,17 +315,35 @@ function MvScreen({ song, engine, getSongDuration }: { song: Song; engine: Audio
           src={tokenized(url!)}
           muted
           playsInline
-          preload="auto"
-          loop={syncable === false}
-          onLoadedMetadata={(e) => {
-            const d = e.currentTarget.duration
-            const sd = getSongDuration()
-            setSyncable(Number.isFinite(d) && sd > 0 && Math.abs(d - sd) <= 3)
+          preload={preload ? 'auto' : 'metadata'}
+          loop={sync?.mode === 'free'}
+          onLoadedMetadata={(e) => setVideoDuration(e.currentTarget.duration)}
+          onWaiting={() => {
+            stalledRef.current = true
+            setWaiting(true)
           }}
+          onPlaying={() => {
+            if (stalledRef.current) realignRef.current = true
+            stalledRef.current = false
+            setWaiting(false)
+          }}
+          onCanPlayThrough={() => setWaiting(false)}
           onError={() => setFailed(true)}
           className="absolute inset-0 h-full w-full object-contain"
         />
         <div className="absolute inset-x-0 bottom-0 h-[46vh] bg-[linear-gradient(0deg,rgba(0,0,0,0.78)_0%,rgba(0,0,0,0.32)_55%,rgba(0,0,0,0)_100%)]" />
+        <AnimatePresence>
+          {buffering && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="glass absolute bottom-[3vh] left-[3.75vw] flex items-center gap-2 rounded-full px-3.5 py-1.5 text-[13px] whitespace-nowrap text-fg-2"
+            >
+              <Spinner size={13} /> MV 缓冲中
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     )
 
@@ -228,6 +396,41 @@ function useClock(getMs: () => number, active: boolean) {
 
 function useLyrics(songId: number) {
   return useQuery({ queryKey: ['lyrics', songId], queryFn: () => api.lyrics(songId), staleTime: Infinity })
+}
+
+/**
+ * Intro / interlude countdown shown above the line that is about to start: five dots, the
+ * rightmost one disappearing each second, the last one vanishing exactly as the line begins.
+ * Absolutely positioned so it never shifts the lyrics.
+ */
+function CountdownDots({ dots, align = 'center' }: { dots: number; align?: 'center' | 'left' | 'right' }) {
+  return (
+    <div
+      aria-hidden="true"
+      className={clsx(
+        'pointer-events-none absolute bottom-full mb-[0.4em] flex gap-[0.5em]',
+        align === 'center' && 'left-1/2 -translate-x-1/2',
+        align === 'left' && 'left-0',
+        align === 'right' && 'right-0',
+      )}
+    >
+      {Array.from({ length: COUNTDOWN_DOTS }, (_, i) => {
+        // Dots disappear from right to left: the rightmost one goes first.
+        const on = i < dots
+        return (
+          <span
+            key={i}
+            className="block h-[0.5em] w-[0.5em] rounded-full bg-accent transition-[opacity,transform] duration-300 motion-reduce:transition-none"
+            style={{
+              opacity: on ? 1 : 0,
+              transform: on ? 'scale(1)' : 'scale(0.3)',
+              boxShadow: on ? '0 0 0.4em rgba(255,77,126,0.85), 0 0 0 0.06em rgba(8,8,12,0.6)' : 'none',
+            }}
+          />
+        )
+      })}
+    </div>
+  )
 }
 
 function CurrentLine({ line, ms, showTranslation }: { line: LyricLine; ms: number; showTranslation: boolean }) {
@@ -285,6 +488,7 @@ function LyricsView({ songId, getMs, song }: { songId: number; getMs: () => numb
   const next1 = lines[cur + 1]
   const next2 = lines[cur + 2]
   const showTranslation = lines.some((l) => l.translation || l.roma)
+  const countdown = interludeCountdown(lines, ms)
   return (
     <div className="flex w-full flex-col items-center gap-[2.8vh] text-center">
       <AnimatePresence mode="popLayout" initial={false}>
@@ -306,8 +510,10 @@ function LyricsView({ songId, getMs, song }: { songId: number; getMs: () => numb
           animate={{ opacity: 1, y: 0, scale: 1 }}
           exit={{ opacity: 0, y: -40, scale: 0.92 }}
           transition={{ duration: 0.4 }}
-          className="my-[1.5vh]"
+          className="relative my-[1.5vh] text-[clamp(40px,4.8vw,104px)]"
         >
+          {/* Intro: the first line is the big line and the one about to start. */}
+          {countdown?.index === cur && <CountdownDots dots={countdown.dots} />}
           <CurrentLine line={lines[cur]} ms={idx < 0 ? -1 : ms} showTranslation={showTranslation} />
         </motion.div>
         <motion.p
@@ -317,8 +523,10 @@ function LyricsView({ songId, getMs, song }: { songId: number; getMs: () => numb
           animate={{ opacity: 1, y: 0 }}
           exit={{ opacity: 0, y: -30 }}
           transition={{ duration: 0.35 }}
-          className="m-0 min-h-[1.2em] px-[4vw] text-[clamp(24px,2.4vw,50px)] font-semibold text-white/62"
+          className="relative m-0 min-h-[1.2em] px-[4vw] text-[clamp(24px,2.4vw,50px)] font-semibold text-white/62"
         >
+          {/* Interlude: the next line is the one about to start. */}
+          {countdown && countdown.index === cur + 1 && <CountdownDots dots={countdown.dots} />}
           {next1?.text ?? ' '}
         </motion.p>
         <motion.p
@@ -348,20 +556,28 @@ function KtvLine({ line, ms }: { line: LyricLine; ms: number }) {
     >
       {words.map((w, i) => {
         const p = fills[i] ?? 0
+        // Two layers per word: a dark outline underneath and the colored fill on top. A stroke
+        // drawn on the fill itself sits half inside the glyph and eats thin CJK strokes.
         return (
-          <span
-            key={i}
-            style={{
-              backgroundImage: `linear-gradient(90deg, #FF6B9A ${p}%, #FFFFFF ${p}%)`,
-              WebkitBackgroundClip: 'text',
-              backgroundClip: 'text',
-              color: 'transparent',
-              WebkitTextStroke: '0.04em rgba(8,8,12,0.88)',
-              paintOrder: 'stroke fill',
-              whiteSpace: 'pre-wrap',
-            }}
-          >
-            {w.text}
+          <span key={i} className="relative inline-block" style={{ whiteSpace: 'pre' }}>
+            <span
+              aria-hidden="true"
+              className="absolute inset-0"
+              style={{ color: 'transparent', WebkitTextStroke: '0.12em rgba(8,8,12,0.9)' }}
+            >
+              {w.text}
+            </span>
+            <span
+              className="relative"
+              style={{
+                backgroundImage: `linear-gradient(90deg, #FF6B9A ${p}%, #FFFFFF ${p}%)`,
+                WebkitBackgroundClip: 'text',
+                backgroundClip: 'text',
+                color: 'transparent',
+              }}
+            >
+              {w.text}
+            </span>
           </span>
         )
       })}
@@ -387,6 +603,7 @@ function TwoLineLyrics({ songId, getMs, raised }: { songId: number; getMs: () =>
   }
   const rows: (number | undefined)[] = [undefined, undefined]
   for (const i of [base, base + 1]) if (i < lines.length) rows[i % 2] = i
+  const countdown = interludeCountdown(lines, ms)
   return (
     <div
       className={clsx(
@@ -404,7 +621,9 @@ function TwoLineLyrics({ songId, getMs, raised }: { songId: number; getMs: () =>
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -10 }}
                 transition={{ duration: reduceMotion() ? 0 : 0.25 }}
+                className="relative"
               >
+                {countdown?.index === li && <CountdownDots dots={countdown.dots} align={r === 0 ? 'left' : 'right'} />}
                 <KtvLine line={lines[li]} ms={ms} />
               </motion.div>
             )}
@@ -1268,6 +1487,21 @@ export default function Tv() {
   const slowLoad = useDelayedFlag(loadState === 'loading', 500)
   const showPreparing = !playingAudio && (!ready || loadState !== 'loading' || slowLoad)
 
+  // "接下来" side panel, decided purely by the playback position (so seeking back hides it):
+  // hidden before 85 % of the song, then 30 s shown / 30 s hidden, repeating.
+  const [upNext, setUpNext] = useState(false)
+  useEffect(() => {
+    setUpNext(false)
+    if (!playingAudio) return
+    const check = () => {
+      const show = engine.hasTrack && upNextVisible(engine.position(), engine.duration)
+      setUpNext((v) => (v === show ? v : show))
+    }
+    check()
+    const t = window.setInterval(check, 250)
+    return () => window.clearInterval(t)
+  }, [playingAudio, engine, songKey])
+
   const scoringAllowed = settings?.scoringEnabled ?? true
   const scoreTolerance = settings?.scoreTolerance ?? DEFAULT_TOLERANCE
   const { data: lyricsData } = useQuery({
@@ -1325,6 +1559,13 @@ export default function Tv() {
   }
 
   const duration = useMemo(() => (playingAudio ? engine.duration : (cur?.song.duration ?? 0) / 1000), [playingAudio, engine, cur])
+  const mvPreload = settings?.mvPreload ?? true
+  const onMvMode = useCallback(
+    (mode: 'synced' | 'free') => showOsd(mode === 'synced' ? 'MV 已对齐' : 'MV 独立播放', 'video'),
+    [showOsd],
+  )
+  // Warm up the next song's MV once the current song is playing (when 预载 MV is on).
+  const nextMvSong = mvPreload && playingAudio && queue[0] && queue[0].song.mvId > 0 ? queue[0].song : null
   const getSongDuration = useCallback(
     () => (engine.hasTrack ? engine.duration : (useApp.getState().state.player.current?.song.duration ?? 0) / 1000),
     [engine],
@@ -1333,14 +1574,23 @@ export default function Tv() {
   return (
     <div className={clsx('relative h-full min-h-[560px] w-full overflow-hidden bg-ink-2 text-fg select-none', idle && 'cursor-none')}>
       {mvMode && cur ? (
-        <MvScreen key={cur.uid} song={cur.song} engine={engine} getSongDuration={getSongDuration} />
+        <MvScreen
+          key={cur.uid}
+          song={cur.song}
+          engine={engine}
+          getSongDuration={getSongDuration}
+          preload={mvPreload}
+          onModeKnown={onMvMode}
+        />
       ) : (
         <>
           <Ambient song={cur?.song ?? null} />
-          {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} engine={engine} />}
+          {cur && playingAudio && cur.song.mvId > 0 && <MvBackdrop key={cur.song.id} song={cur.song} engine={engine} preload={mvPreload} />}
           <Vignette />
         </>
       )}
+
+      {nextMvSong && <NextMvPreloader key={nextMvSong.id} song={nextMvSong} />}
 
       {!cur ? (
         <IdleScreen />
@@ -1412,6 +1662,7 @@ export default function Tv() {
         </>
       )}
 
+      <UpNextPanel shown={upNext && !!cur && !scoreResult && queue.length > 0} mvMode={mvMode} />
       <Osd msg={osd} />
       <ScoreOverlay result={scoreResult} onDone={clearScoreResult} />
 
@@ -1473,6 +1724,116 @@ export default function Tv() {
         )}
       </AnimatePresence>
     </div>
+  )
+}
+
+/** Seconds before the end of a song when the "接下来" panel slides in. */
+/** The "接下来" panel only appears after this fraction of the song… */
+const UP_NEXT_FROM = 0.85
+/** …and then alternates: shown for UP_NEXT_ON seconds, hidden for UP_NEXT_OFF seconds. */
+const UP_NEXT_ON = 30
+const UP_NEXT_OFF = 30
+
+/** Always shown during the final seconds, whatever the 30 s on / off cycle says. */
+const UP_NEXT_FINAL = 10
+
+/** Whether the "接下来" panel should be visible at `pos` seconds of a `duration`-second song. */
+function upNextVisible(pos: number, duration: number): boolean {
+  if (!(duration > 0)) return false
+  const since = pos - duration * UP_NEXT_FROM
+  if (since < 0) return false
+  if (duration - pos <= UP_NEXT_FINAL) return true
+  return since % (UP_NEXT_ON + UP_NEXT_OFF) < UP_NEXT_ON
+}
+const UP_NEXT_MAX = 5
+
+/**
+ * Right-edge panel listing the next songs (and who requested them) near the end of a song,
+ * so the next singers can get ready. Ignores idle auto-hide. In MV mode it sits higher so it
+ * never covers the two lyric lines at the bottom.
+ */
+function UpNextPanel({ shown, mvMode }: { shown: boolean; mvMode: boolean }) {
+  const queue = useApp((s) => s.state.queue)
+  const tracks = useApp((s) => s.state.tracks)
+  const reduce = useReducedMotion()
+  const items = queue.slice(0, UP_NEXT_MAX)
+  const more = queue.length - items.length
+  return (
+    <AnimatePresence>
+      {shown && items.length > 0 && (
+        <motion.aside
+          key="up-next"
+          aria-label="接下来"
+          aria-live="polite"
+          initial={reduce ? { opacity: 0 } : { opacity: 0, x: 48 }}
+          animate={reduce ? { opacity: 1 } : { opacity: 1, x: 0 }}
+          exit={reduce ? { opacity: 0 } : { opacity: 0, x: 48 }}
+          transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+          className={clsx(
+            'pointer-events-none absolute right-[2.6vw] z-20 flex w-[min(420px,28vw)] min-w-[300px] flex-col',
+            // Stage: between the header and the control bar. MV: clear of the bottom lyric lines.
+            mvMode ? 'top-[13vh] bottom-[34vh]' : 'top-[29vh] bottom-[27vh]',
+            'justify-center',
+          )}
+        >
+          <div className="glass flex max-h-full min-h-0 flex-col gap-3 overflow-hidden rounded-[28px] p-4 shadow-[0_30px_80px_rgba(0,0,0,0.55)]">
+            <div className="flex shrink-0 items-center justify-between px-1">
+              <span className="flex items-center gap-2 text-[15px] font-bold tracking-[0.18em] whitespace-nowrap text-fg">
+                <Icon name="list" size={18} className="text-accent" />
+                接下来
+              </span>
+              <span className="text-[13px] whitespace-nowrap text-muted">已点 {queue.length} 首</span>
+            </div>
+            <ol className="m-0 flex min-h-0 list-none flex-col gap-1.5 overflow-hidden p-0 [mask-image:linear-gradient(180deg,#000_85%,transparent)]">
+              {items.map((item, i) => {
+                const first = i === 0
+                const status = deriveStatus(item.song, tracks[item.song.id], true)
+                return (
+                  <motion.li
+                    key={item.uid}
+                    initial={reduce ? false : { opacity: 0, x: 24 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: reduce ? 0 : 0.08 + i * 0.05, duration: 0.35 }}
+                    className={clsx(
+                      'flex shrink-0 items-center gap-3 rounded-2xl',
+                      first
+                        ? 'border border-[rgba(255,77,126,0.45)] bg-[linear-gradient(135deg,rgba(255,77,126,0.24),rgba(123,47,247,0.16))] p-3 shadow-[0_0_30px_rgba(255,77,126,0.22)]'
+                        : 'px-3 py-2',
+                    )}
+                  >
+                    {first ? (
+                      <Cover song={item.song} px={160} className="h-14 w-14 rounded-xl" />
+                    ) : (
+                      <span className="num w-6 shrink-0 text-center text-[15px] text-subtle">{i + 1}</span>
+                    )}
+                    <div className="flex min-w-0 flex-1 flex-col gap-0.5">
+                      {first && (
+                        <span className="text-xs font-semibold tracking-[0.14em] whitespace-nowrap text-[#FFC2D1]">
+                          下一首 · 请准备
+                        </span>
+                      )}
+                      <span className={clsx('truncate font-semibold', first ? 'text-[19px]' : 'text-[16px]')}>
+                        {item.song.name}
+                      </span>
+                      <span className="truncate text-[13px] text-fg-2">
+                        {artistsText(item.song)}
+                        {item.addedBy && <span className="text-[#FFC2D1]"> · 由 {item.addedBy} 点歌</span>}
+                      </span>
+                    </div>
+                    {first && (
+                      <span className="shrink-0">
+                        <StatusPill status={status} />
+                      </span>
+                    )}
+                  </motion.li>
+                )
+              })}
+            </ol>
+            {more > 0 && <div className="shrink-0 px-1 text-[13px] whitespace-nowrap text-muted">还有 {more} 首…</div>}
+          </div>
+        </motion.aside>
+      )}
+    </AnimatePresence>
   )
 }
 

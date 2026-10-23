@@ -75,8 +75,8 @@ export type TrackMode = 'karaoke' | 'original'
 /** TV layout: stage = immersive lyrics page; mv = full-screen MV with two lyric lines at the bottom. */
 export type DisplayMode = 'stage' | 'mv'
 
-/** Where a requested song goes: end of queue, next up, or replace the current song right away. */
-export type QueuePosition = 'end' | 'next' | 'now'
+/** Where a requested song goes: end of the queue, or next up (插播). */
+export type QueuePosition = 'end' | 'next'
 
 export interface PlayerState {
   current: QueueItem | null
@@ -162,6 +162,40 @@ export interface Settings {
    * Presets: 宽松 1.5 / 标准 1.0 / 严格 0.5. Range 0.3–3.
    */
   scoreTolerance: number
+  /** Download MVs of queued songs to the server ahead of time (smooth playback, enables auto-align). */
+  mvPreload: boolean
+  /** MV resolution to fetch / cache. */
+  mvResolution: MvResolution
+  /** Max disk space for cached audio, stems and MVs (GB). Oldest unused songs are evicted first. */
+  cacheLimitGB: number
+}
+
+export type MvResolution = 480 | 720 | 1080
+
+/** GET /api/songs/:id/mv */
+export interface MvInfo {
+  mvId: number
+  /** Same-origin stream URL (served from the local cache once downloaded). */
+  url: string
+  /** True when the MV file is fully cached on the server. */
+  cached: boolean
+  /**
+   * Result of audio alignment between the MV and the song, when available:
+   * videoTime = audioTime + offset (seconds). null = not aligned (yet).
+   */
+  offset: number | null
+  /** 0..1; the TV syncs the MV to the song when this is ≥ 0.5 (or durations match). */
+  confidence: number | null
+}
+
+/** GET /api/cache */
+export interface CacheInfo {
+  usedBytes: number
+  limitBytes: number
+  audioBytes: number
+  mvBytes: number
+  songs: number
+  mvs: number
 }
 
 /** One finished, scored performance. */

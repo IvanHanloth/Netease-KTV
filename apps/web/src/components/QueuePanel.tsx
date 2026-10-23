@@ -4,7 +4,7 @@ import clsx from 'clsx'
 import type { QueueItem } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtTime, queueStatusText } from '../lib/format'
-import { errorText, playQueuedNow, toast, useStatusOf } from '../lib/hooks'
+import { errorText, runAction, shuffleQueue, toast, useIsPending, useStatusOf } from '../lib/hooks'
 import { useDragReorder } from '../lib/useDragReorder'
 import { livePosition, sendCommand, useApp } from '../store/app'
 import { Icon } from './icons'
@@ -20,13 +20,8 @@ export function useNow(interval = 1000) {
   return now
 }
 
-async function safe(fn: () => Promise<unknown>) {
-  try {
-    await fn()
-  } catch (e) {
-    toast(errorText(e), 'error')
-  }
-}
+/** Queue / track operations: error toast with 重试 on network failures, de-duplicated while in flight. */
+const safe = (key: string, fn: () => Promise<unknown>) => runAction(key, fn)
 
 export function NowSingingCard({ compact }: { compact?: boolean }) {
   const player = useApp((s) => s.state.player)
@@ -146,16 +141,8 @@ function QueueRow({
           </span>
         )}
       </div>
-      <IconButton
-        icon="play"
-        label={`立即唱 ${item.song.name}`}
-        size={34}
-        iconSize={16}
-        onClick={() => playQueuedNow(item)}
-        className="hover:text-accent-soft"
-      />
       {st.kind === 'error' && (
-        <IconButton icon="refresh" label={`重试 ${item.song.name}`} size={34} iconSize={16} onClick={() => safe(() => api.retryTrack(item.song.id))} />
+        <IconButton icon="refresh" label={`重试 ${item.song.name}`} size={34} iconSize={16} onClick={() => safe(`track:retry:${item.song.id}`, () => api.retryTrack(item.song.id))} />
       )}
       <IconButton
         icon="top"
@@ -163,9 +150,9 @@ function QueueRow({
         size={34}
         iconSize={17}
         disabled={index === 0}
-        onClick={() => safe(() => api.queueTop(item.uid))}
+        onClick={() => safe(`queue:top:${item.uid}`, () => api.queueTop(item.uid))}
       />
-      <IconButton icon="x" label={`删除 ${item.song.name}`} size={34} iconSize={16} onClick={() => safe(() => api.queueRemove(item.uid))} />
+      <IconButton icon="x" label={`删除 ${item.song.name}`} size={34} iconSize={16} onClick={() => safe(`queue:remove:${item.uid}`, () => api.queueRemove(item.uid))} />
     </motion.li>
   )
 }
@@ -196,6 +183,26 @@ export function QueueList() {
   )
 }
 
+/** Shuffle the whole queue. Needs at least two songs to mean anything. */
+export function ShuffleButton({ count, className }: { count: number; className?: string }) {
+  const pending = useIsPending('queue:shuffle')
+  return (
+    <button
+      type="button"
+      disabled={count < 2 || pending}
+      onClick={() => void shuffleQueue(count)}
+      title="随机打乱已点列表"
+      className={clsx(
+        'flex h-11 items-center gap-1.5 rounded-xl px-2.5 text-sm whitespace-nowrap text-fg-2 transition-colors hover:bg-white/6 hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent',
+        className,
+      )}
+    >
+      <Icon name="shuffle" size={16} />
+      随机
+    </button>
+  )
+}
+
 export function QueuePanel() {
   const queue = useApp((s) => s.state.queue)
   const current = useApp((s) => s.state.player.current)
@@ -208,14 +215,17 @@ export function QueuePanel() {
             {queue.length + (current ? 1 : 0)}
           </span>
         </div>
-        <button
-          type="button"
-          disabled={!queue.length}
-          onClick={() => safe(() => api.queueClear())}
-          className="h-11 px-1 text-sm text-muted hover:text-fg disabled:opacity-40"
-        >
-          清空
-        </button>
+        <div className="flex items-center gap-1">
+          <ShuffleButton count={queue.length} />
+          <button
+            type="button"
+            disabled={!queue.length}
+            onClick={() => safe('queue:clear', () => api.queueClear())}
+            className="h-11 px-2 text-sm whitespace-nowrap text-muted hover:text-fg disabled:opacity-40"
+          >
+            清空
+          </button>
+        </div>
       </div>
       <NowSingingCard />
       <div className="min-h-0 flex-1 overflow-y-auto">

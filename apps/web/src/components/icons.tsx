@@ -21,6 +21,21 @@ const paths = {
     </>
   ),
   chart: <path d="M4 20V11M10 20V5M16 20v-7M21 20H3" />,
+  shuffle: (
+    <>
+      <path d="M16 3h5v5" />
+      <path d="M4 20 21 3" />
+      <path d="M21 16v5h-5" />
+      <path d="m15 15 6 6" />
+      <path d="M4 4l5 5" />
+    </>
+  ),
+  link: (
+    <>
+      <path d="M10 13a5 5 0 0 0 7.07 0l3-3a5 5 0 0 0-7.07-7.07l-1.5 1.5" />
+      <path d="M14 11a5 5 0 0 0-7.07 0l-3 3a5 5 0 0 0 7.07 7.07l1.5-1.5" />
+    </>
+  ),
   user: (
     <>
       <circle cx="12" cy="8" r="4" />
@@ -208,6 +223,26 @@ const paths = {
     <>
       <circle cx="12" cy="12" r="9" />
       <path d="M12 11v5M12 8h.01" />
+    </>
+  ),
+  headphones: (
+    <>
+      <path d="M4 15v-3a8 8 0 0 1 16 0v3" />
+      <rect x="3" y="14" width="4.5" height="6.5" rx="1.6" />
+      <rect x="16.5" y="14" width="4.5" height="6.5" rx="1.6" />
+    </>
+  ),
+  stop: <rect x="6.5" y="6.5" width="11" height="11" rx="2" fill="currentColor" stroke="none" />,
+  film: (
+    <>
+      <rect x="3" y="4" width="18" height="16" rx="2.5" />
+      <path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4" />
+    </>
+  ),
+  database: (
+    <>
+      <ellipse cx="12" cy="6" rx="7.5" ry="3" />
+      <path d="M4.5 6v12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3V6M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3" />
     </>
   ),
 } satisfies Record<string, ReactNode>

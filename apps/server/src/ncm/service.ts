@@ -152,6 +152,43 @@ export async function playlistTracks(id: number, offset = 0, limit = 100): Promi
   return { songs, hasMore: songs.length >= limit }
 }
 
+/** Pull a playlist id out of a NetEase link, share text, or a bare id. */
+function playlistIdFrom(text: string): number | null {
+  const m =
+    /playlist[^\d]{0,40}?[?&#]id=(\d{3,})/i.exec(text) ??
+    /\/playlist\/(\d{3,})/i.exec(text) ??
+    /[?&]id=(\d{3,})/.exec(text) ??
+    /^\s*(\d{3,})\s*$/.exec(text)
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * Resolve whatever the user pasted (playlist URL, "分享歌单" text with a 163cn.tv short link,
+ * or a playlist id) to a playlist summary. Used for temporary per-device playlist imports.
+ */
+export async function resolvePlaylist(text: string): Promise<PlaylistSummary> {
+  let id = playlistIdFrom(text)
+  if (!id) {
+    const short = /https?:\/\/(?:163cn\.tv|y\.music\.163\.com|music\.163\.com)\/[^\s"'<>]+/i.exec(text)?.[0]
+    if (short) {
+      let url = short
+      // Follow up to 5 redirects by hand to read the final location.
+      for (let i = 0; i < 5 && !id; i++) {
+        const res = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(8000) })
+        const loc = res.headers.get('location')
+        id = playlistIdFrom(loc ?? url)
+        if (!loc) break
+        url = new URL(loc, url).toString()
+      }
+    }
+  }
+  if (!id) throw new NcmError('没有识别出歌单，请粘贴网易云歌单链接或歌单 ID', 400)
+  const res = await call('playlist_detail', { id })
+  const pl = res.body?.playlist
+  if (!pl) throw new NcmError('歌单不存在或无法访问', 404)
+  return mapPlaylist(pl)
+}
+
 export async function recommend(): Promise<{ songs: Song[]; daily: boolean }> {
   const account = await getAccount()
   if (account.loggedIn) {
@@ -188,9 +225,20 @@ export async function lyrics(id: number): Promise<Lyrics> {
   return buildLyrics(res.body)
 }
 
-export async function mvUrl(mvId: number): Promise<string> {
-  const res = await call('mv_url', { id: mvId, r: 1080 })
+export async function mvUrl(mvId: number, resolution = 1080): Promise<string> {
+  const res = await call('mv_url', { id: mvId, r: resolution })
   const url = res.body?.data?.url
   if (!url) throw new NcmError('MV 暂不可用', 404)
+  return String(url)
+}
+
+/**
+ * Low-quality URL for a local "试听" preview on the requesting device. Only what NetEase itself
+ * returns for this account (a full song or NetEase's own trial clip) — never third-party sources.
+ */
+export async function previewUrl(songId: number): Promise<string> {
+  const res = await call('song_url_v1', { id: songId, level: 'standard' })
+  const url = res.body?.data?.[0]?.url
+  if (!url) throw new NcmError('暂无试听', 404)
   return String(url)
 }

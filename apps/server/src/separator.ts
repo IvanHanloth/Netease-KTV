@@ -47,12 +47,17 @@ export function submitJob(input: {
   outputDir: string
   durationMs: number
   model?: string
-  /** 'pitch' only extracts the reference melody from an existing vocals stem. */
-  mode?: 'separate' | 'pitch'
+  /**
+   * 'pitch' only extracts the reference melody from an existing vocals stem;
+   * 'align' computes the MV offset from two WAVs (input = song, input2 = MV audio).
+   */
+  mode?: 'separate' | 'pitch' | 'align'
+  input2?: string
 }): Promise<{ id: string }> {
   return request('POST', '/jobs', {
     song_id: input.songId,
     input: input.input,
+    input2: input.input2,
     output_dir: input.outputDir,
     duration_ms: input.durationMs,
     model: input.model || undefined,

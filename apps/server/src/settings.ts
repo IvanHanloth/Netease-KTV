@@ -16,6 +16,9 @@ export function getSettings(): Settings {
     publicUrl: saved.publicUrl || config.defaults.publicUrl,
     scoringEnabled: saved.scoringEnabled ?? config.defaults.scoringEnabled,
     scoreTolerance: saved.scoreTolerance ?? config.defaults.scoreTolerance,
+    mvPreload: saved.mvPreload ?? config.defaults.mvPreload,
+    mvResolution: saved.mvResolution ?? config.defaults.mvResolution,
+    cacheLimitGB: saved.cacheLimitGB ?? config.defaults.cacheLimitGB,
   }
 }
 
@@ -29,6 +32,13 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
   if (typeof patch.separatorModel === 'string') next.separatorModel = patch.separatorModel.trim()
   if (typeof patch.publicUrl === 'string') next.publicUrl = patch.publicUrl.trim().replace(/\/$/, '')
   if (typeof patch.scoringEnabled === 'boolean') next.scoringEnabled = patch.scoringEnabled
+  if (typeof patch.mvPreload === 'boolean') next.mvPreload = patch.mvPreload
+  if (patch.mvResolution === 480 || patch.mvResolution === 720 || patch.mvResolution === 1080) {
+    next.mvResolution = patch.mvResolution
+  }
+  if (typeof patch.cacheLimitGB === 'number' && Number.isFinite(patch.cacheLimitGB)) {
+    next.cacheLimitGB = Math.round(Math.min(500, Math.max(1, patch.cacheLimitGB)))
+  }
   if (typeof patch.scoreTolerance === 'number' && Number.isFinite(patch.scoreTolerance)) {
     next.scoreTolerance = Math.round(Math.min(3, Math.max(0.3, patch.scoreTolerance)) * 10) / 10
   }

@@ -1,35 +1,22 @@
 import clsx from 'clsx'
 import type { Song } from '@shared/types'
 import { artistsText, fmtMs } from '../lib/format'
-import { playQueuedNow, useEnqueue, useStatusOf } from '../lib/hooks'
-import { useApp } from '../store/app'
+import { enqueueKey, useEnqueue, useIsPending, useStatusOf } from '../lib/hooks'
 import { Icon } from './icons'
-import { Cover, Eq, IconButton, StatusPill } from './ui'
+import { PreviewButton } from './PreviewButton'
+import { Cover, Eq, IconButton, Spinner, StatusPill } from './ui'
 
 // Columns follow the table's own width (container queries), not the viewport: the desk's
 // main column is much narrower than the window when the sidebar and queue are shown.
 const cols =
   'grid-cols-[28px_minmax(0,1fr)_auto] @2xl:grid-cols-[32px_minmax(0,1fr)_136px_auto] @4xl:grid-cols-[36px_minmax(0,2.2fr)_minmax(0,1fr)_52px_136px_auto]'
 
-/** 立即唱: skip the current song and sing this one now. */
-function SingNowButton({ song, compact }: { song: Song; compact?: boolean }) {
-  const enqueue = useEnqueue()
-  const queue = useApp((s) => s.state.queue)
-  const queued = queue.find((q) => q.song.id === song.id)
-  return (
-    <IconButton
-      icon="play"
-      label={`立即唱 ${song.name}`}
-      onClick={() => (queued ? playQueuedNow(queued) : enqueue(song, 'now'))}
-      className={clsx('bg-white/6 text-fg-2 hover:text-accent-soft', compact && 'hidden @md:inline-flex')}
-    />
-  )
-}
-
 export function SongActions({ song, compact }: { song: Song; compact?: boolean }) {
   const statusOf = useStatusOf()
   const enqueue = useEnqueue()
   const st = statusOf(song)
+  const addPending = useIsPending(enqueueKey(song.id, 'end'))
+  const nextPending = useIsPending(enqueueKey(song.id, 'next'))
   if (st.isCurrent)
     return (
       <span className="inline-flex h-9 shrink-0 items-center gap-2 rounded-[10px] bg-[rgba(255,77,126,0.12)] px-3.5 text-sm font-semibold whitespace-nowrap text-accent-soft">
@@ -40,12 +27,14 @@ export function SongActions({ song, compact }: { song: Song; compact?: boolean }
   if (st.inQueue)
     return (
       <div className="flex shrink-0 items-center gap-1.5">
-        <SingNowButton song={song} />
+        <PreviewButton song={song} />
         <span className="inline-flex h-9 items-center rounded-[10px] bg-white/6 px-3.5 text-sm whitespace-nowrap text-muted">已点</span>
       </div>
     )
   if (st.kind === 'vip')
     return (
+      <div className="flex shrink-0 items-center gap-1.5">
+      <PreviewButton song={song} />
       <button
         type="button"
         disabled
@@ -54,21 +43,25 @@ export function SongActions({ song, compact }: { song: Song; compact?: boolean }
       >
         不可点
       </button>
+      </div>
     )
   return (
     <div className="flex shrink-0 items-center gap-1.5">
-      <SingNowButton song={song} />
+      <PreviewButton song={song} />
       <IconButton
         icon="top"
         label={`插播 ${song.name}`}
+        disabled={nextPending}
         onClick={() => enqueue(song, 'next')}
         className={clsx('bg-white/6 text-fg-2', compact && 'hidden @md:inline-flex')}
       />
       <button
         type="button"
         onClick={() => enqueue(song, 'end')}
-        className="h-9 shrink-0 rounded-[10px] bg-accent px-4 text-sm font-bold whitespace-nowrap text-accent-ink transition-transform hover:brightness-110 active:scale-95"
+        disabled={addPending}
+        className="flex h-9 shrink-0 items-center gap-1.5 rounded-[10px] bg-accent px-4 text-sm font-bold whitespace-nowrap text-accent-ink transition-transform hover:brightness-110 active:scale-95 disabled:opacity-70"
       >
+        {addPending && <Spinner size={14} />}
         点歌
       </button>
     </div>
@@ -138,6 +131,8 @@ export function RecCard({ song }: { song: Song }) {
   const statusOf = useStatusOf()
   const st = statusOf(song)
   const disabled = st.kind === 'vip' || st.inQueue || st.isCurrent
+  const nextPending = useIsPending(enqueueKey(song.id, 'next'))
+  const addPending = useIsPending(enqueueKey(song.id, 'end'))
   const reveal =
     'transition-all duration-200 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100 [@media(hover:hover)]:translate-y-1.5 [@media(hover:hover)]:opacity-0'
   return (
@@ -154,6 +149,11 @@ export function RecCard({ song }: { song: Song }) {
             <Icon name="lock" size={12} /> 会员
           </span>
         )}
+        {disabled && !st.isCurrent && (
+          <div className={clsx('absolute bottom-2.5 left-2.5', reveal)}>
+            <PreviewButton song={song} variant="overlay" />
+          </div>
+        )}
         {(st.inQueue || st.isCurrent) && (
           <span className="absolute right-2.5 bottom-2.5 inline-flex h-7 items-center gap-1.5 rounded-full bg-ink/70 px-2.5 text-xs text-fg-2">
             {st.isCurrent ? <Eq /> : <Icon name="check" size={13} />}
@@ -162,18 +162,11 @@ export function RecCard({ song }: { song: Song }) {
         )}
         {!disabled && (
           <div className={clsx('absolute right-2.5 bottom-2.5 flex items-center gap-1.5', reveal)}>
-            <button
-              type="button"
-              onClick={() => enqueue(song, 'now')}
-              aria-label={`立即唱 ${song.name}`}
-              title="立即唱"
-              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink/70 text-fg shadow-[0_8px_20px_rgba(0,0,0,0.4)] backdrop-blur hover:bg-ink/85"
-            >
-              <Icon name="play" size={16} />
-            </button>
+            <PreviewButton song={song} variant="overlay" />
             <button
               type="button"
               onClick={() => enqueue(song, 'next')}
+              disabled={nextPending}
               aria-label={`插播 ${song.name}`}
               title="插播"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-ink/70 text-fg shadow-[0_8px_20px_rgba(0,0,0,0.4)] backdrop-blur hover:bg-ink/85"
@@ -183,6 +176,7 @@ export function RecCard({ song }: { song: Song }) {
             <button
               type="button"
               onClick={() => enqueue(song)}
+              disabled={addPending}
               aria-label={`点歌 ${song.name}`}
               title="点歌"
               className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink shadow-[0_8px_20px_rgba(0,0,0,0.4)]"

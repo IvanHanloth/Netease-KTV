@@ -4,15 +4,18 @@ import clsx from 'clsx'
 import type { PlayerCommand, Song } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtMs, fmtTime } from '../lib/format'
-import { playQueuedNow, useDebounced, useStatusOf } from '../lib/hooks'
+import { errorText, useDebounced, useStatusOf } from '../lib/hooks'
+import { stopPreview } from '../lib/preview'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
-import { Cover, Dialog, EmptyNote, Eq, IconButton, ProgressBar, Range, Spinner, StatusPill } from '../components/ui'
+import { Cover, Dialog, EmptyNote, Eq, IconButton, ProgressBar, QueryError, Range, Spinner, StatusPill } from '../components/ui'
 import { Leaderboard } from '../components/Leaderboard'
 import { NICKNAME_MAX, useNickname } from '../lib/nickname'
 import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
 import { SongActions } from '../components/SongTable'
-import { QueueList, useNow } from '../components/QueuePanel'
+import { QueueList, ShuffleButton, useNow } from '../components/QueuePanel'
+import { ImportedPlaylistChips, ImportPlaylistDialog } from '../components/ImportPlaylist'
+import { removeImportedPlaylist, useImportedPlaylists, type ImportedPlaylist } from '../lib/importedPlaylists'
 
 type Tab = 'remote' | 'search' | 'queue' | 'rank'
 
@@ -230,7 +233,6 @@ function RemoteTab() {
                   )}
                 </div>
                 <span className="num text-[13px] text-subtle">{fmtMs(q.song.duration)}</span>
-                <IconButton icon="play" label={`立即唱 ${q.song.name}`} onClick={() => playQueuedNow(q)} className="bg-white/6 text-fg-2" />
               </div>
             )
           })
@@ -260,9 +262,71 @@ function SongList({ songs }: { songs: Song[] }) {
   )
 }
 
+/** Tracks of a playlist imported on this device (phone 点歌 tab). */
+function ImportedPlaylistTracks({ playlist, onBack }: { playlist: ImportedPlaylist; onBack: () => void }) {
+  const tracks = useInfiniteQuery({
+    queryKey: ['playlist', playlist.id],
+    queryFn: ({ pageParam }) => api.playlistTracks(playlist.id, pageParam, 100),
+    initialPageParam: 0,
+    getNextPageParam: (last, pages) => (last.hasMore ? pages.reduce((n, p) => n + p.songs.length, 0) : undefined),
+  })
+  const songs = useMemo(() => tracks.data?.pages.flatMap((p) => p.songs) ?? [], [tracks.data])
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <IconButton icon="chevronLeft" label="返回" onClick={onBack} size={40} />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <h2 className="m-0 truncate text-[16px] font-semibold">{playlist.name}</h2>
+          <span className="truncate text-xs text-muted">临时歌单 · 仅保存在这台设备</span>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            removeImportedPlaylist(playlist.id)
+            onBack()
+          }}
+          className="h-9 shrink-0 rounded-xl px-3 text-[13px] whitespace-nowrap text-muted hover:bg-white/6"
+        >
+          移除
+        </button>
+      </div>
+      {tracks.isLoading ? (
+        <div className="flex justify-center py-10 text-muted">
+          <Spinner />
+        </div>
+      ) : tracks.isError && !songs.length ? (
+        <QueryError compact error={new Error(errorText(tracks.error))} onRetry={() => tracks.refetch()} retrying={tracks.isFetching} />
+      ) : songs.length ? (
+        <>
+          <SongList songs={songs} />
+          {tracks.hasNextPage && (
+            <button
+              type="button"
+              onClick={() => tracks.fetchNextPage()}
+              disabled={tracks.isFetchingNextPage}
+              className="h-11 rounded-xl bg-white/6 text-sm text-fg-2"
+            >
+              {tracks.isFetchingNextPage ? '加载中…' : tracks.isFetchNextPageError ? '加载失败，点击重试' : '加载更多'}
+            </button>
+          )}
+        </>
+      ) : (
+        <EmptyNote>这个歌单是空的</EmptyNote>
+      )}
+    </div>
+  )
+}
+
 function SearchTab() {
   const [value, setValue] = useState('')
   const q = useDebounced(value.trim(), 350)
+  const [openPl, setOpenPl] = useState<ImportedPlaylist | null>(null)
+  const [importOpen, setImportOpen] = useState(false)
+  // Close an opened playlist if it was removed (e.g. from another tab of this browser).
+  const imported = useImportedPlaylists()
+  useEffect(() => {
+    if (openPl && !imported.some((p) => p.id === openPl.id)) setOpenPl(null)
+  }, [imported, openPl])
   const results = useInfiniteQuery({
     queryKey: ['search', q],
     queryFn: ({ pageParam }) => api.search(q, pageParam, 30),
@@ -291,6 +355,13 @@ function SearchTab() {
           <div className="flex justify-center py-10 text-muted">
             <Spinner />
           </div>
+        ) : results.isError && !songs.length ? (
+          <QueryError
+            compact
+            error={new Error(errorText(results.error))}
+            onRetry={() => results.refetch()}
+            retrying={results.isFetching}
+          />
         ) : songs.length ? (
           <>
             <SongList songs={songs} />
@@ -298,27 +369,44 @@ function SearchTab() {
               <button
                 type="button"
                 onClick={() => results.fetchNextPage()}
+                disabled={results.isFetchingNextPage}
                 className="h-11 rounded-xl bg-white/6 text-sm text-fg-2"
               >
-                {results.isFetchingNextPage ? '加载中…' : '加载更多'}
+                {results.isFetchingNextPage ? '加载中…' : results.isFetchNextPageError ? '加载失败，点击重试' : '加载更多'}
               </button>
             )}
           </>
         ) : (
           <EmptyNote>没有找到相关歌曲</EmptyNote>
         )
+      ) : openPl ? (
+        <ImportedPlaylistTracks playlist={openPl} onBack={() => setOpenPl(null)} />
       ) : (
         <>
+          <div className="flex flex-col gap-2">
+            <h2 className="m-0 px-0.5 text-[15px] font-semibold">临时歌单</h2>
+            <ImportedPlaylistChips onOpen={setOpenPl} onImport={() => setImportOpen(true)} />
+          </div>
           <h2 className="m-0 px-0.5 text-[15px] font-semibold">{rec.data?.daily ? '每日推荐' : '热门推荐'}</h2>
           {rec.isLoading ? (
             <div className="flex justify-center py-10 text-muted">
               <Spinner />
             </div>
+          ) : rec.isError && !rec.data ? (
+            <QueryError compact error={new Error(errorText(rec.error))} onRetry={() => rec.refetch()} retrying={rec.isFetching} />
           ) : (
             <SongList songs={rec.data?.songs ?? []} />
           )}
         </>
       )}
+      <ImportPlaylistDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(p) => {
+          setValue('')
+          setOpenPl({ ...p, importedAt: Date.now() })
+        }}
+      />
     </div>
   )
 }
@@ -330,6 +418,21 @@ export default function Remote() {
   const current = useApp((s) => s.state.player.current)
   const count = queue.length + (current ? 1 : 0)
   useEffect(() => connect('remote'), [])
+  // 试听 only plays while the user is on the page / tab where it started.
+  useEffect(() => stopPreview, [])
+  useEffect(() => stopPreview(), [tab])
+  // Reconnect banner: only after the first successful connection, and not for blips < 1.5 s.
+  const everConnected = useRef(false)
+  if (connected) everConnected.current = true
+  const [showBanner, setShowBanner] = useState(false)
+  useEffect(() => {
+    if (connected || !everConnected.current) {
+      setShowBanner(false)
+      return
+    }
+    const t = window.setTimeout(() => setShowBanner(true), 1500)
+    return () => window.clearTimeout(t)
+  }, [connected])
   useEffect(() => {
     document.title = '手机遥控 · Netease KTV'
   }, [])
@@ -365,13 +468,25 @@ export default function Remote() {
         </div>
         <NicknameChip />
       </header>
+      {showBanner && (
+        <div
+          role="status"
+          className="relative mx-5 mb-2 flex items-center gap-2 rounded-2xl border border-[rgba(251,191,36,0.25)] bg-[rgba(251,191,36,0.1)] px-3.5 py-2.5 text-[13px] text-warn"
+        >
+          <Spinner size={14} />
+          连接中断，正在重连…
+        </div>
+      )}
 
       <main className="relative min-h-0 flex-1 overflow-y-auto px-5 pb-6">
         {tab === 'remote' && <RemoteTab />}
         {tab === 'search' && <SearchTab />}
         {tab === 'queue' && (
           <div className="flex flex-col gap-2">
-            <h2 className="m-0 px-0.5 text-[15px] font-semibold">已点歌曲</h2>
+            <div className="flex items-center justify-between">
+              <h2 className="m-0 px-0.5 text-[15px] font-semibold">已点歌曲</h2>
+              <ShuffleButton count={queue.length} className="-mr-2" />
+            </div>
             <QueueList />
           </div>
         )}

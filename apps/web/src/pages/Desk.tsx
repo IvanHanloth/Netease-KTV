@@ -4,15 +4,23 @@ import { Link, useSearchParams } from 'react-router'
 import clsx from 'clsx'
 import type { PlaylistSummary } from '@shared/types'
 import { api } from '../lib/api'
+import { stopPreview } from '../lib/preview'
 import { errorText, toast, useAccount, useDebounced } from '../lib/hooks'
 import { connect, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
-import { Cover, EmptyNote, Spinner } from '../components/ui'
+import { Cover, EmptyNote, QueryError, Spinner } from '../components/ui'
 import { RecCard, SongTable } from '../components/SongTable'
 import { QueuePanel } from '../components/QueuePanel'
 import { Leaderboard } from '../components/Leaderboard'
 import { LoginDialog } from '../components/LoginDialog'
 import { SettingsDialog } from '../components/SettingsDialog'
+import {
+  DEVICE_ONLY_NOTE,
+  ImportedPlaylistChips,
+  ImportedPlaylistsNav,
+  ImportPlaylistDialog,
+} from '../components/ImportPlaylist'
+import { useImportedPlaylists } from '../lib/importedPlaylists'
 
 function useMediaQuery(query: string) {
   const [match, setMatch] = useState(() => window.matchMedia(query).matches)
@@ -168,11 +176,13 @@ function Sidebar({
   go,
   onLogin,
   onSettings,
+  onImport,
 }: {
   view: View
   go: (v: View) => void
   onLogin: () => void
   onSettings: () => void
+  onImport: () => void
 }) {
   const { data: account } = useAccount()
   const { data } = useQuery({ queryKey: ['playlists', account?.userId], queryFn: api.playlists, enabled: !!account?.loggedIn })
@@ -194,13 +204,13 @@ function Sidebar({
           打开主屏
         </Link>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-1">
-        <div className="px-3 pb-1.5 text-xs tracking-[0.12em] text-subtle">我的音乐</div>
-        {!account?.loggedIn ? (
-          <p className="m-0 px-3 text-[13px] leading-6 text-muted">登录后显示你的歌单</p>
-        ) : (
-          <div className="-mx-1 flex min-h-0 flex-col gap-1 overflow-y-auto px-1">
-            {playlists.map((p, i) => (
+      <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-1">
+        <div className="flex flex-col gap-1">
+          <div className="px-3 pb-1.5 text-xs tracking-[0.12em] text-subtle">我的音乐</div>
+          {!account?.loggedIn ? (
+            <p className="m-0 px-3 text-[13px] leading-6 text-muted">登录后显示你的歌单</p>
+          ) : (
+            playlists.map((p, i) => (
               <NavButton
                 key={p.id}
                 icon={i === 0 ? 'heart' : undefined}
@@ -209,9 +219,14 @@ function Sidebar({
                 active={view.kind === 'playlist' && view.id === p.id}
                 onClick={() => go({ kind: 'playlist', id: p.id, name: i === 0 ? '我喜欢的音乐' : p.name })}
               />
-            ))}
-          </div>
-        )}
+            ))
+          )}
+        </div>
+        <ImportedPlaylistsNav
+          activeId={view.kind === 'playlist' ? view.id : undefined}
+          onOpen={(p) => go({ kind: 'playlist', id: p.id, name: p.name })}
+          onImport={onImport}
+        />
       </div>
       <div className="flex flex-col gap-2.5">
         <NavButton icon="sliders" label="设置" onClick={onSettings} />
@@ -435,17 +450,8 @@ function Loading() {
   )
 }
 
-function ErrorNote({ error, retry }: { error: unknown; retry?: () => void }) {
-  return (
-    <div className="flex flex-col items-center gap-3 py-12 text-sm text-muted">
-      <span>{errorText(error)}</span>
-      {retry && (
-        <button type="button" onClick={retry} className="h-10 rounded-xl bg-white/8 px-4 text-fg hover:bg-white/12">
-          重试
-        </button>
-      )}
-    </div>
-  )
+function ErrorNote({ error, retry, retrying }: { error: unknown; retry: () => void; retrying?: boolean }) {
+  return <QueryError error={new Error(errorText(error))} onRetry={retry} retrying={retrying} />
 }
 
 const quickTags = ['华语', '粤语', '欧美', '日语', '经典老歌', '合唱', '民谣', '摇滚']
@@ -477,7 +483,7 @@ function RecommendView({ go }: { go: (v: View) => void }) {
       {q.isLoading ? (
         <Loading />
       ) : q.isError ? (
-        <ErrorNote error={q.error} retry={() => q.refetch()} />
+        <ErrorNote error={q.error} retry={() => q.refetch()} retrying={q.isFetching} />
       ) : (
         <>
           <Section title={q.data?.daily ? '每日推荐' : '热门推荐'}>
@@ -510,7 +516,8 @@ function InfiniteSongs({ queryKey, fetchPage }: { queryKey: unknown[]; fetchPage
   })
   const songs = useMemo(() => q.data?.pages.flatMap((p) => p.songs) ?? [], [q.data])
   if (q.isLoading) return <Loading />
-  if (q.isError) return <ErrorNote error={q.error} retry={() => q.refetch()} />
+  // Keep already-loaded results on screen if a later refetch fails.
+  if (q.isError && !songs.length) return <ErrorNote error={q.error} retry={() => q.refetch()} retrying={q.isFetching} />
   if (!songs.length) return <EmptyNote>没有找到相关歌曲</EmptyNote>
   return (
     <div className="flex flex-col gap-4">
@@ -524,7 +531,7 @@ function InfiniteSongs({ queryKey, fetchPage }: { queryKey: unknown[]; fetchPage
           disabled={q.isFetchingNextPage}
           className="mx-auto h-11 rounded-xl bg-white/6 px-6 text-sm text-fg-2 hover:bg-white/10"
         >
-          {q.isFetchingNextPage ? '加载中…' : '加载更多'}
+          {q.isFetchingNextPage ? '加载中…' : q.isFetchNextPageError ? '加载失败，点击重试' : '加载更多'}
         </button>
       )}
     </div>
@@ -558,7 +565,7 @@ function ToplistsView({ go }: { go: (v: View) => void }) {
       {q.isLoading ? (
         <Loading />
       ) : q.isError ? (
-        <ErrorNote error={q.error} retry={() => q.refetch()} />
+        <ErrorNote error={q.error} retry={() => q.refetch()} retrying={q.isFetching} />
       ) : (
         <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-5">
           {q.data!.playlists.map((p) => (
@@ -571,15 +578,22 @@ function ToplistsView({ go }: { go: (v: View) => void }) {
 }
 
 function PlaylistView({ id, name, back }: { id: number; name: string; back: () => void }) {
+  const imported = useImportedPlaylists().some((p) => p.id === id)
   return (
     <Section
       title={name}
       action={
-        <button type="button" onClick={back} className="inline-flex h-10 items-center gap-1 text-sm text-muted hover:text-fg">
+        <button type="button" onClick={back} className="inline-flex h-10 items-center gap-1 text-sm whitespace-nowrap text-muted hover:text-fg">
           <Icon name="chevronLeft" size={16} /> 返回
         </button>
       }
     >
+      {imported && (
+        <p className="m-0 -mt-1 flex items-center gap-2 text-xs text-muted">
+          <Icon name="link" size={14} className="shrink-0" />
+          临时歌单 · {DEVICE_ONLY_NOTE}
+        </p>
+      )}
       <InfiniteSongs queryKey={['playlist', id]} fetchPage={(offset) => api.playlistTracks(id, offset, 100)} />
     </Section>
   )
@@ -591,6 +605,7 @@ export default function Desk() {
   const [view, go] = useView()
   const [loginOpen, setLoginOpen] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [importOpen, setImportOpen] = useState(false)
   const wide = useMediaQuery('(min-width: 1280px)')
   const lg = useMediaQuery('(min-width: 1024px)')
 
@@ -598,6 +613,10 @@ export default function Desk() {
   useEffect(() => {
     document.title = '点歌台 · Netease KTV'
   }, [])
+  // 试听 stops when leaving the page or switching views.
+  useEffect(() => stopPreview, [])
+  const viewKey = JSON.stringify(view)
+  useEffect(() => stopPreview(), [viewKey])
 
   const content = (
     <>
@@ -627,10 +646,22 @@ export default function Desk() {
       <div className="relative grid min-h-full grid-cols-1 lg:h-full lg:grid-cols-[232px_minmax(0,1fr)] xl:grid-cols-[232px_minmax(0,1fr)_352px]">
         {lg ? (
           <aside className="min-h-0 border-r border-white/6">
-            <Sidebar view={view} go={go} onLogin={() => setLoginOpen(true)} onSettings={() => setSettingsOpen(true)} />
+            <Sidebar
+              view={view}
+              go={go}
+              onLogin={() => setLoginOpen(true)}
+              onSettings={() => setSettingsOpen(true)}
+              onImport={() => setImportOpen(true)}
+            />
           </aside>
         ) : (
-          <MobileTopBar view={view} go={go} onLogin={() => setLoginOpen(true)} onSettings={() => setSettingsOpen(true)} />
+          <MobileTopBar
+            view={view}
+            go={go}
+            onLogin={() => setLoginOpen(true)}
+            onSettings={() => setSettingsOpen(true)}
+            onImport={() => setImportOpen(true)}
+          />
         )}
         <main className="flex min-w-0 flex-col gap-8 px-4 pt-6 pb-10 sm:px-8 lg:overflow-y-auto lg:px-10 lg:pt-7">
           {content}
@@ -648,6 +679,11 @@ export default function Desk() {
       </div>
       <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} />
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <ImportPlaylistDialog
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onImported={(p) => go({ kind: 'playlist', id: p.id, name: p.name })}
+      />
     </div>
   )
 }
@@ -657,11 +693,13 @@ function MobileTopBar({
   go,
   onLogin,
   onSettings,
+  onImport,
 }: {
   view: View
   go: (v: View) => void
   onLogin: () => void
   onSettings: () => void
+  onImport: () => void
 }) {
   const { data: account } = useAccount()
   return (
@@ -708,6 +746,11 @@ function MobileTopBar({
           手机遥控
         </Link>
       </nav>
+      <ImportedPlaylistChips
+        activeId={view.kind === 'playlist' ? view.id : undefined}
+        onOpen={(p) => go({ kind: 'playlist', id: p.id, name: p.name })}
+        onImport={onImport}
+      />
     </header>
   )
 }

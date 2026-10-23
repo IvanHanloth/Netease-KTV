@@ -113,10 +113,12 @@ export function priorityIds(): number[] {
 
 // ---------- queue operations ----------
 
+export const ANONYMOUS = '匿名'
+
 export function addToQueue(song: Song, position: QueuePosition = 'end', addedBy?: string): QueueItem {
-  const item: QueueItem = { uid: randomUUID(), song, addedAt: Date.now(), addedBy }
-  // Nothing playing, or "sing it now": replace the current song right away.
-  if (!player.current || position === 'now') {
+  const item: QueueItem = { uid: randomUUID(), song, addedAt: Date.now(), addedBy: addedBy?.trim() || ANONYMOUS }
+  // Nothing playing: start right away.
+  if (!player.current) {
     startItem(item)
     hub.emit('work')
     return item
@@ -125,17 +127,6 @@ export function addToQueue(song: Song, position: QueuePosition = 'end', addedBy?
   else queue = [...queue, item]
   emitQueue()
   return item
-}
-
-/** Skip the current song and start this queued one immediately. */
-export function playNow(uid: string): boolean {
-  const idx = queue.findIndex((q) => q.uid === uid)
-  if (idx < 0) return false
-  const [item] = queue.splice(idx, 1)
-  queue = [...queue]
-  startItem(item!)
-  emitQueue()
-  return true
 }
 
 export function moveToTop(uid: string): boolean {
@@ -171,6 +162,17 @@ export function removeFromQueue(uid: string): boolean {
 
 export function clearQueue(): void {
   queue = []
+  emitQueue()
+}
+
+/** Shuffle the whole queue (Fisher–Yates). The current song keeps playing. */
+export function shuffleQueue(): void {
+  const next = [...queue]
+  for (let i = next.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[next[i], next[j]] = [next[j]!, next[i]!]
+  }
+  queue = next
   emitQueue()
 }
 

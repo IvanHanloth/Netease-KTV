@@ -6,13 +6,15 @@ import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
 import { retry } from '../core/pipeline.js'
 import { renderPitch } from '../media/ffmpeg.js'
+import { cacheInfo, clearCache, enforceCacheLimit, touchFile, touchSong } from '../media/cache.js'
 import { pitchedPath, pitchPath, stemFile } from '../media/files.js'
+import { cachedMv, readAlignment } from '../media/mv.js'
 import { listUnblockSources } from '../media/resolve.js'
 import { NcmError } from '../ncm/client.js'
 import * as ncm from '../ncm/service.js'
 import { addScore, leaderboard, resetScores, songRanking } from '../scores.js'
 import { getSettings, updateSettings } from '../settings.js'
-import type { PlayerCommand, Stem } from '../shared/types.js'
+import type { MvInfo, PlayerCommand, Stem } from '../shared/types.js'
 import { proxy, sendFile } from './stream.js'
 
 const id = z.coerce.number().int().positive()
@@ -42,6 +44,7 @@ function fail(reply: FastifyReply, err: unknown) {
 }
 
 const mvCache = new Map<number, { url: string; at: number }>()
+const previewCache = new Map<number, { url: string; at: number }>()
 
 export async function registerRoutes(app: FastifyInstance) {
   app.setErrorHandler((err, _req, reply) => fail(reply, err))
@@ -78,6 +81,10 @@ export async function registerRoutes(app: FastifyInstance) {
   app.get('/api/recommend', async () => ncm.recommend())
   app.get('/api/playlists', async () => ({ playlists: await ncm.userPlaylists() }))
   app.get('/api/toplists', async () => ({ playlists: await ncm.toplists() }))
+  app.get('/api/playlists/resolve', async (req) => {
+    const { q } = z.object({ q: z.string().min(1).max(2000) }).parse(req.query)
+    return ncm.resolvePlaylist(q)
+  })
   app.get('/api/playlists/:id/tracks', async (req) => {
     const { id: pid } = z.object({ id }).parse(req.params)
     const q = page.extend({ limit: z.coerce.number().int().min(1).max(500).default(100) }).parse(req.query)
@@ -91,18 +98,40 @@ export async function registerRoutes(app: FastifyInstance) {
     const p = z.object({ id }).parse(req.params)
     return ncm.lyrics(p.id)
   })
-  app.get('/api/songs/:id/mv', async (req, reply) => {
+  app.get('/api/songs/:id/mv', async (req, reply): Promise<MvInfo | undefined> => {
     const p = z.object({ id }).parse(req.params)
     const song = await ncm.getSong(p.id)
     if (!song.mvId) return reply.code(404).send({ error: '这首歌没有 MV' })
-    return { mvId: song.mvId, url: `/api/mv/${song.mvId}/stream` }
+    const align = readAlignment(song.id, song.mvId)
+    return {
+      mvId: song.mvId,
+      url: `/api/mv/${song.mvId}/stream`,
+      cached: !!cachedMv(song.mvId),
+      offset: align?.offset ?? null,
+      confidence: align?.confidence ?? null,
+    }
   })
   app.get('/api/mv/:id/stream', async (req, reply) => {
     const p = z.object({ id }).parse(req.params)
+    const local = cachedMv(p.id)
+    if (local) {
+      touchFile(local)
+      return sendFile(req, reply, local)
+    }
+    const res = getSettings().mvResolution
     let cached = mvCache.get(p.id)
     if (!cached || Date.now() - cached.at > 10 * 60 * 1000) {
-      cached = { url: await ncm.mvUrl(p.id), at: Date.now() }
+      cached = { url: await ncm.mvUrl(p.id, res), at: Date.now() }
       mvCache.set(p.id, cached)
+    }
+    return proxy(req, reply, cached.url)
+  })
+  app.get('/api/songs/:id/preview', async (req, reply) => {
+    const p = z.object({ id }).parse(req.params)
+    let cached = previewCache.get(p.id)
+    if (!cached || Date.now() - cached.at > 10 * 60 * 1000) {
+      cached = { url: await ncm.previewUrl(p.id), at: Date.now() }
+      previewCache.set(p.id, cached)
     }
     return proxy(req, reply, cached.url)
   })
@@ -120,7 +149,7 @@ export async function registerRoutes(app: FastifyInstance) {
     const body = z
       .object({
         songId: id,
-        position: z.enum(['end', 'next', 'now']).default('end'),
+        position: z.enum(['end', 'next']).default('end'),
         addedBy: z.string().max(40).optional(),
       })
       .parse(req.body)
@@ -131,13 +160,13 @@ export async function registerRoutes(app: FastifyInstance) {
     }
     return player.addToQueue(song, body.position, body.addedBy)
   })
-  app.post('/api/queue/:uid/play', async (req, reply) => {
-    const { uid } = z.object({ uid: z.string() }).parse(req.params)
-    return player.playNow(uid) ? { ok: true } : reply.code(404).send({ error: '不在队列中' })
-  })
   app.post('/api/queue/:uid/top', async (req, reply) => {
     const { uid } = z.object({ uid: z.string() }).parse(req.params)
     return player.moveToTop(uid) ? { ok: true } : reply.code(404).send({ error: '不在队列中' })
+  })
+  app.post('/api/queue/shuffle', async () => {
+    player.shuffleQueue()
+    return { ok: true }
   })
   app.post('/api/queue/reorder', async (req) => {
     const { uids } = z.object({ uids: z.array(z.string()) }).parse(req.body)
@@ -171,6 +200,7 @@ export async function registerRoutes(app: FastifyInstance) {
     const { key } = z.object({ key: z.coerce.number().int().min(-6).max(6).default(0) }).parse(req.query)
     const file = stemFile(p.id, p.stem as Stem)
     if (!file) return reply.code(404).send({ error: '音频还没有准备好' })
+    touchSong(p.id)
     if (key === 0) return sendFile(req, reply, file)
     const pitched = pitchedPath(p.id, p.stem as Stem, key)
     if (!fs.existsSync(pitched)) await renderPitch(file, pitched, key)
@@ -206,6 +236,10 @@ export async function registerRoutes(app: FastifyInstance) {
     return { removed: resetScores(p.id) }
   })
 
+  // ---------- cache ----------
+  app.get('/api/cache', async () => cacheInfo())
+  app.delete('/api/cache', async () => clearCache())
+
   // ---------- settings ----------
   app.get('/api/settings', async () => ({ ...getSettings(), unblockSourceOptions: listUnblockSources() }))
   app.put('/api/settings', async (req) => {
@@ -218,9 +252,15 @@ export async function registerRoutes(app: FastifyInstance) {
         publicUrl: z.string().max(200).optional(),
         scoringEnabled: z.boolean().optional(),
         scoreTolerance: z.number().min(0.3).max(3).optional(),
+        mvPreload: z.boolean().optional(),
+        mvResolution: z.union([z.literal(480), z.literal(720), z.literal(1080)]).optional(),
+        cacheLimitGB: z.number().min(1).max(500).optional(),
       })
       .parse(req.body)
     const sources = listUnblockSources()
-    return { ...updateSettings(body, sources), unblockSourceOptions: sources }
+    const saved = updateSettings(body, sources)
+    if (body.cacheLimitGB !== undefined) enforceCacheLimit()
+    if (body.mvPreload) hub.emit('work-mv')
+    return { ...saved, unblockSourceOptions: sources }
   })
 }

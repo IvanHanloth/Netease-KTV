@@ -4,7 +4,9 @@ import { config } from '../config.js'
 import { probeDuration } from '../media/ffmpeg.js'
 import { clearMedia, download, findOriginal, hasPitch, hasStems, mediaDir, stemPath } from '../media/files.js'
 import { resolveAudio, UnavailableError } from '../media/resolve.js'
-import { getSong } from '../ncm/service.js'
+import { enforceCacheLimit } from '../media/cache.js'
+import { cachedMv, ensureAlignment, ensureMv, readAlignment } from '../media/mv.js'
+import { getCachedSong, getSong } from '../ncm/service.js'
 import { pollJob, separatorHealth, submitJob } from '../separator.js'
 import { getSettings } from '../settings.js'
 import { hub } from './hub.js'
@@ -58,6 +60,8 @@ async function downloadOne(songId: number): Promise<void> {
       }
     }
     hub.setTrack(songId, { status: 'queued', progress: 0, source: audio.source, hasStems: false })
+    enforceCacheLimit()
+    hub.emit('work-mv')
   } catch (err) {
     if (err instanceof UnavailableError) {
       hub.setTrack(songId, { status: 'unavailable', progress: 0, message: err.message })
@@ -115,6 +119,7 @@ async function separateOne(songId: number): Promise<void> {
       hasPitch: hasPitch(songId),
       message: undefined,
     })
+    enforceCacheLimit()
     if (job.status !== 'done') {
       pitchTried.add(songId)
       void waitForPitch(jobId, songId)
@@ -217,7 +222,10 @@ async function pollSeparator(): Promise<void> {
     pending,
   })
   // The separator just came (back) online: pick up queued songs and pitch backfills.
-  if (!wasOnline && health?.ok) hub.emit('work-separate')
+  if (!wasOnline && health?.ok) {
+    hub.emit('work-separate')
+    hub.emit('work-mv')
+  }
 }
 
 export function retry(songId: number): void {
@@ -226,13 +234,66 @@ export function retry(songId: number): void {
   hub.emit('work')
 }
 
+// ---------- MV preload + alignment ----------
+
+let mvBusy = false
+const mvFailedAt = new Map<number, number>()
+const alignTried = new Set<string>()
+
+/** Next piece of MV work for queued songs (in queue order): download the MV, then align it. */
+async function mvStep(): Promise<boolean> {
+  for (const id of priorityIds()) {
+    const song = getCachedSong(id)
+    if (!song?.mvId) continue
+    if (!cachedMv(song.mvId)) {
+      if (Date.now() - (mvFailedAt.get(song.mvId) ?? 0) < 10 * 60_000) continue
+      try {
+        await ensureMv(song.mvId)
+        enforceCacheLimit()
+      } catch (err) {
+        mvFailedAt.set(song.mvId, Date.now())
+        console.warn(`[mv] download ${song.mvId} failed:`, (err as Error).message)
+      }
+      return true
+    }
+    const key = `${id}:${song.mvId}`
+    if (hub.separator.online && findOriginal(id) && !alignTried.has(key) && !readAlignment(id, song.mvId)) {
+      alignTried.add(key)
+      try {
+        await ensureAlignment(song)
+      } catch (err) {
+        console.warn(`[mv] align ${id} failed:`, (err as Error).message)
+      }
+      return true
+    }
+  }
+  return false
+}
+
+async function mvLoop(): Promise<void> {
+  if (mvBusy || !getSettings().mvPreload) return
+  mvBusy = true
+  try {
+    while (getSettings().mvPreload && (await mvStep())) {
+      // keep going until every queued MV is cached and aligned
+    }
+  } finally {
+    mvBusy = false
+  }
+}
+
 export function startPipeline(): void {
   hub.on('work', () => {
     void downloadLoop()
     void separateLoop()
     void pollSeparator()
+    void mvLoop()
   })
   hub.on('work-separate', () => void separateLoop())
+  hub.on('work-mv', () => void mvLoop())
+  setTimeout(enforceCacheLimit, 10_000).unref()
+  // Safety net: pick up MV work that was skipped while the separator was still starting.
+  setInterval(() => hub.emit('work-mv'), 60_000).unref()
   void pollSeparator().then(() => hub.emit('work'))
   setInterval(() => void pollSeparator(), 5000).unref()
 }

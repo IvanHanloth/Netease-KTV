@@ -202,12 +202,15 @@ export function Dialog({
   title,
   children,
   width = 480,
+  sheet,
 }: {
   open: boolean
   onClose: () => void
   title: string
   children: ReactNode
   width?: number
+  /** On phones (< 640px) dock to the bottom edge like a sheet. */
+  sheet?: boolean
 }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
@@ -224,7 +227,11 @@ export function Dialog({
       onClick={(e) => {
         if (e.target === ref.current) onClose()
       }}
-      className="m-auto max-h-[90vh] w-[calc(100%-32px)] overflow-visible rounded-3xl border border-white/10 bg-panel p-0 text-fg shadow-[0_30px_80px_rgba(0,0,0,0.6)] backdrop:bg-black/60 backdrop:backdrop-blur-sm"
+      className={clsx(
+        'm-auto max-h-[90vh] w-[calc(100%-32px)] overflow-visible rounded-3xl border border-white/10 bg-panel p-0 text-fg shadow-[0_30px_80px_rgba(0,0,0,0.6)] backdrop:bg-black/60 backdrop:backdrop-blur-sm',
+        sheet &&
+          'max-sm:mb-0 max-sm:w-full max-sm:max-w-full! max-sm:rounded-b-none max-sm:border-b-0 max-sm:pb-[env(safe-area-inset-bottom)]',
+      )}
       style={{ maxWidth: width }}
     >
       {open && (
@@ -269,4 +276,42 @@ export function Spinner({ size = 20 }: { size?: number }) {
 
 export function EmptyNote({ children }: { children: ReactNode }) {
   return <p className="m-0 py-10 text-center text-sm text-muted">{children}</p>
+}
+
+/** Inline error state for a failed query, with a 重试 button. */
+export function QueryError({
+  error,
+  onRetry,
+  retrying,
+  compact,
+}: {
+  error: unknown
+  onRetry: () => void
+  retrying?: boolean
+  compact?: boolean
+}) {
+  const msg = error instanceof Error && error.message ? error.message : '加载失败'
+  return (
+    <div
+      role="alert"
+      className={clsx('flex flex-col items-center gap-3 text-center', compact ? 'py-6' : 'py-12')}
+    >
+      <span className="flex h-11 w-11 items-center justify-center rounded-full bg-white/6 text-accent-soft">
+        <Icon name="alert" size={20} />
+      </span>
+      <div className="flex flex-col gap-1">
+        <span className="text-[15px] font-semibold">加载失败</span>
+        <span className="max-w-[320px] text-[13px] leading-5 text-muted">{msg}</span>
+      </div>
+      <button
+        type="button"
+        onClick={onRetry}
+        disabled={retrying}
+        className="flex h-10 items-center gap-2 rounded-xl bg-white/8 px-4 text-sm font-semibold whitespace-nowrap hover:bg-white/12 disabled:opacity-60"
+      >
+        {retrying ? <Spinner size={16} /> : <Icon name="refresh" size={16} />}
+        重试
+      </button>
+    </div>
+  )
 }

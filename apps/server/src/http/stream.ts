@@ -11,6 +11,7 @@ const TYPES: Record<string, string> = {
   '.ogg': 'audio/ogg',
   '.wav': 'audio/wav',
   '.json': 'application/json; charset=utf-8',
+  '.mp4': 'video/mp4',
 }
 
 /** Send a local file with HTTP Range support. */

@@ -7,7 +7,7 @@ import { artistsText } from '../lib/format'
 import { errorText, toast } from '../lib/hooks'
 import { useApp } from '../store/app'
 import { Icon } from './icons'
-import { Cover, Dialog, EmptyNote, Spinner } from './ui'
+import { Cover, Dialog, QueryError, Spinner } from './ui'
 
 /** GET /api/scores, refetched whenever the server announces a leaderboard change. */
 export function useLeaderboard() {
@@ -159,7 +159,7 @@ function SongRow({
  * `manage` adds the reset buttons (desk only).
  */
 export function Leaderboard({ manage = false }: { manage?: boolean }) {
-  const { data, isLoading, isError } = useLeaderboard()
+  const { data, isLoading, isError, error, refetch, isFetching } = useLeaderboard()
   const qc = useQueryClient()
   const [confirm, setConfirm] = useState<{ song?: SongRanking } | null>(null)
   const reset = useMutation({
@@ -192,8 +192,8 @@ export function Leaderboard({ manage = false }: { manage?: boolean }) {
         <div className="flex justify-center py-10 text-muted">
           <Spinner />
         </div>
-      ) : isError ? (
-        <EmptyNote>排行榜加载失败</EmptyNote>
+      ) : isError && !data ? (
+        <QueryError error={error} onRetry={() => refetch()} retrying={isFetching} compact />
       ) : songs.length === 0 ? (
         <div className="flex flex-col items-center gap-3 py-12 text-center">
           <span className="flex h-14 w-14 items-center justify-center rounded-full bg-white/6 text-muted">

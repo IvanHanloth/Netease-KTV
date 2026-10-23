@@ -96,8 +96,74 @@ def extract_pitch(vocals: Path, dest: Path) -> None:
     os.replace(tmp, dest)
 
 
+ALIGN_SR = 11025
+ALIGN_HOP = 256  # ~23 ms
+
+
+def align_audio(song_wav: Path, mv_wav: Path, dest: Path) -> None:
+    """Find the MV's offset against the song: videoTime = audioTime + offset.
+
+    1. Cross-correlate z-scored onset-strength envelopes to find the lag (±120 s).
+    2. Confidence = onset correlation at that lag × chroma similarity gain over wrong lags.
+    Calibrated on real pairs: same recording → ~1.0, different songs / truncated MV → 0.
+    """
+    import librosa
+    import numpy as np
+    import scipy.signal
+
+    y1, _ = librosa.load(str(song_wav), sr=ALIGN_SR, mono=True)
+    y2, _ = librosa.load(str(mv_wav), sr=ALIGN_SR, mono=True)
+
+    def env(y):
+        e = librosa.onset.onset_strength(y=y, sr=ALIGN_SR, hop_length=ALIGN_HOP)
+        return (e - e.mean()) / (e.std() + 1e-9)
+
+    e1, e2 = env(y1), env(y2)
+    c = scipy.signal.correlate(e2, e1, mode="full", method="fft")
+    lags = np.arange(-len(e1) + 1, len(e2))
+    valid = np.abs(lags) <= int(120 * ALIGN_SR / ALIGN_HOP)
+    k = int(np.argmax(np.where(valid, c, -np.inf)))
+    lag = int(lags[k])
+    overlap = min(len(e1), len(e2) - lag) - max(0, -lag)
+    r_peak = float(c[k] / max(1, overlap))
+
+    hop_c = ALIGN_HOP * 4
+    ch1 = librosa.feature.chroma_cens(y=y1, sr=ALIGN_SR, hop_length=hop_c)
+    ch2 = librosa.feature.chroma_cens(y=y2, sr=ALIGN_SR, hop_length=hop_c)
+
+    def chroma_sim(l: int) -> float:
+        n0, n1 = max(0, -l), min(ch1.shape[1], ch2.shape[1] - l)
+        if n1 - n0 < 50:
+            return 0.0
+        a, b = ch1[:, n0:n1], ch2[:, n0 + l : n1 + l]
+        s = (a * b).sum(0) / (np.linalg.norm(a, axis=0) * np.linalg.norm(b, axis=0) + 1e-9)
+        return float(np.median(s))
+
+    lc = int(round(lag / 4))
+    gain = chroma_sim(lc) - float(np.mean([chroma_sim(lc + d) for d in (-97, -61, -37, 41, 67, 103)]))
+    overlap_s = overlap * ALIGN_HOP / ALIGN_SR
+    confidence = 0.0
+    if overlap_s >= 30:
+        confidence = float(np.clip((r_peak - 0.3) / 0.5, 0, 1) * np.clip(gain / 0.05, 0, 1))
+
+    result = {
+        "offset": round(lag * ALIGN_HOP / ALIGN_SR, 3),
+        "confidence": round(confidence, 3),
+        "r_peak": round(r_peak, 3),
+        "chroma_gain": round(gain, 3),
+        "overlap_s": round(overlap_s, 1),
+    }
+    tmp = dest.with_suffix(".part")
+    tmp.write_text(json.dumps(result))
+    os.replace(tmp, dest)
+
+
 if __name__ == "__main__" and len(sys.argv) == 4 and sys.argv[1] == "--pitch":
     extract_pitch(Path(sys.argv[2]), Path(sys.argv[3]))
+    sys.exit(0)
+
+if __name__ == "__main__" and len(sys.argv) == 5 and sys.argv[1] == "--align":
+    align_audio(Path(sys.argv[2]), Path(sys.argv[3]), Path(sys.argv[4]))
     sys.exit(0)
 
 
@@ -137,6 +203,7 @@ class Job:
     duration_ms: int
     model: str
     mode: str = "separate"
+    input2: Optional[str] = None
     status: str = "queued"  # queued | running | done | error
     stems_ready: bool = False
     progress: float = 0.0
@@ -167,8 +234,10 @@ class JobIn(BaseModel):
     output_dir: str
     duration_ms: int = 0
     model: Optional[str] = None
-    # "separate": stems + pitch; "pitch": only extract pitch from an existing vocals stem (input).
+    # "separate": stems + pitch; "pitch": only extract pitch from an existing vocals stem (input);
+    # "align": MV offset from two WAVs (input = song, input2 = MV audio).
     mode: str = "separate"
+    input2: Optional[str] = None
 
 
 jobs: dict[str, Job] = {}
@@ -259,6 +328,32 @@ def start_pitch(job: Job, vocals: Path, out_dir: Path) -> None:
     threading.Thread(target=wait, daemon=True, name=f"pitch-{job.song_id}").start()
 
 
+def start_align(job: Job, song_wav: Path, mv_wav: Path, out_dir: Path) -> None:
+    """MV alignment in a child process (CPU-bound; keeps the API and the GPU worker free)."""
+    dest = out_dir / "mv_align.json"
+
+    def wait() -> None:
+        t0 = time.time()
+        try:
+            proc = subprocess.run(
+                [sys.executable, os.path.abspath(__file__), "--align", str(song_wav), str(mv_wav), str(dest)],
+                capture_output=True,
+                text=True,
+                timeout=600,
+            )
+            if proc.returncode == 0 and dest.exists():
+                job.outputs["align"] = str(dest)
+                log.info("song %s MV aligned in %.1fs: %s", job.song_id, time.time() - t0, dest.read_text())
+                finish(job)
+            else:
+                finish(job, f"align failed: {proc.stderr[-500:]}")
+        except Exception as err:
+            log.exception("align crashed for song %s", job.song_id)
+            finish(job, str(err))
+
+    threading.Thread(target=wait, daemon=True, name=f"align-{job.song_id}").start()
+
+
 def run_job(job: Job) -> None:
     global speed_factor
     job.status = "running"
@@ -268,6 +363,9 @@ def run_job(job: Job) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         if job.mode == "pitch":
             start_pitch(job, check_path(job.input), out_dir)
+            return
+        if job.mode == "align":
+            start_align(job, check_path(job.input), check_path(job.input2 or ""), out_dir)
             return
 
         sep = get_separator(job.model)
@@ -364,6 +462,9 @@ def create_job(body: JobIn) -> dict:
     check_path(body.output_dir)
     if not Path(body.input).exists():
         raise HTTPException(404, "input file not found")
+    if body.mode == "align":
+        if not body.input2 or not check_path(body.input2).exists():
+            raise HTTPException(404, "input2 file not found")
     job = Job(
         id=uuid.uuid4().hex,
         song_id=body.song_id,
@@ -371,7 +472,8 @@ def create_job(body: JobIn) -> dict:
         output_dir=body.output_dir,
         duration_ms=body.duration_ms,
         model=body.model or DEFAULT_MODEL,
-        mode="pitch" if body.mode == "pitch" else "separate",
+        mode=body.mode if body.mode in ("pitch", "align") else "separate",
+        input2=body.input2,
     )
     jobs[job.id] = job
     pending.put(job.id)

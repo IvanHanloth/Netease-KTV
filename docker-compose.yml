@@ -20,6 +20,9 @@ services:
       UNBLOCK_SOURCES: ${UNBLOCK_SOURCES:-unm}
       SCORING_ENABLED: ${SCORING_ENABLED:-true}
       SCORE_TOLERANCE: ${SCORE_TOLERANCE:-1.0}
+      MV_PRELOAD: ${MV_PRELOAD:-true}
+      MV_RESOLUTION: ${MV_RESOLUTION:-720}
+      CACHE_LIMIT_GB: ${CACHE_LIMIT_GB:-20}
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
       - ktv-data:/data

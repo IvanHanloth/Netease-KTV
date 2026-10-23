@@ -44,19 +44,21 @@
 | GET | `/recommend` | `{ songs: Song[], daily: boolean }`。已登录返回日推，未登录返回热歌榜 |
 | GET | `/playlists` | `{ playlists: PlaylistSummary[] }`，当前账号的歌单 |
 | GET | `/toplists` | `{ playlists: PlaylistSummary[] }`，官方榜单 |
-| GET | `/playlists/:id/tracks?offset=&limit=` | `{ songs: Song[], hasMore }` |
+| GET | `/playlists/:id/tracks?offset=&limit=` | `{ songs: Song[], hasMore }`（任意公开歌单都可以） |
+| GET | `/playlists/resolve?q=` | 把粘贴的歌单链接、分享文本（含 163cn.tv 短链）或歌单 ID 解析成 `PlaylistSummary`。用于“临时导入歌单”：导入记录只存在导入设备的浏览器里，服务端不保存 |
 | GET | `/songs/:id` | `Song` |
 | GET | `/songs/:id/lyrics` | `Lyrics` |
-| GET | `/songs/:id/mv` | `{ mvId, url }`，`url` 指向 `/api/mv/:mvId/stream`；没有 MV 返回 404 |
-| GET | `/mv/:mvId/stream` | MV 视频代理（支持 Range） |
+| GET | `/songs/:id/mv` | `MvInfo`：`url` 指向 `/api/mv/:mvId/stream`；`cached` 表示已缓存到本地；`offset` / `confidence` 是 MV 与歌曲的自动对齐结果（视频时间 = 音频时间 + offset）。没有 MV 返回 404 |
+| GET | `/mv/:mvId/stream` | MV 视频（支持 Range）。已缓存时读本地文件，否则代理网易云 |
+| GET | `/songs/:id/preview` | 试听：低音质（standard）音频流，在点歌的设备本地播放，不进队列。拿不到返回 404。不走第三方音源 |
 | GET | `/img?u=<网易云图片地址>&s=<尺寸>` | 封面代理（同源，方便取色），只允许 `*.music.126.net` |
 
 ## 点歌队列
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| POST | `/queue` | `{ songId, position?: 'end' \| 'next' \| 'now' }` → `QueueItem`。`now` 表示立即切到这首（当前歌不再回到队列）。没有正在播放的歌时直接开始播放。会员歌返回 409 |
-| POST | `/queue/:uid/play` | 立即播放队列中的这首（切歌） |
+| POST | `/queue` | `{ songId, position?: 'end' \| 'next', addedBy? }` → `QueueItem`。`next` 为插播。`addedBy` 为空时记为“匿名”（点歌台固定为匿名，只有手机端可设昵称）。没有正在播放的歌时直接开始播放。会员歌返回 409 |
+| POST | `/queue/shuffle` | 随机打乱整个队列（当前歌不受影响） |
 | POST | `/queue/:uid/top` | 置顶（移到下一首） |
 | POST | `/queue/reorder` | `{ uids: string[] }`，按给定顺序重排（拖拽排序用） |
 | DELETE | `/queue/:uid` | 删除 |
@@ -93,4 +95,6 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/settings` | `Settings` 加 `unblockSourceOptions: string[]` |
-| PUT | `/settings` | 部分更新 `Settings` |
+| PUT | `/settings` | 部分更新 `Settings`（含 `mvPreload`、`mvResolution` 480/720/1080、`cacheLimitGB` 1–500） |
+| GET | `/cache` | `CacheInfo`：缓存占用 |
+| DELETE | `/cache` | 清空缓存（正在唱和已点的歌除外） |

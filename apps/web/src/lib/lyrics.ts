@@ -15,6 +15,34 @@ export function currentLineIndex(lines: LyricLine[], ms: number): number {
   return ans
 }
 
+/** A gap at least this long between two sung lines (or before the first line) is an intro / interlude. */
+export const INTERLUDE_MIN_GAP_MS = 8000
+/** The countdown runs over the last 5 s of an interlude: one dot per second. */
+export const COUNTDOWN_DOTS = 5
+
+/** When the previous line is actually done being sung (end of its last word). */
+function lineEnd(line: LyricLine): number {
+  const last = line.words.at(-1)
+  return last ? last.t + last.d : line.t + line.d
+}
+
+/**
+ * Countdown before the line that follows a long gap: which line is about to start and how many
+ * dots (5..1) are left. Dots drop one per second and the last one disappears exactly when the
+ * line starts. null when there is no countdown right now.
+ */
+export function interludeCountdown(lines: LyricLine[], ms: number): { index: number; dots: number } | null {
+  const idx = currentLineIndex(lines, ms)
+  const index = idx + 1
+  const next = lines[index]
+  if (!next) return null
+  const prevEnd = idx >= 0 ? lineEnd(lines[idx]!) : 0
+  if (next.t - prevEnd < INTERLUDE_MIN_GAP_MS) return null
+  const left = next.t - ms
+  if (left <= 0 || left > COUNTDOWN_DOTS * 1000) return null
+  return { index, dots: Math.ceil(left / 1000) }
+}
+
 /** Fill percentage (0..100) for each word of a line at time `ms`. */
 export function wordFills(line: LyricLine, ms: number): number[] {
   if (!line.words.length) {
