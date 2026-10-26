@@ -28,15 +28,19 @@ import { Range, Spinner } from '../components/ui'
 
 type Mode = 'vocals' | 'original' | 'instrumental' | 'off'
 
-const MODES: { id: Mode; label: string; icon: IconName; note: string }[] = [
-  { id: 'vocals', label: '人声', icon: 'mic', note: '只有主唱' },
-  { id: 'original', label: '原唱', icon: 'headphones', note: '完整原曲' },
-  { id: 'instrumental', label: '伴奏', icon: 'wave', note: '去掉主唱' },
-  { id: 'off', label: '仅提词', icon: 'lyrics', note: '不出声' },
+/** 人声 and 伴奏 are picked independently: both = 原唱, neither = 仅提词. */
+const PARTS: { id: 'vocals' | 'backing'; label: string; icon: IconName }[] = [
+  { id: 'vocals', label: '人声', icon: 'mic' },
+  { id: 'backing', label: '伴奏', icon: 'wave' },
 ]
 
+function modeOf(p: Pick<Prefs, 'vocals' | 'backing'>): Mode {
+  return p.vocals && p.backing ? 'original' : p.vocals ? 'vocals' : p.backing ? 'instrumental' : 'off'
+}
+
 interface Prefs {
-  mode: Mode
+  vocals: boolean
+  backing: boolean
   volume: number
   /** + = the phone plays later than the TV, − = earlier (ms). */
   delayMs: number
@@ -45,12 +49,17 @@ interface Prefs {
 }
 
 const PREFS_KEY = 'ktv.ear'
-const DEFAULT_PREFS: Prefs = { mode: 'vocals', volume: 0.9, delayMs: 0, font: 1, collapsed: false }
+const DEFAULT_PREFS: Prefs = { vocals: true, backing: false, volume: 0.9, delayMs: 0, font: 1, collapsed: false }
 const DELAY_LIMIT = 600
 
 function readPrefs(): Prefs {
   try {
-    const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') as Partial<Prefs>
+    const { mode, ...p } = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}') as Partial<Prefs> & { mode?: Mode }
+    // Saved before 人声 / 伴奏 became two switches: a single mode.
+    if (mode && p.vocals === undefined && p.backing === undefined) {
+      p.vocals = mode === 'vocals' || mode === 'original'
+      p.backing = mode === 'instrumental' || mode === 'original'
+    }
     return { ...DEFAULT_PREFS, ...p }
   } catch {
     return DEFAULT_PREFS
@@ -137,8 +146,10 @@ export default function Ear() {
   }
 
   // what to play
-  const wantMode: Mode = prefs.mode === 'vocals' && !hasStems ? 'original' : prefs.mode
-  const fellBack = prefs.mode === 'vocals' && !hasStems && ready
+  // Without separated stems only the original exists.
+  const mode = modeOf(prefs)
+  const fellBack = (mode === 'vocals' || mode === 'instrumental') && !hasStems
+  const wantMode: Mode = fellBack ? 'original' : mode
   const key = useDebounced(player.key, 500)
   const url = started && cur && ready && wantMode !== 'off' ? mediaUrl(cur.song.id, wantMode, key) : ''
 
@@ -326,8 +337,10 @@ export default function Ear() {
 
       <Prompter songId={cur?.song.id ?? null} uid={cur?.uid ?? null} syncRef={syncRef} font={prefs.font} />
 
-      {fellBack && (
-        <p className="relative m-0 px-5 pb-2 text-center text-xs text-warn">这首歌没有分离出人声，正在播放原唱</p>
+      {fellBack && ready && (
+        <p className="relative m-0 px-5 pb-2 text-center text-xs text-warn">
+          这首歌没有分离{mode === 'vocals' ? '人声' : '伴奏'}，正在播放原唱
+        </p>
       )}
       {loadError && wantMode !== 'off' && (
         <div className="relative flex items-center justify-center gap-3 px-5 pb-2 text-xs text-warn">
@@ -592,10 +605,10 @@ function Prompter({
     <div className="relative flex min-h-0 flex-1 flex-col items-center justify-center gap-[2.2vh] overflow-hidden px-5 text-center">
       {prev && <PlainLine line={prev} className="text-faint" size={scale(17)} />}
       {cur ? (
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex w-full flex-col items-center gap-2">
           <p
             key={idx}
-            className="m-0 leading-[1.3] font-black tracking-[0.01em] break-words"
+            className="m-0 w-full leading-[1.3] font-black tracking-[0.01em] wrap-anywhere"
             style={{ fontSize: scale(32) }}
           >
             {lineWords(cur).map((w, k) => (
@@ -611,7 +624,7 @@ function Prompter({
             ))}
           </p>
           {cur.translation && (
-            <p className="m-0 text-muted" style={{ fontSize: scale(15) }}>
+            <p className="m-0 w-full text-muted wrap-anywhere" style={{ fontSize: scale(15) }}>
               {cur.translation}
             </p>
           )}
@@ -622,7 +635,7 @@ function Prompter({
         </p>
       )}
       {next && (
-        <div className="flex flex-col items-center gap-2">
+        <div className="flex w-full flex-col items-center gap-2">
           {dots && dots.index === idx + 1 && <Dots n={dots.dots} total={dots.total} />}
           <PlainLine line={next} className="font-semibold text-fg-2" size={scale(22)} />
         </div>
@@ -634,7 +647,7 @@ function Prompter({
 
 function PlainLine({ line, className, size }: { line: LyricLine; className?: string; size: string }) {
   return (
-    <p className={clsx('m-0 leading-[1.35] break-words', className)} style={{ fontSize: size }}>
+    <p className={clsx('m-0 w-full leading-[1.35] wrap-anywhere', className)} style={{ fontSize: size }}>
       {line.text}
     </p>
   )
@@ -664,6 +677,7 @@ function Controls({
   setPrefs: (p: Partial<Prefs>) => void
   onCalibrate: () => void
 }) {
+  const silent = modeOf(prefs) === 'off'
   const delay = prefs.delayMs
   const setDelay = (v: number) => setPrefs({ delayMs: Math.max(-DELAY_LIMIT, Math.min(DELAY_LIMIT, Math.round(v))) })
   const delayText = delay === 0 ? '与主屏同步' : delay > 0 ? `延后 ${delay} ms` : `提前 ${-delay} ms`
@@ -748,23 +762,23 @@ function Controls({
         <span className={clsx('h-1.5 w-11 rounded-full transition-colors', dragH !== null ? 'bg-white/45' : 'bg-white/22')} />
       </div>
 
-      <div role="radiogroup" aria-label="耳返内容" className="grid grid-cols-4 gap-1.5">
-        {MODES.map((m) => {
-          const on = prefs.mode === m.id
+      <div role="group" aria-label="耳返内容（可多选）" className="grid grid-cols-2 gap-1.5">
+        {PARTS.map((m) => {
+          const on = prefs[m.id]
           return (
             <button
               key={m.id}
               type="button"
-              role="radio"
-              aria-checked={on}
-              onClick={() => setPrefs({ mode: m.id })}
+              aria-pressed={on}
+              onClick={() => setPrefs({ [m.id]: !on })}
               className={clsx(
-                'flex h-14 flex-col items-center justify-center gap-0.5 rounded-2xl text-[13px] transition-colors',
+                'flex h-12 items-center justify-center gap-2 rounded-2xl text-[15px] transition-colors',
                 on ? 'bg-fg font-semibold text-ink' : 'bg-white/5 text-fg-2',
               )}
             >
               <Icon name={m.icon} size={18} />
               {m.label}
+              <Icon name="check" size={16} className={clsx('-mr-1', !on && 'invisible')} />
             </button>
           )
         })}
@@ -777,7 +791,7 @@ function Controls({
         inert={!open}
       >
         <div ref={bodyRef} className="flex flex-col gap-4 pt-4">
-          <div className={clsx('flex items-center gap-3', prefs.mode === 'off' && 'opacity-40')} inert={prefs.mode === 'off'}>
+          <div className={clsx('flex items-center gap-3', silent && 'opacity-40')} inert={silent}>
             <Icon name="volume" size={18} className="shrink-0 text-muted" />
             <div className="flex-1">
               <Range label="耳返音量" value={Math.round(prefs.volume * 100)} onChange={(v) => setPrefs({ volume: v / 100 })} />
@@ -785,7 +799,7 @@ function Controls({
             <span className="num w-10 text-right text-sm text-fg-2">{Math.round(prefs.volume * 100)}%</span>
           </div>
 
-          <div className={clsx('flex flex-col gap-2', prefs.mode === 'off' && 'opacity-40')} inert={prefs.mode === 'off'}>
+          <div className={clsx('flex flex-col gap-2', silent && 'opacity-40')} inert={silent}>
             <div className="flex items-center justify-between">
               <span className="text-sm text-fg-2">延迟</span>
               <span className={clsx('num text-sm font-semibold', delay === 0 ? 'text-muted' : 'text-accent')}>{delayText}</span>
