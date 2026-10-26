@@ -90,7 +90,10 @@ async function downloadOne(songId: number): Promise<void> {
   try {
     const song = await getSong(songId)
     const source = await busySong(songId, fetchOriginal(song, (p) => hub.setTrack(songId, { progress: p }, false)))
-    hub.setTrack(songId, { status: 'queued', progress: 0, source, hasStems: false })
+    // Removed from the queue while downloading: nothing waits for it, it goes back to idle
+    // (the original stays cached and is picked up again if the song is requested).
+    if (priorityIds().includes(songId)) hub.setTrack(songId, { status: 'queued', progress: 0, source, hasStems: false })
+    else hub.setTrack(songId, { status: 'idle', progress: 0, message: undefined, source: undefined })
     void enforceCacheLimit()
     hub.emit('work-mv')
   } catch (err) {
@@ -221,6 +224,7 @@ async function pitchOne(songId: number): Promise<void> {
  * Re-run whenever something changes: a download finishes, a job ends, a node comes online.
  */
 function separateLoop(): void {
+  releaseUnqueued()
   for (;;) {
     const id = nextWith('queued')
     if (id === undefined) {
@@ -299,6 +303,21 @@ export function retry(songId: number): void {
   forgetSong(songId)
   hub.setTrack(songId, { status: 'idle', progress: 0, hasStems: false, hasPitch: false, message: undefined, source: undefined })
   hub.emit('work')
+}
+
+/**
+ * Songs that left the queue while still waiting for a separator go back to idle, so they show as
+ * not processed instead of 排队中 forever. Their original stays cached; reconcile() marks them
+ * queued again if they are requested. Separations already running are left to finish.
+ */
+function releaseUnqueued(): void {
+  const wanted = new Set(priorityIds())
+  for (const t of [...hub.tracks.values()]) {
+    if (t.status === 'queued' && !wanted.has(t.songId)) {
+      attempts.delete(t.songId)
+      hub.setTrack(t.songId, { status: 'idle', progress: 0, message: undefined, source: undefined })
+    }
+  }
 }
 
 /**
