@@ -23,17 +23,26 @@ export function SongActions({ song, compact, touch }: { song: Song; compact?: bo
   const st = statusOf(song)
   const addPending = useIsPending(enqueueKey(song.id, 'end'))
   const nextPending = useIsPending(enqueueKey(song.id, 'next'))
-  if (st.isCurrent)
-    return (
-      <span className={clsx('inline-flex shrink-0 items-center gap-2 rounded-[10px] bg-[rgba(255,77,126,0.12)] px-3.5 text-sm font-semibold whitespace-nowrap text-accent-soft', h)}>
-        <Eq />
-        演唱中
-      </span>
-    )
+  // The song on the TV can be requested again; a "演唱中" mark takes the 试听 button's place
+  // (previewing what is already playing is pointless), so the row keeps its width.
+  const lead = st.isCurrent ? (
+    <span
+      title="演唱中"
+      aria-label="演唱中"
+      className={clsx(
+        'inline-flex shrink-0 items-center justify-center rounded-[10px] bg-[rgba(255,77,126,0.12)]',
+        touch ? 'h-10 w-10' : 'h-9 w-9',
+      )}
+    >
+      <Eq />
+    </span>
+  ) : (
+    <PreviewButton song={song} size={touch ? 40 : undefined} />
+  )
   if (st.inQueue)
     return (
       <div className={clsx('flex shrink-0 items-center', touch ? 'gap-2' : 'gap-1.5')}>
-        <PreviewButton song={song} size={touch ? 40 : undefined} />
+        {lead}
         <span className={clsx('inline-flex items-center rounded-[10px] bg-white/6 px-3.5 text-sm whitespace-nowrap text-muted', h)}>已点</span>
       </div>
     )
@@ -53,7 +62,7 @@ export function SongActions({ song, compact, touch }: { song: Song; compact?: bo
     )
   return (
     <div className={clsx('flex shrink-0 items-center', touch ? 'gap-2' : 'gap-1.5')}>
-      <PreviewButton song={song} size={touch ? 40 : undefined} />
+      {lead}
       <IconButton
         icon="top"
         label={`插播 ${song.name}`}
@@ -182,7 +191,7 @@ export function RecCard({ song }: { song: Song }) {
   const enqueue = useEnqueue()
   const statusOf = useStatusOf()
   const st = statusOf(song)
-  const disabled = st.kind === 'vip' || st.inQueue || st.isCurrent
+  const disabled = st.kind === 'vip' || st.inQueue
   const nextPending = useIsPending(enqueueKey(song.id, 'next'))
   const addPending = useIsPending(enqueueKey(song.id, 'end'))
   const reveal =
@@ -206,7 +215,12 @@ export function RecCard({ song }: { song: Song }) {
             <PreviewButton song={song} variant="overlay" />
           </div>
         )}
-        {(st.inQueue || st.isCurrent) && (
+        {st.isCurrent && !st.inQueue && (
+          <span className="absolute top-2.5 right-2.5 inline-flex h-[22px] items-center gap-1.5 rounded-md bg-ink/60 px-2 text-xs text-fg-2">
+            <Eq /> 演唱中
+          </span>
+        )}
+        {st.inQueue && (
           <span className="absolute right-2.5 bottom-2.5 inline-flex h-7 items-center gap-1.5 rounded-full bg-ink/70 px-2.5 text-xs text-fg-2">
             {st.isCurrent ? <Eq /> : <Icon name="check" size={13} />}
             {st.isCurrent ? '演唱中' : '已点'}
@@ -214,7 +228,7 @@ export function RecCard({ song }: { song: Song }) {
         )}
         {!disabled && (
           <div className={clsx('absolute right-2.5 bottom-2.5 flex items-center gap-1.5', reveal)}>
-            <PreviewButton song={song} variant="overlay" />
+            {!st.isCurrent && <PreviewButton song={song} variant="overlay" />}
             <button
               type="button"
               onClick={() => enqueue(song, 'next')}
