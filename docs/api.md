@@ -24,11 +24,12 @@
   - 大屏点“开始”或“设为主屏”时发 `{type:'claim', displayMode}`，成为主屏。它当时的 舞台 / MV 模式成为同步的模式，点歌台和手机遥控显示、控制的都是主屏。
   - 其他大屏继续显示：歌词、进度和 MV 按主屏的 `sync` 上报同步（和移动耳返用同一套时钟）。右下角有“设为主屏”按钮。
   - `multiScreenSync`（多大屏协同）开启时，所有大屏都用同步的 舞台 / MV 模式；关闭时，主屏以外的大屏各自切换，只影响自己。
-  - `multiScreenAudio`（多大屏播放）开启时，主屏以外的大屏可以取消静音，按主屏的上报对齐起播，偏差超过 35ms 时重新对齐；开启时不会自动取消静音，关闭时主屏以外的大屏全部静音。
-  - 只有主屏会收到 play/pause/seek/restart 指令，它的 `report` / `ended` 才会被采纳；打分和待机音乐也只在主屏上。
+  - `multiScreenAudio`（多大屏播放）开启时，主屏以外的大屏可以取消静音，按主屏的上报对齐起播，偏差超过 35ms 时重新对齐；开启时不会自动取消静音，关闭时主屏以外的大屏全部静音。取消静音后，这块大屏还有自己的音量（只存在这台设备上，歌曲和待机音乐都按它缩放）。
+  - 只有主屏会收到 play/pause/seek/restart 指令，它的 `report` / `ended` 才会被采纳；打分只在主屏上。
+  - 待机音乐由主屏选歌播放，并像歌曲一样每秒上报 `{type:'idleReport', songId, position, playing, at}`；服务端转成 `{type:'idle', idle: IdleSync}` 推给其他大屏（大屏连上时先收到最近一次）。其他大屏显示同一首待机音乐，取消静音后按同样的规则对齐播放。换主屏时待机音乐停在原处，新主屏从那里继续。
   - 主屏断开时，主屏交给最近打开的另一块大屏。
   - 主屏加载歌曲时，从服务端记录的位置继续，并保持原来的播放/暂停状态；只有新切到的歌从 0 开始。
-- 其他端（desk、remote、ear）发 `command`。服务端处理音量、升降调、原唱/伴奏、切歌，然后广播 `player`。play / pause / seek / restart 会转发给主屏执行，主屏执行后的上报再更新状态。
+- 其他端（desk、remote、ear）发 `command`。服务端处理音量（`musicVolume` 伴奏、`idleVolume` 待机音乐，都是 0–1）、升降调、原唱/伴奏、切歌，然后广播 `player`。play / pause / seek / restart 会转发给主屏执行，主屏执行后的上报再更新状态。
 - `player.epoch` 变化表示需要从头重新加载当前歌曲。
 
 ## 账号
@@ -108,7 +109,7 @@
 |---|---|---|
 | GET | `/settings` | `Settings` 加 `unblockSourceOptions: string[]` |
 | PUT | `/settings` | 点歌台能改的设置（`DeskSettings`）：`scoringEnabled`、`scoreTolerance`、`multiScreenSync`（多大屏协同）、`multiScreenAudio`（多大屏播放）。其他字段会被忽略 |
-| GET | `/idle` | `IdleMusic`：待机音乐是否开启、音量比例和歌曲列表 |
+| GET | `/idle` | `IdleMusic`：待机音乐是否开启和歌曲列表（音量是 `player.idleVolume`，用 `set` 指令实时调） |
 | POST | `/idle/:id/prepare` | 确保待机音乐里的这首歌已下载到本地（不在列表里返回 404）。之后用 `/media/:id/original` 播放 |
 
 设置变化时（点歌台或后台管理），WebSocket 推送 `{ type: 'settings' }`。
@@ -120,7 +121,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/admin/status` | `AdminStatus`：版本、运行时长、分离集群概况（在线 / 工作中的服务器数、待处理歌曲数）、各页面在线数、是否启用令牌 |
-| PUT | `/admin/settings` | 部分更新运维设置（`AdminSettings`）：`audioLevel`、`separatorModel`、`publicUrl`、`mvPreload`、`mvResolution` 480/720/1080、`cacheLimitGB` 1–500、`unblockEnabled`、`unblockSources`、`idleEnabled`、`idleVolume` 0–1、`idleSongs` |
+| PUT | `/admin/settings` | 部分更新运维设置（`AdminSettings`）：`audioLevel`、`separatorModel`、`publicUrl`、`mvPreload`、`mvResolution` 480/720/1080、`cacheLimitGB` 1–500、`unblockEnabled`、`unblockSources`、`idleEnabled`、`idleSongs` |
 | GET | `/admin/separators` | `{ nodes: SeparatorNodeView[] }`：每台分离服务器的状态、设备、速度、正在做的任务、完成 / 失败数 |
 | POST | `/admin/separators` | 添加：`{ name, url, token?, enabled?, model? }` |
 | PUT | `/admin/separators/:id` | 修改，字段同上。`token` 省略表示不变，空字符串表示移除 |

@@ -3,6 +3,7 @@ import type {
   AppState,
   ClientMessage,
   ClientRole,
+  IdleSync,
   PlaybackSync,
   PlayerCommand,
   PlayerState,
@@ -25,6 +26,7 @@ const defaultPlayer: PlayerState = {
   displayMode: 'stage',
   leadVocal: false,
   epoch: 0,
+  idleVolume: 0.4,
 }
 
 export const emptyState: AppState = {
@@ -50,6 +52,8 @@ interface Store {
   settingsVersion: number
   /** 耳返 only: the TV's latest position report. */
   sync: PlaybackSync | null
+  /** TV pages: the 主屏's 待机音乐 (what the other 大屏 show and follow). */
+  idleSync: IdleSync | null
   apply: (msg: ServerMessage) => void
   setConnected: (v: boolean) => void
 }
@@ -62,6 +66,7 @@ export const useApp = create<Store>((set) => ({
   scoresVersion: 0,
   historyVersion: 0,
   sync: null,
+  idleSync: null,
   settingsVersion: 0,
   setConnected: (connected) => set({ connected }),
   apply: (msg) =>
@@ -88,6 +93,8 @@ export const useApp = create<Store>((set) => ({
           return { historyVersion: s.historyVersion + 1 }
         case 'sync':
           return { sync: msg.sync }
+        case 'idle':
+          return { idleSync: msg.idle }
         case 'settings':
           return { settingsVersion: s.settingsVersion + 1 }
         default:

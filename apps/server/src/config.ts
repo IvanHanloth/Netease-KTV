@@ -45,7 +45,6 @@ export const config = {
     multiScreenSync: false,
     multiScreenAudio: false,
     idleEnabled: bool(process.env.IDLE_MUSIC, true),
-    idleVolume: 0.5,
     // Tony Anderson – 1993
     idleSongs: [2755842309],
   },

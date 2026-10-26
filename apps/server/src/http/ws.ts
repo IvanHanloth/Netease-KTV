@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify'
 import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
 import { serverNow } from '../clock.js'
-import type { ClientMessage, ClientRole, PlaybackSync, ServerMessage } from '../shared/types.js'
+import type { ClientMessage, ClientRole, IdleSync, PlaybackSync, ServerMessage } from '../shared/types.js'
 import { clientMessageSchema, commandSchema } from './schemas.js'
 
 /**
@@ -32,6 +32,14 @@ function announceRoles(): void {
   for (const tv of tvs) tv.send({ type: 'tvRole', active: tv.id === activeTv })
 }
 
+/** Another 大屏 became the 主屏 (or the 主屏 left): its 待机音乐 holds where it was. */
+function mainChanged(): void {
+  player.freezeIdle()
+  // Every TV hears where it stopped, the new 主屏 included (it continues from there).
+  const idle = player.latestIdle()
+  for (const tv of tvs) tv.send({ type: 'idle', idle })
+}
+
 function syncTvCount(): void {
   hub.tvClients = tvs.length
   hub.broadcast({ type: 'tv', online: hub.tvOnline })
@@ -39,7 +47,10 @@ function syncTvCount(): void {
 
 function addTv(tv: TvConn): void {
   if (!tvs.includes(tv)) tvs.push(tv)
-  if (activeTv === null) activeTv = tv.id
+  if (activeTv === null) {
+    activeTv = tv.id
+    mainChanged()
+  }
   syncTvCount()
   announceRoles()
 }
@@ -49,7 +60,10 @@ function removeTv(tv: TvConn): void {
   if (idx < 0) return
   tvs.splice(idx, 1)
   // Hand audio to the most recently opened remaining TV (it still needs a click to start).
-  if (activeTv === tv.id) activeTv = tvs.at(-1)?.id ?? null
+  if (activeTv === tv.id) {
+    activeTv = tvs.at(-1)?.id ?? null
+    mainChanged()
+  }
   syncTvCount()
   announceRoles()
   // The sound screen is gone: the song pauses where it was instead of "playing" on unheard.
@@ -62,6 +76,7 @@ function claim(tv: TvConn): void {
     return
   }
   activeTv = tv.id
+  mainChanged()
   announceRoles()
 }
 
@@ -83,6 +98,11 @@ export async function registerWs(app: FastifyInstance) {
       if (role === 'ear' || (role === 'tv' && activeTv !== tv.id)) send({ type: 'sync', sync })
     }
     hub.on('sync', onSync)
+    // The 主屏's 待机音乐, for the other 大屏.
+    const onIdle = (idle: IdleSync | null) => {
+      if (role === 'tv' && activeTv !== tv.id) send({ type: 'idle', idle })
+    }
+    hub.on('idle', onIdle)
 
     const onMessage = (msg: ServerMessage) => {
       // Playback commands are executed by the active TV only.
@@ -113,6 +133,7 @@ export async function registerWs(app: FastifyInstance) {
             const sync = player.latestSync()
             if (sync) send({ type: 'sync', sync })
           }
+          if (role === 'tv') send({ type: 'idle', idle: player.latestIdle() })
           break
         case 'ping':
           send({ type: 'pong', id: msg.id, t: serverNow() })
@@ -135,6 +156,9 @@ export async function registerWs(app: FastifyInstance) {
         case 'ended':
           if (isActiveTv()) player.ended()
           break
+        case 'idleReport':
+          if (isActiveTv()) player.idleReport(msg.songId, msg.position, msg.playing, msg.at)
+          break
       }
     })
 
@@ -156,6 +180,7 @@ export async function registerWs(app: FastifyInstance) {
       clearInterval(ping)
       hub.off('message', onMessage)
       hub.off('sync', onSync)
+      hub.off('idle', onIdle)
       roles.delete(key)
       if (role === 'tv') removeTv(tv)
     })

@@ -30,6 +30,39 @@ export function useMediaQuery(query: string) {
   return match
 }
 
+type FsDocument = Document & { webkitFullscreenElement?: Element | null; webkitExitFullscreen?: () => void }
+type FsElement = HTMLElement & { webkitRequestFullscreen?: () => void }
+
+/** 全屏: the whole page fills the screen (handy on a 点歌台 tablet / kiosk). */
+export function useFullscreen() {
+  const doc = document as FsDocument
+  const current = () => !!(doc.fullscreenElement ?? doc.webkitFullscreenElement)
+  const [on, setOn] = useState(current)
+  useEffect(() => {
+    const update = () => setOn(current())
+    document.addEventListener('fullscreenchange', update)
+    document.addEventListener('webkitfullscreenchange', update)
+    return () => {
+      document.removeEventListener('fullscreenchange', update)
+      document.removeEventListener('webkitfullscreenchange', update)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+  const el = document.documentElement as FsElement
+  // iPhone Safari has no page fullscreen at all: the button is hidden there.
+  const supported = !!(el.requestFullscreen || el.webkitRequestFullscreen)
+  const toggle = () => {
+    if (current()) {
+      if (doc.exitFullscreen) void doc.exitFullscreen().catch(() => {})
+      else doc.webkitExitFullscreen?.()
+      return
+    }
+    if (el.requestFullscreen) void el.requestFullscreen().catch(() => toast('浏览器不允许全屏', 'error'))
+    else el.webkitRequestFullscreen?.()
+  }
+  return { on, supported, toggle }
+}
+
 export type View =
   | { kind: 'recommend' }
   | { kind: 'search'; q: string }
@@ -220,6 +253,7 @@ export function Sidebar({
   onImport: () => void
 }) {
   const { loggedIn, playlists } = useMyPlaylists()
+  const fullscreen = useFullscreen()
   return (
     <nav aria-label="主导航" className="flex h-full flex-col gap-7 px-4 py-7">
       <Brand />
@@ -262,6 +296,9 @@ export function Sidebar({
         />
       </div>
       <div className="flex flex-col gap-2.5">
+        {fullscreen.supported && (
+          <NavButton icon={fullscreen.on ? 'shrink' : 'expand'} label={fullscreen.on ? '退出全屏' : '全屏'} onClick={fullscreen.toggle} />
+        )}
         <NavButton icon="sliders" label="设置" onClick={onSettings} />
         <AccountCard onLogin={onLogin} />
       </div>
@@ -285,13 +322,14 @@ export function MobileTopBar({
   const { data: account } = useAccount()
   const { loggedIn, playlists } = useMyPlaylists()
   const logout = useLogout()
+  const fullscreen = useFullscreen()
   return (
     <header className="flex flex-col gap-4 border-b border-white/6 px-4 pt-5 pb-3 sm:px-8">
       <div className="flex items-center justify-between gap-3">
         <Brand />
         <div className="flex items-center gap-2">
           {!account?.loggedIn ? (
-            <button type="button" onClick={onLogin} className="h-10 rounded-xl bg-accent px-3.5 text-sm font-bold text-accent-ink">
+            <button type="button" onClick={onLogin} className="h-10 shrink-0 rounded-xl bg-accent px-3.5 text-sm font-bold whitespace-nowrap text-accent-ink">
               登录
             </button>
           ) : (
@@ -310,6 +348,18 @@ export function MobileTopBar({
             </button>
           )}
           {logout.dialog}
+          {fullscreen.supported && (
+            <button
+              type="button"
+              onClick={fullscreen.toggle}
+              aria-label={fullscreen.on ? '退出全屏' : '全屏'}
+              title={fullscreen.on ? '退出全屏' : '全屏'}
+              // The narrowest phones have no room for it next to 登录 and 设置.
+              className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-fg-2 min-[400px]:flex"
+            >
+              <Icon name={fullscreen.on ? 'shrink' : 'expand'} size={18} />
+            </button>
+          )}
           <button
             type="button"
             onClick={onSettings}

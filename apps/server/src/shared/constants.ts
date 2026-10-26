@@ -24,7 +24,6 @@ export const KEY_MAX = 6
 export const SETTING_LIMITS = {
   cacheLimitGB: { min: 1, max: 500 },
   scoreTolerance: { min: 0.3, max: 3 },
-  idleVolume: { min: 0, max: 1 },
   idleSongs: { max: 100 },
 } as const
 

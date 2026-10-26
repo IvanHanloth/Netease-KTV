@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { create } from 'zustand'
-import type { QueuePosition, Song } from '@shared/types'
-import { useApp } from '../store/app'
+import type { PlayerCommand, QueuePosition, Song } from '@shared/types'
+import { sendCommand, useApp } from '../store/app'
 import { api, ApiError, getToken, isRetryable } from './api'
 import { setPreviewErrorHandler, stopPreviewFor } from './preview'
 import { currentNickname } from './nickname'
@@ -15,6 +15,34 @@ export function useDebounced<T>(value: T, ms = 250) {
     return () => clearTimeout(t)
   }, [value, ms])
   return v
+}
+
+/**
+ * A slider bound to a live player value: shows the local value while dragging and streams
+ * throttled `set` commands; falls back to the shared value shortly after the last change.
+ */
+export function useLiveValue(remote: number, toCommand: (v: number) => PlayerCommand, send: (c: PlayerCommand) => unknown = sendCommand) {
+  const [local, setLocal] = useState<number | null>(null)
+  const last = useRef(0)
+  const timer = useRef<number | undefined>(undefined)
+  const idle = useRef<number | undefined>(undefined)
+  const change = (v: number) => {
+    setLocal(v)
+    const now = Date.now()
+    clearTimeout(timer.current)
+    if (now - last.current > 120) {
+      last.current = now
+      send(toCommand(v))
+    } else {
+      timer.current = window.setTimeout(() => {
+        last.current = Date.now()
+        send(toCommand(v))
+      }, 120)
+    }
+    clearTimeout(idle.current)
+    idle.current = window.setTimeout(() => setLocal(null), 800)
+  }
+  return [local ?? remote, change] as const
 }
 
 /** Returns a function that derives the display status of any song from live state. */

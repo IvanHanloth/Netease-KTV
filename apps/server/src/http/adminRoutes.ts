@@ -93,7 +93,6 @@ export async function adminRoutes(app: FastifyInstance) {
         mvResolution: z.union(MV_RESOLUTIONS.map((r) => z.literal(r)) as [z.ZodLiteral<480>, z.ZodLiteral<720>, z.ZodLiteral<1080>]).optional(),
         cacheLimitGB: z.number().min(SETTING_LIMITS.cacheLimitGB.min).max(SETTING_LIMITS.cacheLimitGB.max).optional(),
         idleEnabled: z.boolean().optional(),
-        idleVolume: z.number().min(SETTING_LIMITS.idleVolume.min).max(SETTING_LIMITS.idleVolume.max).optional(),
         idleSongs: z.array(z.number().int().positive()).max(SETTING_LIMITS.idleSongs.max).optional(),
       })
       .parse(req.body)

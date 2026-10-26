@@ -6,7 +6,7 @@ import type { PlayerCommand, Song } from '@shared/types'
 import { KEY_MAX, KEY_MIN, singerName } from '@shared/constants'
 import { api } from '../lib/api'
 import { artistsText, fmtMs, fmtTime } from '../lib/format'
-import { errorText, toast, useDebounced, useHistory, useStatusOf } from '../lib/hooks'
+import { errorText, toast, useDebounced, useHistory, useLiveValue, useSettings, useStatusOf } from '../lib/hooks'
 import { stopPreview } from '../lib/preview'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
@@ -14,6 +14,7 @@ import { Cover, Dialog, EmptyNote, Eq, IconButton, ProgressBar, QueryError, Rang
 import { Leaderboard } from '../components/Leaderboard'
 import { NICKNAME_MAX, useNickname } from '../lib/nickname'
 import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
+import { IdleVolumeControl } from '../components/IdleVolume'
 import { SongActions } from '../components/SongTable'
 import { NowSingingCard, QueueList, ShuffleButton, useNow } from '../components/QueuePanel'
 import { ImportedPlaylistChips, ImportPlaylistDialog } from '../components/ImportPlaylist'
@@ -24,31 +25,6 @@ type Tab = 'remote' | 'search' | 'queue' | 'rank'
 /** A command from this phone; says so when it could not be sent (nothing is replayed later). */
 function command(c: PlayerCommand) {
   if (!sendCommand(c)) toast('连接中断，这次操作没有发出', 'error')
-}
-
-/** Local slider state that streams throttled `set` commands. */
-function useLiveValue(remote: number, toCommand: (v: number) => PlayerCommand) {
-  const [local, setLocal] = useState<number | null>(null)
-  const last = useRef(0)
-  const timer = useRef<number | undefined>(undefined)
-  const idle = useRef<number | undefined>(undefined)
-  const change = (v: number) => {
-    setLocal(v)
-    const now = Date.now()
-    clearTimeout(timer.current)
-    if (now - last.current > 120) {
-      last.current = now
-      command(toCommand(v))
-    } else {
-      timer.current = window.setTimeout(() => {
-        last.current = Date.now()
-        command(toCommand(v))
-      }, 120)
-    }
-    clearTimeout(idle.current)
-    idle.current = window.setTimeout(() => setLocal(null), 800)
-  }
-  return [local ?? remote, change] as const
 }
 
 function RoundButton({
@@ -91,7 +67,8 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
   // Never shown past the end, whatever the server's line says.
   const pos = Math.min(livePosition(player, now), dur > 0 ? dur : Infinity)
   const hasStems = !!track?.hasStems
-  const [music, setMusic] = useLiveValue(Math.round(player.musicVolume * 100), (v) => ({ action: 'set', musicVolume: v / 100 }))
+  const [music, setMusic] = useLiveValue(Math.round(player.musicVolume * 100), (v) => ({ action: 'set', musicVolume: v / 100 }), command)
+  const idleOn = useSettings().data?.idleEnabled ?? false
   const setKey = (k: number) => command({ action: 'set', key: Math.max(KEY_MIN, Math.min(KEY_MAX, k)) })
   const volLabel = hasStems && player.trackMode === 'karaoke' ? '伴奏音量' : '音量'
 
@@ -176,6 +153,7 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
             <DisplayModeToggle stretch />
           </div>
         )}
+        {!cur && idleOn && <IdleVolumeControl send={command} />}
         <label className="flex flex-col gap-1.5">
           <span className="flex items-center justify-between text-sm">
             <span className="flex items-center gap-2">

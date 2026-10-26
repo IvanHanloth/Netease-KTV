@@ -33,7 +33,6 @@ function load(): Settings {
     multiScreenSync: saved.multiScreenSync ?? config.defaults.multiScreenSync,
     multiScreenAudio: saved.multiScreenAudio ?? config.defaults.multiScreenAudio,
     idleEnabled: saved.idleEnabled ?? config.defaults.idleEnabled,
-    idleVolume: saved.idleVolume ?? config.defaults.idleVolume,
     idleSongs: saved.idleSongs ?? config.defaults.idleSongs,
   }
 }
@@ -61,9 +60,6 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
   if (typeof patch.multiScreenSync === 'boolean') next.multiScreenSync = patch.multiScreenSync
   if (typeof patch.multiScreenAudio === 'boolean') next.multiScreenAudio = patch.multiScreenAudio
   if (typeof patch.idleEnabled === 'boolean') next.idleEnabled = patch.idleEnabled
-  if (typeof patch.idleVolume === 'number' && Number.isFinite(patch.idleVolume)) {
-    next.idleVolume = Math.round(clampTo(patch.idleVolume, SETTING_LIMITS.idleVolume) * 100) / 100
-  }
   if (Array.isArray(patch.idleSongs)) {
     next.idleSongs = [...new Set(patch.idleSongs.filter((id) => Number.isInteger(id) && id > 0))].slice(0, SETTING_LIMITS.idleSongs.max)
   }

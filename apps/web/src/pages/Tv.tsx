@@ -21,7 +21,7 @@ import { PitchLane } from '../components/PitchLane'
 import { LineRatingPop, ScoreOverlay, type ScoreResult } from '../components/ScoreOverlay'
 import { vocalModeCommand, type VocalMode } from '../components/PlayerModes'
 import { Ambient, IdleAmbient, Vignette } from './tv/background'
-import { Controls, ControlsArea, Header, MvTitle, Progress, QrCard, SCORE_PREF, ScoreToggle, fadeCls, readScorePref, scoreHint, singerOf } from './tv/chrome'
+import { Controls, ControlsArea, Header, MvTitle, Progress, QrCard, SCORE_PREF, ScoreToggle, fadeCls, readScorePref, readScreenVolume, saveScreenVolume, scoreHint, singerOf } from './tv/chrome'
 import { LyricsView, TwoLineLyrics } from './tv/lyrics'
 import { MvBackdrop, MvScreen, NextMvPreloader } from './tv/mv'
 import { IdleScreen, Osd, PreparingScreen, START_HOLD_MS, START_MAX_WAIT_MS, StartingScreen, UpNextPanel, upNextVisible, useDelayedFlag, useIdle, useOsd } from './tv/screens'
@@ -36,6 +36,10 @@ export default function Tv() {
   const engineRef = useRef<AudioEngine | null>(null)
   if (!engineRef.current) engineRef.current = new AudioEngine()
   const engine = engineRef.current
+  // 待机音乐 plays through its own engine on the same AudioContext (one unlock for both).
+  const idleEngineRef = useRef<AudioEngine | null>(null)
+  if (!idleEngineRef.current) idleEngineRef.current = new AudioEngine(engine)
+  const idleEngine = idleEngineRef.current
   const [unlocked, setUnlocked] = useState(false)
   const [loadState, setLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   /** A fresh song whose audio is loaded but which hasn't started yet (即将开始 card). */
@@ -103,6 +107,17 @@ export default function Tv() {
   }, [tvActive])
   const following = mirror && multiAudio && !muted && unlocked
   const audible = unlocked && (isMain || following)
+  // A 大屏 that isn't the 主屏 has its own volume once unmuted (songs and 待机音乐 alike); the
+  // 主屏 always plays at the shared levels.
+  const [screenVolume, setScreenVolumeState] = useState(readScreenVolume)
+  const setScreenVolume = useCallback((v: number) => {
+    setScreenVolumeState(v)
+    saveScreenVolume(v)
+  }, [])
+  const ownVolume = mirror ? screenVolume : 1
+  useEffect(() => {
+    engine.setMaster(ownVolume)
+  }, [engine, ownVolume])
   const isMainRef = useRef(isMain)
   isMainRef.current = isMain
   const [scoreOn, setScoreOn] = useState(readScorePref)
@@ -290,8 +305,14 @@ export default function Tv() {
   }, [engine, audible, loadState, nextItem, nextTrack?.status, nextTrack?.hasStems])
 
   const { msg: osd, show: showOsd } = useOsd(player, !ownMode, !!scoreResult)
-  // 待机音乐 while nothing is queued (active TV only)
-  const idleSong = useIdleMusic(unlocked && isMain && !cur, player.musicVolume)
+  // 待机音乐 while nothing is queued: the 主屏 plays it, the other 大屏 show and follow it.
+  const idleSong = useIdleMusic({
+    engine: idleEngine,
+    main: isMain,
+    audible,
+    active: storeReady && !cur,
+    volume: player.idleVolume * ownVolume,
+  })
 
   // server-forwarded commands
   useEffect(
@@ -423,13 +444,15 @@ export default function Tv() {
           sendCommand({ action: 'seek', position: clockRef.current.position() + 5 })
           break
         case 'ArrowUp':
+        case 'ArrowDown': {
           e.preventDefault()
-          sendCommand({ action: 'set', musicVolume: Math.min(1, Math.round((p.musicVolume + 0.05) * 100) / 100) })
+          // On the idle page the keys set the 待机音乐 volume.
+          const d = e.key === 'ArrowUp' ? 0.05 : -0.05
+          const step = (v: number) => Math.max(0, Math.min(1, Math.round((v + d) * 100) / 100))
+          if (p.current) sendCommand({ action: 'set', musicVolume: step(p.musicVolume) })
+          else sendCommand({ action: 'set', idleVolume: step(p.idleVolume) })
           break
-        case 'ArrowDown':
-          e.preventDefault()
-          sendCommand({ action: 'set', musicVolume: Math.max(0, Math.round((p.musicVolume - 0.05) * 100) / 100) })
-          break
+        }
         case 'n':
         case 'N':
           sendCommand({ action: 'next' })
@@ -690,7 +713,14 @@ export default function Tv() {
       {nextMvSong && <NextMvPreloader key={nextMvSong.id} song={nextMvSong} />}
 
       {!cur ? (
-        <IdleScreen onMakeMain={mirror ? takeOver : undefined} idleSong={idleSong} />
+        <IdleScreen
+          onMakeMain={mirror ? takeOver : undefined}
+          idleSong={idleSong}
+          muted={mirror && multiAudio ? muted : undefined}
+          onToggleMute={mirror && multiAudio ? toggleMute : undefined}
+          volume={screenVolume}
+          onVolume={setScreenVolume}
+        />
       ) : (
         <>
           {mvMode ? (
@@ -762,6 +792,8 @@ export default function Tv() {
                           takeOver,
                           muted: multiAudio ? muted : undefined,
                           toggleMute: multiAudio ? toggleMute : undefined,
+                          volume: screenVolume,
+                          setVolume: setScreenVolume,
                         }
                       : undefined
                   }

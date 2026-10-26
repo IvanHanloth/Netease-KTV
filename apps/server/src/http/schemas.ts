@@ -17,6 +17,7 @@ export const commandSchema: z.ZodType<PlayerCommand> = z.union([
     trackMode: z.enum(TRACK_MODES).optional(),
     displayMode: z.enum(DISPLAY_MODES).optional(),
     leadVocal: z.boolean().optional(),
+    idleVolume: z.number().min(0).max(1).optional(),
   }),
 ]) as z.ZodType<PlayerCommand>
 
@@ -42,4 +43,11 @@ export const clientMessageSchema: z.ZodType<ClientMessage> = z.discriminatedUnio
     starting: z.boolean().optional(),
   }),
   z.object({ type: z.literal('ended') }),
+  z.object({
+    type: z.literal('idleReport'),
+    songId: z.number().int().positive().nullable(),
+    position: finite,
+    playing: z.boolean(),
+    at: finite.optional(),
+  }),
 ]) as unknown as z.ZodType<ClientMessage>

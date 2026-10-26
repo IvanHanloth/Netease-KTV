@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { getDb, kv } from '../db.js'
 import { serverNow } from '../clock.js'
-import type { AppState, PlaybackSync, PlayerCommand, PlayerState, QueueItem, QueuePosition, Song } from '../shared/types.js'
+import type { AppState, IdleSync, PlaybackSync, PlayerCommand, PlayerState, QueueItem, QueuePosition, Song } from '../shared/types.js'
 import { ANONYMOUS, KEY_MAX, KEY_MIN } from '../shared/constants.js'
 import { hub } from './hub.js'
 
@@ -22,6 +22,7 @@ let player: PlayerState = {
   displayMode: 'stage',
   leadVocal: false,
   epoch: 0,
+  idleVolume: 0.4,
 }
 
 // ---------- persistence ----------
@@ -49,11 +50,14 @@ function savePlayer(): void {
     displayMode: player.displayMode,
     leadVocal: player.leadVocal,
     position: player.position,
+    idleVolume: player.idleVolume,
   })
 }
 
 export function loadPlayer(getSong: (id: number) => Song | undefined): void {
   const saved = kv.get<Partial<PlayerState>>(PLAYER_KEY)
+  // Before 待机音乐 had its own volume it was a share of the accompaniment (a 后台 setting).
+  const legacyShare = kv.get<{ idleVolume?: number }>('settings')?.idleVolume
   if (saved) {
     player = {
       ...player,
@@ -63,10 +67,15 @@ export function loadPlayer(getSong: (id: number) => Song | undefined): void {
       trackMode: saved.trackMode ?? player.trackMode,
       displayMode: saved.displayMode ?? player.displayMode,
       leadVocal: saved.leadVocal ?? player.leadVocal,
+      idleVolume:
+        saved.idleVolume ??
+        (typeof legacyShare === 'number' ? Math.round(clamp(legacyShare * (saved.musicVolume ?? player.musicVolume), 0, 1) * 100) / 100 : player.idleVolume),
       position: saved.position ?? 0,
       playing: false,
       positionAt: Date.now(),
     }
+    // Keep the migrated level: the next settings save drops the old share.
+    if (saved.idleVolume === undefined) savePlayer()
   }
   const rows = getDb().prepare('SELECT * FROM queue ORDER BY position').all() as any[]
   queue = rows
@@ -216,6 +225,7 @@ export function command(cmd: PlayerCommand): void {
       if (cmd.trackMode === 'karaoke' || cmd.trackMode === 'original') player.trackMode = cmd.trackMode
       if (cmd.displayMode === 'stage' || cmd.displayMode === 'mv') player.displayMode = cmd.displayMode
       if (typeof cmd.leadVocal === 'boolean') player.leadVocal = cmd.leadVocal
+      if (typeof cmd.idleVolume === 'number') player.idleVolume = clamp(cmd.idleVolume, 0, 1)
       player = { ...player }
       emitPlayer()
       return
@@ -303,6 +313,34 @@ export function ended(): void {
 hub.on('unavailable', (songId: number) => {
   if (player.current?.song.id === songId) next()
 })
+
+// ---------- 待机音乐 ----------
+
+/** Where the 主屏's 待机音乐 is (null: none). Other 大屏 follow it, a new 主屏 continues from it. */
+let idleSync: IdleSync | null = null
+
+export function latestIdle(): IdleSync | null {
+  return idleSync
+}
+
+/** Idle-music report from the 主屏. */
+export function idleReport(songId: number | null, position: number, playing: boolean, at?: number): void {
+  const t = at !== undefined && Math.abs(at - serverNow()) < 5000 ? at : serverNow()
+  idleSync = songId === null ? null : { songId, position: Math.max(0, position), at: t, playing }
+  hub.emit('idle', idleSync)
+}
+
+/**
+ * The 主屏 changed or went away: hold the idle music where it was, so the other 大屏 stop with it
+ * and the next 主屏 picks it up from there.
+ */
+export function freezeIdle(): void {
+  const s = idleSync
+  if (!s || !s.playing) return
+  const now = serverNow()
+  idleSync = { ...s, playing: false, position: s.position + Math.max(0, now - s.at) / 1000, at: now }
+  hub.emit('idle', idleSync)
+}
 
 // ---------- nobody is playing ----------
 

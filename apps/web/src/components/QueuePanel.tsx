@@ -4,11 +4,12 @@ import clsx from 'clsx'
 import type { QueueItem } from '@shared/types'
 import { api } from '../lib/api'
 import { artistsText, fmtTime, queueStatusText } from '../lib/format'
-import { errorText, runAction, shuffleQueue, toast, useIsPending, useStatusOf } from '../lib/hooks'
+import { errorText, runAction, shuffleQueue, toast, useIsPending, useSettings, useStatusOf } from '../lib/hooks'
 import { useDragReorder } from '../lib/useDragReorder'
 import { livePosition, sendCommand, useApp } from '../store/app'
 import { Icon } from './icons'
 import { DisplayModeButton, VocalModeButton } from './PlayerModes'
+import { IdleVolumeControl } from './IdleVolume'
 import { ConfirmDialog, Cover, dotColor, EmptyNote, Eq, IconButton, ProgressBar } from './ui'
 
 export function useNow(interval = 1000) {
@@ -209,6 +210,7 @@ export function QueuePanel() {
   const [confirmClear, setConfirmClear] = useState(false)
   const clearing = useIsPending('queue:clear')
   const empty = !current && !queue.length
+  const idleOn = useSettings().data?.idleEnabled ?? false
   return (
     <div className="flex h-full flex-col gap-5">
       <div className="flex items-center justify-between">
@@ -235,11 +237,19 @@ export function QueuePanel() {
         </div>
       </div>
       {empty ? (
-        <div className="rounded-[20px] border border-dashed border-white/12 p-6 text-center text-sm leading-6 text-muted">
-          还没有点歌
-          <br />
-          从左边的曲库挑一首，或者用手机扫大屏上的二维码点歌
-        </div>
+        <>
+          <div className="rounded-[20px] border border-dashed border-white/12 p-6 text-center text-sm leading-6 text-muted">
+            还没有点歌
+            <br />
+            从左边的曲库挑一首，或者用手机扫大屏上的二维码点歌
+          </div>
+          {/* Nothing is playing: the 大屏 play 待机音乐, adjustable here. */}
+          {idleOn && (
+            <div className="rounded-[20px] border border-white/8 bg-white/[0.03] p-4">
+              <IdleVolumeControl />
+            </div>
+          )}
+        </>
       ) : (
         <>
           <NowSingingCard />

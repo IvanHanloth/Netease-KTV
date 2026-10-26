@@ -123,6 +123,8 @@ export interface PlayerState {
   leadVocal: boolean
   /** Bumped every time the current song restarts so the TV can reload. */
   epoch: number
+  /** 待机音乐 level (0..1), its own volume: set live from the TV, remotes and the 点歌台. */
+  idleVolume: number
 }
 
 export interface SeparatorStatus {
@@ -240,10 +242,8 @@ export interface Settings {
    * nothing by itself; turning it off mutes every 大屏 except the 主屏.
    */
   multiScreenAudio: boolean
-  /** 待机音乐: played quietly on the TV while nothing is queued. */
+  /** 待机音乐: played quietly on the TV while nothing is queued (its volume: PlayerState.idleVolume). */
   idleEnabled: boolean
-  /** Idle-music level as a share of the accompaniment volume (0..1). */
-  idleVolume: number
   /** NetEase song ids, played in order and looped. */
   idleSongs: number[]
 }
@@ -251,7 +251,6 @@ export interface Settings {
 /** GET /api/idle */
 export interface IdleMusic {
   enabled: boolean
-  volume: number
   songs: Song[]
 }
 
@@ -424,6 +423,7 @@ export type PlayerCommand =
       trackMode?: TrackMode
       displayMode?: DisplayMode
       leadVocal?: boolean
+      idleVolume?: number
     }
 
 export type ClientRole = 'tv' | 'desk' | 'remote' | 'admin' | 'ear'
@@ -440,6 +440,11 @@ export type ClientMessage =
   /** Clock sync (TV, 耳返): the server answers with `pong` right away. */
   | { type: 'ping'; id: number }
   | { type: 'ended' }
+  /**
+   * Sent only by the 主屏 while it is on the idle page, ~1/s and on every change: which 待机音乐
+   * song it plays and where (same stamping as `report`). songId null: no idle music.
+   */
+  | { type: 'idleReport'; songId: number | null; position: number; playing: boolean; at?: number }
   /**
    * Sent by a TV when the user starts it ("点击开始" / "在这里播放"): it becomes the one TV that
    * plays audio, and its own 舞台 / MV mode becomes the one remotes show and control.
@@ -471,6 +476,8 @@ export type ServerMessage =
   | { type: 'pong'; id: number; t: number }
   /** To 耳返 clients: the TV's latest playback position (see PlaybackSync). */
   | { type: 'sync'; sync: PlaybackSync }
+  /** To TVs: the 主屏's 待机音乐 (other 大屏 show and play the same song in step). */
+  | { type: 'idle'; idle: IdleSync | null }
 
 /**
  * Where the active TV is, on the server clock: at server time `at` (ms) the TV's speakers were
@@ -484,6 +491,14 @@ export interface PlaybackSync {
   playing: boolean
   /** The 主屏 is showing 即将开始 (the song is held at 0 until it starts): other 大屏 show it too. */
   starting?: boolean
+}
+
+/** The 主屏's 待机音乐 on the server clock: at `at` (ms) its speakers played `position` (s) of `songId`. */
+export interface IdleSync {
+  songId: number
+  position: number
+  at: number
+  playing: boolean
 }
 
 export type Stem = 'instrumental' | 'vocals' | 'original'

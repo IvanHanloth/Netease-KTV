@@ -331,6 +331,8 @@ export function Controls({
     takeOver: () => void
     muted?: boolean
     toggleMute?: () => void
+    volume?: number
+    setVolume?: (v: number) => void
   }
 }) {
   const karaoke = hasStems && player.trackMode === 'karaoke'
@@ -378,7 +380,14 @@ export function Controls({
         )}
         <span className="min-w-2 flex-1" aria-hidden="true" />
         {mirror ? (
-          <ScreenRoleControl onMakeMain={mirror.takeOver} muted={mirror.muted} onToggleMute={mirror.toggleMute} confirm />
+          <ScreenRoleControl
+            onMakeMain={mirror.takeOver}
+            muted={mirror.muted}
+            onToggleMute={mirror.toggleMute}
+            volume={mirror.volume}
+            onVolume={mirror.setVolume}
+            confirm
+          />
         ) : (
           <>
             <MixerButton player={player} karaoke={karaoke} open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
@@ -391,11 +400,33 @@ export function Controls({
   )
 }
 
-/** A 大屏 that isn't the 主屏: 设为主屏, and (with 多大屏播放) its own mute switch. */
+const SCREEN_VOLUME_PREF = 'ktv.screenVolume'
+
+/** This 大屏's own volume (used while it isn't the 主屏), 0..1; remembered per device. */
+export function readScreenVolume() {
+  try {
+    const v = Number(localStorage.getItem(SCREEN_VOLUME_PREF))
+    return localStorage.getItem(SCREEN_VOLUME_PREF) !== null && Number.isFinite(v) ? Math.max(0, Math.min(1, v)) : 1
+  } catch {
+    return 1
+  }
+}
+
+export function saveScreenVolume(v: number) {
+  try {
+    localStorage.setItem(SCREEN_VOLUME_PREF, String(v))
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+/** A 大屏 that isn't the 主屏: 设为主屏, and (with 多大屏播放) its own mute switch and volume. */
 export function ScreenRoleControl({
   onMakeMain,
   muted,
   onToggleMute,
+  volume,
+  onVolume,
   compact,
   confirm,
 }: {
@@ -403,6 +434,9 @@ export function ScreenRoleControl({
   /** undefined: 多大屏播放 is off, there is nothing to toggle. */
   muted?: boolean
   onToggleMute?: () => void
+  /** This screen's own volume (0..1), adjustable once it is unmuted. */
+  volume?: number
+  onVolume?: (v: number) => void
   compact?: boolean
   /** A song is playing: switching moves the sound, so ask for a second press. */
   confirm?: boolean
@@ -424,17 +458,43 @@ export function ScreenRoleControl({
   }
   return (
     <div className="flex shrink-0 items-center gap-3">
-      {onToggleMute && (
-        <button
-          type="button"
-          onClick={onToggleMute}
-          title={muted ? '这块大屏也发声（和主屏同步）' : '这块大屏静音'}
-          className={clsx('glass flex shrink-0 items-center gap-2 px-4 text-[15px] whitespace-nowrap text-fg-2 hover:bg-white/10', h)}
-        >
-          <Icon name="volume" size={18} className={muted ? 'opacity-50' : undefined} />
-          {muted ? '取消静音' : '静音'}
-        </button>
-      )}
+      {onToggleMute &&
+        (!muted && volume !== undefined && onVolume ? (
+          // Unmuted: the speaker button mutes again, the slider sets this screen's own volume.
+          <div className={clsx('glass flex shrink-0 items-center gap-3 pr-4 pl-1.5 text-[15px] whitespace-nowrap', h)}>
+            <button
+              type="button"
+              onClick={onToggleMute}
+              aria-label="这块大屏静音"
+              title="这块大屏静音"
+              className={clsx(
+                'flex shrink-0 items-center justify-center text-fg-2 hover:bg-white/10 hover:text-fg',
+                compact ? 'h-9 w-9 rounded-xl' : 'h-11 w-11 rounded-[14px]',
+              )}
+            >
+              <Icon name={volume > 0 ? 'volume' : 'volumeOff'} size={19} />
+            </button>
+            <div className={compact ? 'w-28' : 'w-36'}>
+              <Range
+                label="这块大屏的音量"
+                value={Math.round(volume * 100)}
+                onChange={(v) => onVolume(v / 100)}
+                color="#FFFFFF"
+              />
+            </div>
+            <span className="num w-10 shrink-0 text-right text-[#C8C8D0]">{Math.round(volume * 100)}%</span>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onToggleMute}
+            title={muted ? '这块大屏也发声（和主屏同步）' : '这块大屏静音'}
+            className={clsx('glass flex shrink-0 items-center gap-2 px-4 text-[15px] whitespace-nowrap text-fg-2 hover:bg-white/10', h)}
+          >
+            <Icon name={muted ? 'volumeOff' : 'volume'} size={18} className={muted ? 'opacity-50' : undefined} />
+            {muted ? '取消静音' : '静音'}
+          </button>
+        ))}
       <button
         type="button"
         onClick={makeMain}

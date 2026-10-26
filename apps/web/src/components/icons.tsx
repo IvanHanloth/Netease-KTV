@@ -118,6 +118,14 @@ const paths = {
       <path d="M19 6a8.5 8.5 0 0 1 0 12" />
     </>
   ),
+  volumeOff: (
+    <>
+      <path d="M4 9v6h4l5 4V5L8 9z" />
+      <path d="m16.5 9.5 5 5M21.5 9.5l-5 5" />
+    </>
+  ),
+  expand: <path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5" />,
+  shrink: <path d="M9 4v5H4M20 9h-5V4M15 20v-5h5M4 15h5v5" />,
   plus: <path d="M12 5v14M5 12h14" />,
   minus: <path d="M5 12h14" />,
   top: (

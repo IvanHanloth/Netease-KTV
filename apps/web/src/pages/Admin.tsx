@@ -22,7 +22,7 @@ const SECTIONS: { id: SectionId; label: string; icon: IconName; keys: (keyof Adm
   { id: 'overview', label: '运行状态', icon: 'info', keys: [] },
   { id: 'separators', label: '分离服务器', icon: 'server', keys: ['separatorModel'] },
   { id: 'audio', label: '下载音质', icon: 'wave', keys: ['audioLevel'] },
-  { id: 'idle', label: '待机音乐', icon: 'note', keys: ['idleEnabled', 'idleVolume', 'idleSongs'] },
+  { id: 'idle', label: '待机音乐', icon: 'note', keys: ['idleEnabled', 'idleSongs'] },
   { id: 'network', label: '网络', icon: 'globe', keys: ['publicUrl'] },
   { id: 'storage', label: '视频与缓存', icon: 'database', keys: ['mvPreload', 'mvResolution', 'cacheLimitGB'] },
   { id: 'unblock', label: '第三方音源', icon: 'link', keys: ['unblockEnabled', 'unblockSources'] },

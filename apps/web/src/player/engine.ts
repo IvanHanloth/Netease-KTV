@@ -81,7 +81,19 @@ const LEAD_RELEASE_TC = 0.12
 const CACHE_SIZE = 4
 
 export class AudioEngine {
-  ctx: AudioContext | null = null
+  private ownCtx: AudioContext | null = null
+  private readonly parent: AudioEngine | null
+  /** With a parent the engine plays through the parent's AudioContext (one unlock covers both). */
+  constructor(parent?: AudioEngine) {
+    this.parent = parent ?? null
+  }
+  get ctx(): AudioContext | null {
+    return this.parent ? this.parent.ctx : this.ownCtx
+  }
+  set ctx(c: AudioContext | null) {
+    if (this.parent) this.parent.ctx = c
+    else this.ownCtx = c
+  }
   private main: AudioBuffer | null = null
   private vocals: AudioBuffer | null = null
   private session: Session | null = null
@@ -117,6 +129,35 @@ export class AudioEngine {
 
   get duration() {
     return this.main?.duration ?? 0
+  }
+
+  private masterNode: GainNode | null = null
+  private masterLevel = 1
+
+  /** Everything this engine plays goes through one master gain (fades, a screen's own volume). */
+  private output(ctx: AudioContext): GainNode {
+    if (!this.masterNode || this.masterNode.context !== ctx) {
+      this.masterNode = ctx.createGain()
+      this.masterNode.gain.value = this.masterLevel
+      this.masterNode.connect(ctx.destination)
+    }
+    return this.masterNode
+  }
+
+  /**
+   * Overall level on top of the gains below, independent of play / seek / song changes.
+   * `tc`: ramp time constant in seconds (≈95 % there after 3 × tc), so slow fades work too.
+   * `from`: start the ramp at this level instead of the current one (a fade-in from silence).
+   */
+  setMaster(level: number, tc = RAMP_TC, from?: number) {
+    this.masterLevel = level
+    const ctx = this.ctx
+    if (!ctx) return
+    const g = this.output(ctx).gain
+    const now = ctx.currentTime
+    g.cancelScheduledValues(now)
+    g.setValueAtTime(from ?? g.value, now)
+    g.setTargetAtTime(level, now, tc)
   }
 
   private keepAwakeNode: OscillatorNode | null = null
@@ -276,13 +317,13 @@ export class AudioEngine {
       g.gain.setValueAtTime(0, ctx.currentTime)
       g.gain.setValueAtTime(0, when)
       g.gain.linearRampToValueAtTime(target, when + 0.03) // tiny fade-in, no click
-      g.connect(ctx.destination)
+      g.connect(this.output(ctx))
       return g
     }
     // The vocal gain starts silent; scheduleVocal() below adds its fade-in and the 领唱 automation.
     const vocalGain = ctx.createGain()
     vocalGain.gain.setValueAtTime(0, ctx.currentTime)
-    vocalGain.connect(ctx.destination)
+    vocalGain.connect(this.output(ctx))
     const session: Session = { music: mkGain(this.music), vocal: vocalGain, sources: [] }
     const mk = (buf: AudioBuffer, gain: GainNode) => {
       const src = ctx.createBufferSource()

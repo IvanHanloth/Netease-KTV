@@ -158,7 +158,6 @@ export async function registerRoutes(app: FastifyInstance) {
     const byId = new Map(songs.map((x) => [x.id, x]))
     return {
       enabled: s.idleEnabled,
-      volume: s.idleVolume,
       songs: s.idleSongs.map((id) => byId.get(id)).filter((x): x is Song => !!x),
     }
   })

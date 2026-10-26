@@ -117,11 +117,27 @@ export function useOsd(player: PlayerState, announceDisplayMode: boolean, quietS
     }
     else if (prev.key !== player.key) show(keyText(player.key))
     else if (prev.musicVolume !== player.musicVolume) show(`音量 ${pctText(player.musicVolume)}`, 'volume')
+    else if (prev.idleVolume !== player.idleVolume && !player.current) show(`待机音乐 ${pctText(player.idleVolume)}`, 'volume')
   }, [player, storeReady, show])
   return { msg, show }
 }
 
-export function IdleScreen({ onMakeMain, idleSong }: { onMakeMain?: () => void; idleSong: Song | null }) {
+export function IdleScreen({
+  onMakeMain,
+  idleSong,
+  muted,
+  onToggleMute,
+  volume,
+  onVolume,
+}: {
+  onMakeMain?: () => void
+  idleSong: Song | null
+  /** A 大屏 that isn't the 主屏 (多大屏播放 on): its mute switch and own volume, as on the control bar. */
+  muted?: boolean
+  onToggleMute?: () => void
+  volume?: number
+  onVolume?: (v: number) => void
+}) {
   const connected = useApp((s) => s.connected)
   return (
     <motion.div
@@ -160,7 +176,7 @@ export function IdleScreen({ onMakeMain, idleSong }: { onMakeMain?: () => void; 
       </AnimatePresence>
       {onMakeMain && (
         <div className="absolute right-[3.75vw] bottom-[5.2vh]">
-          <ScreenRoleControl onMakeMain={onMakeMain} compact />
+          <ScreenRoleControl onMakeMain={onMakeMain} muted={muted} onToggleMute={onToggleMute} volume={volume} onVolume={onVolume} compact />
         </div>
       )}
     </motion.div>
