@@ -4,7 +4,10 @@
  * audio and the WebSocket — ever goes through a cache here: the app is live by nature.
  */
 
-const SHELL = 'ktv-shell-v1'
+/** Replaced with the build id at build time: each release gets a fresh shell cache. */
+const BUILD = '__BUILD_ID__'
+const SHELL = `ktv-shell-${BUILD}`
+/** Hashed files keep their names across releases, so this cache is shared by all of them. */
 const ASSETS = 'ktv-assets-v1'
 /** Hashed build files kept; older ones are dropped first. */
 const MAX_ASSETS = 160
@@ -15,7 +18,7 @@ self.addEventListener('install', (event) => {
   event.waitUntil(
     caches
       .open(SHELL)
-      .then((c) => c.addAll(['/', '/favicon.svg', '/icons/icon-192.png']))
+      .then((c) => c.addAll(['/', '/favicon.svg', '/icons/icon-192.png'].map((u) => new Request(u, { cache: 'reload' }))))
       .catch(() => {}),
   )
   self.skipWaiting()
@@ -35,7 +38,7 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET' || req.headers.has('range')) return
   const url = new URL(req.url)
   if (url.origin !== self.location.origin) return
-  if (url.pathname.startsWith('/api/') || url.pathname === '/sw.js') return
+  if (url.pathname.startsWith('/api/') || url.pathname === '/sw.js' || url.pathname === '/version.json') return
   if (req.mode === 'navigate') event.respondWith(navigate(req))
   else if (url.pathname.startsWith('/assets/')) event.respondWith(cacheFirst(req))
   else event.respondWith(staleWhileRevalidate(req))

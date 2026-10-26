@@ -17,7 +17,7 @@ import './index.css'
 import { Toasts } from './components/Toasts'
 import { Spinner } from './components/ui'
 import { isRetryable } from './lib/api'
-import { registerServiceWorker, syncManifest } from './lib/pwa'
+import { checkForUpdate, registerServiceWorker, syncManifest } from './lib/pwa'
 import { useApp } from './store/app'
 
 const Desk = lazy(() => import('./pages/Desk'))
@@ -47,6 +47,8 @@ function ConnectionWatcher() {
   const was = useRef(connected)
   useEffect(() => {
     if (connected && !was.current) {
+      // The server may have restarted on a new release.
+      void checkForUpdate()
       void queryClient.refetchQueries({ predicate: (q) => q.state.status === 'error' })
       void queryClient.invalidateQueries({ stale: true })
     }

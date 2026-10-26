@@ -5,6 +5,7 @@ import clsx from 'clsx'
 import type { AdminSettings } from '@shared/types'
 import { api } from '../lib/api'
 import { errorText, toast, useSettings } from '../lib/hooks'
+import { holdUpdates } from '../lib/pwa'
 import { Icon, type IconName } from '../components/icons'
 import { Spinner } from '../components/ui'
 import { IdleSection } from '../components/admin/IdleSection'
@@ -77,12 +78,16 @@ export default function Admin() {
   )
   const dirty = changed.length > 0
 
-  // Leaving with unsaved changes asks first.
+  // Leaving with unsaved changes asks first, and a new release waits until they are saved.
   useEffect(() => {
     if (!dirty) return
     const warn = (e: BeforeUnloadEvent) => e.preventDefault()
     window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
+    const release = holdUpdates()
+    return () => {
+      window.removeEventListener('beforeunload', warn)
+      release()
+    }
   }, [dirty])
 
   const set = <K extends keyof AdminSettings>(k: K, v: AdminSettings[K]) => setDraft((d) => (d ? { ...d, [k]: v } : d))
