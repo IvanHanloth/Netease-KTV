@@ -10,6 +10,8 @@ import { artistsText } from '../lib/format'
 import { useDebounced } from '../lib/hooks'
 import { currentLineIndex, hasLyrics, interludeCountdown, lineWords, wordFills } from '../lib/lyrics'
 import { EarPlayer } from '../player/earPlayer'
+import { micGain } from '../player/micMixer'
+import { MicReturnClient, type MicReturnState } from '../lib/micReturn'
 import { FIRST_GUESS_MS, LatencyCalibration } from '../components/LatencyCalibration'
 import { connect, livePosition, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
@@ -28,10 +30,14 @@ import { Range, Spinner } from '../components/ui'
 
 type Mode = 'vocals' | 'original' | 'instrumental' | 'off'
 
-/** 人声 and 伴奏 are picked independently: both = 原唱, neither = 仅提词. */
-const PARTS: { id: 'vocals' | 'backing'; label: string; icon: IconName }[] = [
-  { id: 'vocals', label: '人声', icon: 'mic' },
+/**
+ * 人声 and 伴奏 are picked independently: both = 原唱, neither = 仅提词. 麦克风 is the 主屏's
+ * microphone (live, over WebRTC), on top of either.
+ */
+const PARTS: { id: 'vocals' | 'backing' | 'mic'; label: string; icon: IconName }[] = [
+  { id: 'vocals', label: '人声', icon: 'user' },
   { id: 'backing', label: '伴奏', icon: 'wave' },
+  { id: 'mic', label: '麦克风', icon: 'mic' },
 ]
 
 function modeOf(p: Pick<Prefs, 'vocals' | 'backing'>): Mode {
@@ -41,7 +47,11 @@ function modeOf(p: Pick<Prefs, 'vocals' | 'backing'>): Mode {
 interface Prefs {
   vocals: boolean
   backing: boolean
+  /** Hear the 主屏 microphone. */
+  mic: boolean
   volume: number
+  /** Level of the 主屏 microphone (0..1, 0.7 ≈ as sent). */
+  micVolume: number
   /** + = the phone plays later than the TV, − = earlier (ms). */
   delayMs: number
   font: number
@@ -49,7 +59,7 @@ interface Prefs {
 }
 
 const PREFS_KEY = 'ktv.ear'
-const DEFAULT_PREFS: Prefs = { vocals: true, backing: false, volume: 0.9, delayMs: 0, font: 1, collapsed: false }
+const DEFAULT_PREFS: Prefs = { vocals: true, backing: false, mic: false, volume: 0.9, micVolume: 0.7, delayMs: 0, font: 1, collapsed: false }
 const DELAY_LIMIT = 600
 
 function readPrefs(): Prefs {
@@ -187,6 +197,21 @@ export default function Ear() {
   }, [url, ear, reloadNonce])
 
   useEffect(() => ear.setVolume(prefs.volume), [ear, prefs.volume, started])
+
+  // 主屏 microphone: a WebRTC stream from the 主屏, independent of the song audio.
+  const [micState, setMicState] = useState<MicReturnState>('off')
+  useEffect(() => {
+    if (!started || !prefs.mic) return
+    const c = new MicReturnClient()
+    c.onState = setMicState
+    c.onStream = (s) => ear.setMicStream(s)
+    c.start()
+    return () => {
+      c.stop()
+      ear.setMicStream(null)
+    }
+  }, [started, prefs.mic, ear])
+  useEffect(() => ear.setMicVolume(micGain(prefs.micVolume)), [ear, prefs.micVolume, started])
 
   // ---- the sync loop ----
   const delayRef = useRef(prefs.delayMs)
@@ -356,7 +381,13 @@ export default function Ear() {
         </div>
       )}
 
-      <Controls prefs={prefs} setPrefs={setPrefs} onCalibrate={() => setCalibrating(true)} />
+      {prefs.mic && (micState === 'unavailable' || micState === 'unsupported') && connected && tvOnline && (
+        <p className="relative m-0 px-5 pb-2 text-center text-xs text-warn">
+          {micState === 'unsupported' ? '这个浏览器不支持接收麦克风' : '主屏没有打开麦克风：在大屏控制栏的“麦克风”里打开'}
+        </p>
+      )}
+
+      <Controls prefs={prefs} setPrefs={setPrefs} micState={micState} onCalibrate={() => setCalibrating(true)} />
 
       {calibrating && (
         <LatencyCalibration
@@ -395,7 +426,8 @@ function StartScreen({ onStart }: { onStart: () => void }) {
           <p className="m-0 text-[15px] leading-6 text-muted">戴上耳机，跟着主屏一起唱</p>
         </div>
         <ul className="m-0 flex w-full list-none flex-col gap-3 p-0 text-left text-sm leading-6 text-fg-2">
-          <Feature icon="mic" text="单独听主唱人声、原唱或伴奏，和主屏同步播放" />
+          <Feature icon="user" text="单独听主唱人声、原唱或伴奏，和主屏同步播放" />
+          <Feature icon="mic" text="把主屏的麦克风（带混响）也送进耳机" />
           <Feature icon="clock" text="耳机里早了或晚了，可以前后微调几百毫秒" />
           <Feature icon="lyrics" text="同时是一个小提词器，屏幕保持常亮" />
         </ul>
@@ -671,10 +703,12 @@ function Dots({ n, total }: { n: number; total: number }) {
 function Controls({
   prefs,
   setPrefs,
+  micState,
   onCalibrate,
 }: {
   prefs: Prefs
   setPrefs: (p: Partial<Prefs>) => void
+  micState: MicReturnState
   onCalibrate: () => void
 }) {
   const silent = modeOf(prefs) === 'off'
@@ -762,7 +796,7 @@ function Controls({
         <span className={clsx('h-1.5 w-11 rounded-full transition-colors', dragH !== null ? 'bg-white/45' : 'bg-white/22')} />
       </div>
 
-      <div role="group" aria-label="耳返内容（可多选）" className="grid grid-cols-2 gap-1.5">
+      <div role="group" aria-label="耳返内容（可多选）" className="grid grid-cols-3 gap-1.5">
         {PARTS.map((m) => {
           const on = prefs[m.id]
           return (
@@ -778,7 +812,11 @@ function Controls({
             >
               <Icon name={m.icon} size={18} />
               {m.label}
-              <Icon name="check" size={16} className={clsx('-mr-1', !on && 'invisible')} />
+              {m.id === 'mic' && on ? (
+                <MicDot state={micState} />
+              ) : (
+                <Icon name="check" size={16} className={clsx('-mr-1', !on && 'invisible')} />
+              )}
             </button>
           )
         })}
@@ -799,6 +837,15 @@ function Controls({
             <span className="num w-10 text-right text-sm text-fg-2">{Math.round(prefs.volume * 100)}%</span>
           </div>
 
+          {prefs.mic && (
+            <div className="flex items-center gap-3">
+              <Icon name="mic" size={18} className="shrink-0 text-muted" />
+              <div className="flex-1">
+                <Range label="麦克风音量" value={Math.round(prefs.micVolume * 100)} onChange={(v) => setPrefs({ micVolume: v / 100 })} />
+              </div>
+              <span className="num w-10 text-right text-sm text-fg-2">{Math.round(prefs.micVolume * 100)}%</span>
+            </div>
+          )}
           <div className={clsx('flex flex-col gap-2', silent && 'opacity-40')} inert={silent}>
             <div className="flex items-center justify-between">
               <span className="text-sm text-fg-2">延迟</span>
@@ -853,6 +900,17 @@ function Controls({
         </div>
       </div>
     </section>
+  )
+}
+
+/** State of the 主屏 microphone link, on the 麦克风 button. */
+function MicDot({ state }: { state: MicReturnState }) {
+  if (state === 'connecting' || state === 'off') return <span className="-mr-1 scale-75"><Spinner size={16} /></span>
+  return (
+    <span
+      aria-label={state === 'live' ? '已连接' : '未连接'}
+      className={clsx('-mr-1 ml-0.5 h-2 w-2 rounded-full', state === 'live' ? 'bg-ok-dot' : 'bg-warn-dot')}
+    />
   )
 }
 

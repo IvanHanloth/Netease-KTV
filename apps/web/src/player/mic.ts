@@ -12,13 +12,32 @@ export class MicPitch {
   private detector: PitchDetector<Float32Array> | null = null
   private buf: Float32Array<ArrayBuffer> | null = null
   private ctx: AudioContext | null = null
+  /** attach(): reading another node (the 主屏 microphone mix) instead of an own stream. */
+  private tapFrom: AudioNode | null = null
 
   get active() {
-    return !!this.stream
+    return !!this.stream || !!this.tapFrom
+  }
+
+  /** Detect pitch on an existing node (the microphone mixer's input) instead of opening the mic. */
+  attach(ctx: AudioContext, node: AudioNode) {
+    this.stop()
+    this.ctx = ctx
+    this.tapFrom = node
+    this.analyser = ctx.createAnalyser()
+    this.analyser.fftSize = 2048
+    this.sink = ctx.createGain()
+    this.sink.gain.value = 0
+    node.connect(this.analyser)
+    this.analyser.connect(this.sink)
+    this.sink.connect(ctx.destination)
+    this.detector = PitchDetector.forFloat32Array(this.analyser.fftSize)
+    this.buf = new Float32Array(this.analyser.fftSize)
   }
 
   async start(ctx: AudioContext): Promise<void> {
     if (this.stream) return
+    if (this.tapFrom) this.stop()
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) {
       throw Object.assign(new Error('insecure'), { code: 'insecure' as MicError })
     }
@@ -61,6 +80,14 @@ export class MicPitch {
 
   stop() {
     this.stream?.getTracks().forEach((t) => t.stop())
+    if (this.tapFrom && this.analyser) {
+      try {
+        this.tapFrom.disconnect(this.analyser)
+      } catch {
+        /* the mixer is already gone */
+      }
+    }
+    this.tapFrom = null
     this.source?.disconnect()
     this.analyser?.disconnect()
     this.sink?.disconnect()

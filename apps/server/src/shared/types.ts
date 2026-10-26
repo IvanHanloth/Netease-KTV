@@ -125,6 +125,12 @@ export interface PlayerState {
   epoch: number
   /** 待机音乐 level (0..1), its own volume: set live from the TV, remotes and the 点歌台. */
   idleVolume: number
+  /** 主屏 microphone level through the speakers (0..1, 0.7 ≈ unity gain). */
+  micVolume: number
+  /** Microphone reverb amount (0 = dry … 1 = very wet). */
+  reverb: number
+  /** The 主屏 microphone is switched on (which input devices it uses is set on that 大屏). */
+  micOn: boolean
 }
 
 export interface SeparatorStatus {
@@ -424,6 +430,9 @@ export type PlayerCommand =
       displayMode?: DisplayMode
       leadVocal?: boolean
       idleVolume?: number
+      micVolume?: number
+      reverb?: number
+      micOn?: boolean
     }
 
 export type ClientRole = 'tv' | 'desk' | 'remote' | 'admin' | 'ear'
@@ -450,6 +459,25 @@ export type ClientMessage =
    * plays audio, and its own 舞台 / MV mode becomes the one remotes show and control.
    */
   | { type: 'claim'; displayMode?: DisplayMode }
+  /**
+   * WebRTC signalling for 耳返 microphone return (the 主屏 streams its microphone mix to phones).
+   * From a 耳返: to the TV `to` (or the 主屏 when omitted). From a TV: to the 耳返 `to`.
+   */
+  | { type: 'rtc'; to?: number; signal: RtcSignal }
+
+/**
+ * - want: a 耳返 asks for the 主屏 microphone; the TV answers with an offer or `unavailable`.
+ * - offer / answer / ice: the usual WebRTC negotiation.
+ * - bye: either side closed the connection.
+ * - reset (server → 耳返): the 主屏 changed; ask again.
+ */
+export type RtcSignalKind = 'want' | 'offer' | 'answer' | 'ice' | 'bye' | 'unavailable' | 'reset'
+
+export interface RtcSignal {
+  kind: RtcSignalKind
+  sdp?: string
+  candidate?: { candidate: string; sdpMid?: string | null; sdpMLineIndex?: number | null; usernameFragment?: string | null } | null
+}
 
 /** Messages sent by the server over the WebSocket. */
 export type ServerMessage =
@@ -478,6 +506,8 @@ export type ServerMessage =
   | { type: 'sync'; sync: PlaybackSync }
   /** To TVs: the 主屏's 待机音乐 (other 大屏 show and play the same song in step). */
   | { type: 'idle'; idle: IdleSync | null }
+  /** Relayed WebRTC signalling; `from` is the sender's connection id (0 = the server). */
+  | { type: 'rtc'; from: number; signal: RtcSignal }
 
 /**
  * Where the active TV is, on the server clock: at server time `at` (ms) the TV's speakers were

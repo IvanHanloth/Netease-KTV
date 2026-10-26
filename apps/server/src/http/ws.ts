@@ -17,6 +17,8 @@ interface TvConn {
 }
 
 const tvs: TvConn[] = []
+/** Every open socket by connection id (WebRTC signalling is addressed by it). */
+const conns = new Map<number, { role: () => ClientRole | null; send: (msg: ServerMessage) => void }>()
 /** Open sockets by the role they said hello with (for the ops panel). */
 const roles = new Map<symbol, ClientRole>()
 
@@ -38,6 +40,8 @@ function mainChanged(): void {
   // Every TV hears where it stopped, the new 主屏 included (it continues from there).
   const idle = player.latestIdle()
   for (const tv of tvs) tv.send({ type: 'idle', idle })
+  // 耳返 microphone return comes from the 主屏: phones reconnect to the new one.
+  for (const c of conns.values()) if (c.role() === 'ear') c.send({ type: 'rtc', from: 0, signal: { kind: 'reset' } })
 }
 
 function syncTvCount(): void {
@@ -92,6 +96,7 @@ export async function registerWs(app: FastifyInstance) {
     }
     const tv: TvConn = { id: nextId++, send }
     const isActiveTv = () => role === 'tv' && activeTv === tv.id
+    conns.set(tv.id, { role: () => role, send })
 
     // 移动耳返 and silent extra screens follow the sound-playing TV's position reports.
     const onSync = (sync: PlaybackSync) => {
@@ -159,6 +164,16 @@ export async function registerWs(app: FastifyInstance) {
         case 'idleReport':
           if (isActiveTv()) player.idleReport(msg.songId, msg.position, msg.playing, msg.at)
           break
+        case 'rtc': {
+          // 耳返 → a TV (the 主屏 unless one is named); TV → a 耳返. Nothing else is relayed.
+          const toId = role === 'ear' ? (msg.to ?? activeTv) : role === 'tv' ? msg.to : undefined
+          const target = toId != null ? conns.get(toId) : undefined
+          if (!target || toId === tv.id) break
+          if ((role === 'ear' && target.role() === 'tv') || (role === 'tv' && target.role() === 'ear')) {
+            target.send({ type: 'rtc', from: tv.id, signal: msg.signal })
+          }
+          break
+        }
       }
     })
 
@@ -182,6 +197,9 @@ export async function registerWs(app: FastifyInstance) {
       hub.off('sync', onSync)
       hub.off('idle', onIdle)
       roles.delete(key)
+      conns.delete(tv.id)
+      // The other side of any microphone-return connection lets it go.
+      if (role === 'ear' && activeTv !== null) conns.get(activeTv)?.send({ type: 'rtc', from: tv.id, signal: { kind: 'bye' } })
       if (role === 'tv') removeTv(tv)
     })
   })

@@ -8,6 +8,8 @@ import { Icon, type IconName } from '../../components/icons'
 import { Cover, ProgressBar, Spinner, StatusPill } from '../../components/ui'
 import { QrCard, ScreenRoleControl, singerOf } from './chrome'
 import { reduceMotion } from './lyrics'
+import { MicCorner } from './micControl'
+import type { MicControl } from '../../player/useMicMixer'
 
 /** 大屏 full-screen states and overlays: idle, preparing, 即将开始, OSD, 接下来 panel, UI auto-hide. */
 
@@ -118,6 +120,9 @@ export function useOsd(player: PlayerState, announceDisplayMode: boolean, quietS
     else if (prev.key !== player.key) show(keyText(player.key))
     else if (prev.musicVolume !== player.musicVolume) show(`音量 ${pctText(player.musicVolume)}`, 'volume')
     else if (prev.idleVolume !== player.idleVolume && !player.current) show(`待机音乐 ${pctText(player.idleVolume)}`, 'volume')
+    else if (prev.micOn !== player.micOn) show(player.micOn ? '麦克风已打开' : '麦克风已关闭', 'mic')
+    else if (prev.micVolume !== player.micVolume) show(`麦克风 ${pctText(player.micVolume)}`, 'mic')
+    else if (prev.reverb !== player.reverb) show(`混响 ${pctText(player.reverb)}`, 'sparkles')
   }, [player, storeReady, show])
   return { msg, show }
 }
@@ -129,9 +134,12 @@ export function IdleScreen({
   onToggleMute,
   volume,
   onVolume,
+  mic,
 }: {
   onMakeMain?: () => void
   idleSong: Song | null
+  /** The 主屏 microphone switch (the control bar is not shown while nothing is queued). */
+  mic?: MicControl
   /** A 大屏 that isn't the 主屏 (多大屏播放 on): its mute switch and own volume, as on the control bar. */
   muted?: boolean
   onToggleMute?: () => void
@@ -177,6 +185,11 @@ export function IdleScreen({
       {onMakeMain && (
         <div className="absolute right-[3.75vw] bottom-[5.2vh]">
           <ScreenRoleControl onMakeMain={onMakeMain} muted={muted} onToggleMute={onToggleMute} volume={volume} onVolume={onVolume} compact />
+        </div>
+      )}
+      {!onMakeMain && mic && (
+        <div className="absolute right-[3.75vw] bottom-[5.2vh]">
+          <MicCorner mic={mic} />
         </div>
       )}
     </motion.div>

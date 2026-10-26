@@ -23,6 +23,9 @@ let player: PlayerState = {
   leadVocal: false,
   epoch: 0,
   idleVolume: 0.4,
+  micVolume: 0.7,
+  reverb: 0.3,
+  micOn: false,
 }
 
 // ---------- persistence ----------
@@ -51,6 +54,9 @@ function savePlayer(): void {
     leadVocal: player.leadVocal,
     position: player.position,
     idleVolume: player.idleVolume,
+    micVolume: player.micVolume,
+    reverb: player.reverb,
+    micOn: player.micOn,
   })
 }
 
@@ -70,6 +76,9 @@ export function loadPlayer(getSong: (id: number) => Song | undefined): void {
       idleVolume:
         saved.idleVolume ??
         (typeof legacyShare === 'number' ? Math.round(clamp(legacyShare * (saved.musicVolume ?? player.musicVolume), 0, 1) * 100) / 100 : player.idleVolume),
+      micVolume: saved.micVolume ?? player.micVolume,
+      reverb: saved.reverb ?? player.reverb,
+      micOn: saved.micOn ?? player.micOn,
       position: saved.position ?? 0,
       playing: false,
       positionAt: Date.now(),
@@ -226,6 +235,9 @@ export function command(cmd: PlayerCommand): void {
       if (cmd.displayMode === 'stage' || cmd.displayMode === 'mv') player.displayMode = cmd.displayMode
       if (typeof cmd.leadVocal === 'boolean') player.leadVocal = cmd.leadVocal
       if (typeof cmd.idleVolume === 'number') player.idleVolume = clamp(cmd.idleVolume, 0, 1)
+      if (typeof cmd.micVolume === 'number') player.micVolume = clamp(cmd.micVolume, 0, 1)
+      if (typeof cmd.reverb === 'number') player.reverb = clamp(cmd.reverb, 0, 1)
+      if (typeof cmd.micOn === 'boolean') player.micOn = cmd.micOn
       player = { ...player }
       emitPlayer()
       return

@@ -18,10 +18,27 @@ export const commandSchema: z.ZodType<PlayerCommand> = z.union([
     displayMode: z.enum(DISPLAY_MODES).optional(),
     leadVocal: z.boolean().optional(),
     idleVolume: z.number().min(0).max(1).optional(),
+    micVolume: z.number().min(0).max(1).optional(),
+    reverb: z.number().min(0).max(1).optional(),
+    micOn: z.boolean().optional(),
   }),
 ]) as z.ZodType<PlayerCommand>
 
 const finite = z.number().refine(Number.isFinite)
+
+const rtcSignalSchema = z.object({
+  kind: z.enum(['want', 'offer', 'answer', 'ice', 'bye', 'unavailable', 'reset']),
+  sdp: z.string().max(64_000).optional(),
+  candidate: z
+    .object({
+      candidate: z.string().max(2_000),
+      sdpMid: z.string().max(64).nullable().optional(),
+      sdpMLineIndex: z.number().int().min(0).max(64).nullable().optional(),
+      usernameFragment: z.string().max(256).nullable().optional(),
+    })
+    .nullable()
+    .optional(),
+})
 
 /**
  * Messages from browsers over the WebSocket. Anything else is dropped: a malformed message must
@@ -50,4 +67,5 @@ export const clientMessageSchema: z.ZodType<ClientMessage> = z.discriminatedUnio
     playing: z.boolean(),
     at: finite.optional(),
   }),
+  z.object({ type: z.literal('rtc'), to: z.number().int().positive().optional(), signal: rtcSignalSchema }),
 ]) as unknown as z.ZodType<ClientMessage>

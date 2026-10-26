@@ -10,6 +10,7 @@ import { errorText, toast, useDebounced, useHistory, useLiveValue, useSettings, 
 import { stopPreview } from '../lib/preview'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
+import { MicControls } from '../components/MicControls'
 import { Cover, Dialog, EmptyNote, Eq, IconButton, ProgressBar, QueryError, Range, Spinner, StatusPill } from '../components/ui'
 import { Leaderboard } from '../components/Leaderboard'
 import { NICKNAME_MAX, useNickname } from '../lib/nickname'
@@ -164,6 +165,9 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
           </span>
           <Range label={volLabel} value={music} onChange={setMusic} />
         </label>
+        <div className="border-t border-white/8 pt-3.5">
+          <MicControls send={command} />
+        </div>
         <div className="flex items-center justify-between">
           <span className="text-sm">升降调</span>
           <div className="flex items-center gap-2">

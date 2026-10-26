@@ -56,6 +56,7 @@ export function useScoring({
   pitchKey,
   lyrics,
   tolerance = DEFAULT_TOLERANCE,
+  micTap = null,
 }: {
   engine: AudioEngine
   /** Scoring switched on, allowed by settings, and audio is playing for this song. */
@@ -70,6 +71,8 @@ export function useScoring({
   lyrics: Lyrics | undefined
   /** Semitones of error that still earn full credit (settings.scoreTolerance). */
   tolerance?: number
+  /** The 主屏 microphone is on: read its input instead of opening the microphone a second time. */
+  micTap?: { ctx: AudioContext; node: AudioNode } | null
 }) {
   const wanted = active && hasPitch && songId !== null
   const { data: rawPitch, isError: pitchError } = useQuery({
@@ -120,6 +123,12 @@ export function useScoring({
       setMicState('off')
       return
     }
+    if (micTap) {
+      mic.attach(micTap.ctx, micTap.node)
+      setMicError(null)
+      setMicState('on')
+      return () => mic.stop()
+    }
     let cancelled = false
     setMicState('starting')
     setMicError(null)
@@ -137,7 +146,7 @@ export function useScoring({
     return () => {
       cancelled = true
     }
-  }, [wanted, engine, mic])
+  }, [wanted, engine, mic, micTap])
 
   // Stop the mic when leaving the page.
   useEffect(() => () => mic.stop(), [mic])

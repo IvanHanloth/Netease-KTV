@@ -12,10 +12,11 @@ export default defineConfig({
   },
   server: {
     host: true,
-    port: 5173,
+    port: Number(process.env.WEB_PORT ?? 5173),
     proxy: {
       '/api': {
-        target: 'http://localhost:8686',
+        // KTV_API: a server on another port (e.g. while the Docker build holds 8686).
+        target: process.env.KTV_API ?? 'http://localhost:8686',
         changeOrigin: true,
         ws: true,
       },

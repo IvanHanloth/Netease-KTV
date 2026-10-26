@@ -22,6 +22,10 @@ export class EarPlayer {
   private anchorPos = 0
   private rate = 1
   private cache = new Map<string, Promise<AudioBuffer>>()
+  private micEl: HTMLAudioElement | null = null
+  private micSrc: MediaStreamAudioSourceNode | null = null
+  private micGain: GainNode | null = null
+  private micLevel = 1
 
   async unlock() {
     if (!this.ctx) {
@@ -68,6 +72,41 @@ export class EarPlayer {
     this.stop(0.05)
     this.buffer = buffer
     this.bufferUrl = buffer ? url : ''
+  }
+
+  /**
+   * The 主屏 microphone (WebRTC), mixed in with its own level and independent of the stem audio:
+   * it keeps sounding while the song is paused. null disconnects it.
+   */
+  setMicStream(stream: MediaStream | null) {
+    this.micSrc?.disconnect()
+    this.micSrc = null
+    if (this.micEl) {
+      this.micEl.pause()
+      this.micEl.srcObject = null
+    }
+    const ctx = this.ctx
+    if (!stream || !ctx) return
+    // Chrome only feeds a remote WebRTC stream to Web Audio while a media element plays it too.
+    if (!this.micEl) {
+      this.micEl = new Audio()
+      this.micEl.muted = true
+      this.micEl.setAttribute('playsinline', '')
+    }
+    this.micEl.srcObject = stream
+    void this.micEl.play().catch(() => {})
+    if (!this.micGain) {
+      this.micGain = ctx.createGain()
+      this.micGain.gain.value = this.micLevel
+      this.micGain.connect(ctx.destination)
+    }
+    this.micSrc = ctx.createMediaStreamSource(stream)
+    this.micSrc.connect(this.micGain)
+  }
+
+  setMicVolume(v: number) {
+    this.micLevel = Math.max(0, Math.min(2, v))
+    if (this.ctx && this.micGain) this.micGain.gain.setTargetAtTime(this.micLevel, this.ctx.currentTime, 0.05)
   }
 
   setVolume(v: number) {

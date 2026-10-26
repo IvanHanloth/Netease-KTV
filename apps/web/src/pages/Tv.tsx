@@ -13,6 +13,8 @@ import { leadSegments, mergeSegments, seekLeadSegments, type LeadSegment } from 
 import { AudioEngine } from '../player/engine'
 import { MirrorClock, type PlaybackClock } from '../lib/playbackSync'
 import { useScoring } from '../player/useScoring'
+import { useMicMixer } from '../player/useMicMixer'
+import { MicReturnHost } from '../lib/micReturn'
 import { DEFAULT_TOLERANCE } from '../player/scoring'
 import { connect, livePosition, onCommand, sendCommand, sendMessage, useApp } from '../store/app'
 import { Icon } from '../components/icons'
@@ -582,6 +584,16 @@ export default function Tv() {
     if (loadState === 'ready' && lyricsData) leadWas.current = { on: ok, key: loadKey }
     applyLead()
   }, [engine, leadOn, loadState, lyricsData, loadKey, applyLead])
+  // 主屏 microphone: mixed with the song on this screen's speakers, and offered to 耳返 phones.
+  const mic = useMicMixer({ enabled: unlocked && isMain, on: player.micOn, level: player.micVolume, reverb: player.reverb })
+  const micHostRef = useRef<MicReturnHost | null>(null)
+  if (!micHostRef.current) micHostRef.current = new MicReturnHost()
+  const micHost = micHostRef.current
+  useEffect(() => {
+    micHost.start()
+    return () => micHost.stop()
+  }, [micHost])
+  useEffect(() => micHost.setStream(mic.stream), [micHost, mic.stream])
   const scoring = useScoring({
     engine,
     active: unlocked && isMain && scoreOn && scoringAllowed && playingAudio,
@@ -591,6 +603,7 @@ export default function Tv() {
     pitchKey: appliedKey, // match the audio actually playing
     lyrics: lyricsData,
     tolerance: scoreTolerance,
+    micTap: mic.tap,
   })
   finishRef.current = () => {
     const s = scoring.finish()
@@ -720,6 +733,7 @@ export default function Tv() {
           onToggleMute={mirror && multiAudio ? toggleMute : undefined}
           volume={screenVolume}
           onVolume={setScreenVolume}
+          mic={isMain && unlocked ? mic : undefined}
         />
       ) : (
         <>
@@ -783,6 +797,7 @@ export default function Tv() {
                   player={player}
                   hasStems={hasStems}
                   keyPending={playingAudio && appliedKey !== player.key}
+                  mic={mirror ? undefined : mic}
                   mirror={
                     mirror
                       ? {

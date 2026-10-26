@@ -10,6 +10,8 @@ import { Cover, ProgressBar, Range, Spinner, StatusPill } from '../../components
 import { QrCode } from '../../components/QrCode'
 import { DisplayModeToggle, TrackModeToggle } from '../../components/PlayerModes'
 import { useLyrics } from './lyrics'
+import type { MicControl } from '../../player/useMicMixer'
+import { MicButton, MicPopover } from './micControl'
 import { KEY_MAX, KEY_MIN, singerName } from '@shared/constants'
 
 /** 大屏 header, control bar and the small controls in it (mixer, key, 主屏 role, scoring, QR card). */
@@ -319,11 +321,14 @@ export function Controls({
   extra,
   keyPending,
   mirror,
+  mic,
 }: {
   player: PlayerState
   hasStems: boolean
   extra?: ReactNode
   keyPending?: boolean
+  /** The 主屏 microphone (not shown on other 大屏). */
+  mic?: MicControl
   /** A 大屏 that isn't the 主屏: its 舞台 / MV mode (own one unless 多大屏协同), 设为主屏, mute. */
   mirror?: {
     displayMode: DisplayMode
@@ -336,15 +341,16 @@ export function Controls({
   }
 }) {
   const karaoke = hasStems && player.trackMode === 'karaoke'
-  const [mixerOpen, setMixerOpen] = useState(false)
+  const [popover, setPopover] = useState<'mixer' | 'mic' | null>(null)
+  const togglePopover = (p: 'mixer' | 'mic') => setPopover((cur) => (cur === p ? null : p))
   const boxRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
-    if (!mixerOpen) return
+    if (!popover) return
     const onDown = (e: PointerEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setMixerOpen(false)
+      if (boxRef.current && !boxRef.current.contains(e.target as Node)) setPopover(null)
     }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setMixerOpen(false)
+      if (e.key === 'Escape') setPopover(null)
     }
     document.addEventListener('pointerdown', onDown)
     document.addEventListener('keydown', onKey)
@@ -352,13 +358,18 @@ export function Controls({
       document.removeEventListener('pointerdown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [mixerOpen])
+  }, [popover])
 
   return (
     <div ref={boxRef} className="relative min-w-0">
-      {mixerOpen && (
+      {popover === 'mixer' && (
         <div className="absolute right-0 bottom-full z-20 mb-3">
           <MixerPopover player={player} karaoke={karaoke} />
+        </div>
+      )}
+      {popover === 'mic' && mic && !mirror && (
+        <div className="absolute right-0 bottom-full z-20 mb-3">
+          <MicPopover mic={mic} player={player} />
         </div>
       )}
       <div className="flex min-w-0 flex-nowrap items-center gap-3 max-lg:overflow-x-auto max-lg:pb-1">
@@ -390,7 +401,8 @@ export function Controls({
           />
         ) : (
           <>
-            <MixerButton player={player} karaoke={karaoke} open={mixerOpen} onToggle={() => setMixerOpen((v) => !v)} />
+            <MixerButton player={player} karaoke={karaoke} open={popover === 'mixer'} onToggle={() => togglePopover('mixer')} />
+            {mic && <MicButton mic={mic} open={popover === 'mic'} onToggle={() => togglePopover('mic')} />}
             <KeyControl value={player.key} pending={keyPending} />
             {extra}
           </>
@@ -569,7 +581,7 @@ export function ScoreToggle({
           on ? 'bg-accent font-semibold text-accent-ink' : 'glass text-fg hover:bg-white/10',
         )}
       >
-        <Icon name="mic" size={20} />
+        <Icon name="trophy" size={20} />
         评分
         {hint && <span className="h-2 w-2 rounded-full bg-warn" aria-hidden="true" />}
       </button>

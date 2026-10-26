@@ -7,12 +7,14 @@ import type {
   PlaybackSync,
   PlayerCommand,
   PlayerState,
+  RtcSignal,
   ServerMessage,
 } from '@shared/types'
 import { withToken } from '../lib/api'
 import { handlePong, startClockSync, stopClockSync } from '../lib/clock'
 
 type CommandListener = (command: PlayerCommand) => void
+type RtcListener = (from: number, signal: RtcSignal) => void
 
 const defaultPlayer: PlayerState = {
   current: null,
@@ -27,6 +29,9 @@ const defaultPlayer: PlayerState = {
   leadVocal: false,
   epoch: 0,
   idleVolume: 0.4,
+  micVolume: 0.7,
+  reverb: 0.3,
+  micOn: false,
 }
 
 export const emptyState: AppState = {
@@ -111,6 +116,7 @@ let retry = 0
 let retryTimer: number | undefined
 let started = false
 const commandListeners = new Set<CommandListener>()
+const rtcListeners = new Set<RtcListener>()
 const outbox: ClientMessage[] = []
 
 function wsUrl() {
@@ -152,6 +158,10 @@ function open() {
     }
     if (msg.type === 'command') {
       commandListeners.forEach((l) => l(msg.command))
+      return
+    }
+    if (msg.type === 'rtc') {
+      rtcListeners.forEach((l) => l(msg.from, msg.signal))
       return
     }
     useApp.getState().apply(msg)
@@ -205,6 +215,14 @@ export function onCommand(listener: CommandListener) {
   commandListeners.add(listener)
   return () => {
     commandListeners.delete(listener)
+  }
+}
+
+/** WebRTC signalling relayed by the server (耳返 microphone return). */
+export function onRtc(listener: RtcListener) {
+  rtcListeners.add(listener)
+  return () => {
+    rtcListeners.delete(listener)
   }
 }
 
