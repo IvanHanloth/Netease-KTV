@@ -90,6 +90,7 @@ registerServiceWorker()
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
+      <div className="titlebar-drag" aria-hidden />
       <RouterProvider router={router} />
       <ConnectionWatcher />
       <SettingsWatcher />

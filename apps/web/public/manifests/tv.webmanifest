@@ -5,6 +5,9 @@
   "description": "KTV 播放大屏：伴奏、歌词和 MV",
   "start_url": "/tv",
   "display": "fullscreen",
+  "display_override": [
+    "window-controls-overlay"
+  ],
   "orientation": "landscape",
   "scope": "/",
   "lang": "zh-CN",

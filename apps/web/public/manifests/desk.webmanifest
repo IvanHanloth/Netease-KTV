@@ -5,6 +5,9 @@
   "description": "用自己的网易云账号唱 K：AI 伴奏、逐字歌词、手机点歌",
   "start_url": "/",
   "display": "standalone",
+  "display_override": [
+    "window-controls-overlay"
+  ],
   "shortcuts": [
     {
       "name": "手机点歌",

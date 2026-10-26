@@ -63,7 +63,7 @@ export function Header({
   const workingTrack = working ? tracks[working.song.id] : undefined
   const karaoke = player.trackMode === 'karaoke' && track?.hasStems
   return (
-    <header className="absolute top-[5.2vh] right-[3.75vw] left-[3.75vw] flex items-start justify-between gap-8">
+    <header className="absolute top-[calc(5.2vh+var(--tb-h))] right-[3.75vw] left-[3.75vw] flex items-start justify-between gap-8">
       <div className="flex min-w-0 items-center gap-6">
         <Cover song={cur.song} px={300} className="h-24 w-24 rounded-[18px] shadow-[0_18px_40px_rgba(0,0,0,0.45)]" />
         <div className="flex min-w-0 flex-col gap-2">
@@ -123,7 +123,7 @@ export function Header({
 /** MV mode: song title in the corner, shown briefly when a song starts (and while the UI is awake). */
 export function MvTitle({ song, singer, shown }: { song: Song; singer?: string; shown: boolean }) {
   return (
-    <div className={clsx('absolute top-[5.2vh] left-[3.75vw] flex max-w-[60vw] items-center gap-4', fadeCls(shown))}>
+    <div className={clsx('absolute top-[calc(5.2vh+var(--tb-h))] left-[3.75vw] flex max-w-[60vw] items-center gap-4', fadeCls(shown))}>
       <Cover song={song} px={160} className="h-16 w-16 rounded-2xl shadow-[0_12px_30px_rgba(0,0,0,0.5)]" />
       <div className="flex min-w-0 flex-col gap-1" style={{ filter: 'drop-shadow(0 2px 10px rgba(0,0,0,0.85))' }}>
         <span className="truncate text-[30px] leading-tight font-bold">{song.name}</span>

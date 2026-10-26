@@ -16,6 +16,8 @@ export function syncManifest(pathname: string): void {
   const href = `/manifests/${app?.manifest ?? 'desk'}.webmanifest`
   const link = document.querySelector<HTMLLinkElement>('link[rel="manifest"]')
   if (link && link.getAttribute('href') !== href) link.setAttribute('href', href)
+  // Lets CSS tell the apps apart (the 大屏 keeps its full-bleed layout under the window buttons).
+  document.documentElement.dataset.app = app?.manifest ?? 'desk'
   document.querySelector('meta[name="apple-mobile-web-app-title"]')?.setAttribute('content', app?.title ?? 'KTV 点歌台')
 }
 

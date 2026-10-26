@@ -49,6 +49,40 @@
     outline: 2px solid var(--color-accent-soft);
     outline-offset: 2px;
   }
+  /*
+   * Installed desktop app without a title bar (manifest display_override: window-controls-overlay).
+   * --tb-h is the height of the strip the window buttons sit in; 0 everywhere else
+   * (browser tab, phone, fullscreen, or when the user switches the title bar back on).
+   */
+  :root {
+    --tb-h: 0px;
+  }
+  @media (display-mode: window-controls-overlay) {
+    :root {
+      --tb-h: env(titlebar-area-height, 0px);
+    }
+    /* Pages start below the window buttons; the 大屏 stays full-bleed and moves its own header. */
+    :root:not([data-app="tv"]) #root {
+      padding-top: var(--tb-h);
+    }
+  }
+  .titlebar-drag {
+    display: none;
+  }
+  @media (display-mode: window-controls-overlay) {
+    /* With no title bar the window still needs somewhere to grab: the strip left of the buttons. */
+    .titlebar-drag {
+      display: block;
+      position: fixed;
+      top: env(titlebar-area-y, 0px);
+      left: env(titlebar-area-x, 0px);
+      width: env(titlebar-area-width, 100%);
+      height: var(--tb-h);
+      z-index: 2147483647;
+      -webkit-app-region: drag;
+      app-region: drag;
+    }
+  }
   input[type="search"]::-webkit-search-cancel-button {
     filter: invert(1) opacity(0.5);
   }

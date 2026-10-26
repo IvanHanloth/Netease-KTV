@@ -5,6 +5,9 @@
   "description": "在手机上听人声或原唱，和大屏同步",
   "start_url": "/ear",
   "display": "standalone",
+  "display_override": [
+    "window-controls-overlay"
+  ],
   "orientation": "portrait",
   "scope": "/",
   "lang": "zh-CN",

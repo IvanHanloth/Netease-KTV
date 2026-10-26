@@ -5,6 +5,9 @@
   "description": "分离服务器、音质、缓存等运维设置",
   "start_url": "/admin",
   "display": "standalone",
+  "display_override": [
+    "window-controls-overlay"
+  ],
   "scope": "/",
   "lang": "zh-CN",
   "dir": "ltr",

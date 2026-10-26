@@ -5,6 +5,9 @@
   "description": "用手机点歌和控制大屏",
   "start_url": "/m",
   "display": "standalone",
+  "display_override": [
+    "window-controls-overlay"
+  ],
   "orientation": "portrait",
   "scope": "/",
   "lang": "zh-CN",

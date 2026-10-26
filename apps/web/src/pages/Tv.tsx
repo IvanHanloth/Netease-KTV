@@ -733,13 +733,13 @@ export default function Tv() {
 
           {laneShown && <LineRatingPop rating={scoring.lineRating} />}
           {mvMode && laneShown && (
-            <div className="absolute top-[4.5vh] left-1/2 w-[36vw] -translate-x-1/2">
+            <div className="absolute top-[calc(4.5vh+var(--tb-h))] left-1/2 w-[36vw] -translate-x-1/2">
               <PitchLane lane={scoring.lane} getTime={getPos} score={scoring.score} compact />
             </div>
           )}
           {/* Scan-to-request QR: top right, hidden with the rest of the UI when idle. */}
           {mvMode && (
-            <div className={clsx('absolute top-[4.5vh] right-[3.75vw]', fadeCls((uiShown || auxPeek) && !upNextShown))}>
+            <div className={clsx('absolute top-[calc(4.5vh+var(--tb-h))] right-[3.75vw]', fadeCls((uiShown || auxPeek) && !upNextShown))}>
               <QrCard />
             </div>
           )}
@@ -796,7 +796,7 @@ export default function Tv() {
       <ScoreOverlay result={scoreResult} onDone={clearScoreResult} />
 
       {!connected && (
-        <div className="glass absolute top-4 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full px-4 py-2 text-sm text-warn">
+        <div className="glass absolute top-[calc(1rem+var(--tb-h))] left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full px-4 py-2 text-sm text-warn">
           <Spinner size={14} /> 与主机断开，正在重连…
         </div>
       )}
