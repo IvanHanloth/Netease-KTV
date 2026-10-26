@@ -1,0 +1,31 @@
+# HTTPS with your own domain on Cloudflare (Caddy issues and renews the certificate).
+# Set KTV_DOMAIN and CF_API_TOKEN in .env (see .env.example), then add this file:
+#   docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+# The start scripts add it automatically when KTV_DOMAIN is set.
+# http://<LAN IP>:8686 keeps working (e.g. for an old TV box); phones get https://KTV_DOMAIN.
+services:
+  app:
+    environment:
+      # The phone QR code points at the HTTPS address (unless PUBLIC_URL or 后台管理 says otherwise).
+      PUBLIC_URL: ${PUBLIC_URL:-https://${KTV_DOMAIN}}
+
+  caddy:
+    build: ./caddy
+    # Prebuilt instead: KTV_CADDY_IMAGE=ghcr.io/ivanhanloth/netease-ktv-caddy:latest, then pull.
+    image: ${KTV_CADDY_IMAGE:-netease-ktv/caddy:latest}
+    restart: unless-stopped
+    ports:
+      - "${KTV_HTTPS_PORT:-443}:443"
+    environment:
+      KTV_DOMAIN: ${KTV_DOMAIN:?set KTV_DOMAIN in .env, e.g. ktv.example.com}
+      CF_API_TOKEN: ${CF_API_TOKEN:?set CF_API_TOKEN in .env (Cloudflare token with Zone DNS Edit)}
+    volumes:
+      # Certificates and the ACME account: kept across restarts so they are not issued again.
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy-data:
+  caddy-config:

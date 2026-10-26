@@ -3,6 +3,8 @@
 #   NVIDIA GPU: KTV_SEPARATOR_VARIANT=gpu docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.ghcr.yml up -d --no-build
 # Pin a release with KTV_VERSION (e.g. 0.1.2); the default is the latest release.
 # Update later with: docker compose -f docker-compose.yml -f docker-compose.ghcr.yml pull
+# HTTPS (docker-compose.https.yml): also set KTV_CADDY_IMAGE=ghcr.io/ivanhanloth/netease-ktv-caddy:latest
+# in .env and run `pull` before `up --no-build`.
 services:
   app:
     image: ghcr.io/ivanhanloth/netease-ktv-app:${KTV_VERSION:-latest}

@@ -2,6 +2,7 @@
 #   - picks the NVIDIA GPU separator when Docker can reach a GPU, CPU otherwise
 #     (force with $env:KTV_GPU = 'on' / 'off')
 #   - fills the phone QR address with this machine's LAN IP
+#   - with KTV_DOMAIN set in .env: HTTPS through Caddy (docker-compose.https.yml)
 #   - extra args go to `docker compose up`
 $ErrorActionPreference = 'Continue'
 # Windows PowerShell 5.1 consoles default to the ANSI code page; print UTF-8 instead.
@@ -18,8 +19,18 @@ if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 $envText = Get-Content .env -Raw
 $port = if ($envText -match '(?m)^KTV_PORT=(\d+)') { $Matches[1] } else { '8686' }
 
+# HTTPS: own domain on Cloudflare, certificate issued by Caddy.
+$domain = if ($env:KTV_DOMAIN) { $env:KTV_DOMAIN } elseif ($envText -match '(?m)^KTV_DOMAIN=(\S+)') { $Matches[1] } else { '' }
+$httpsPort = if ($env:KTV_HTTPS_PORT) { $env:KTV_HTTPS_PORT } elseif ($envText -match '(?m)^KTV_HTTPS_PORT=(\d+)') { $Matches[1] } else { '443' }
+if ($domain -and -not $env:CF_API_TOKEN -and $envText -notmatch '(?m)^CF_API_TOKEN=\S+') {
+  Write-Host '[x] 设置了 KTV_DOMAIN，但 .env 里没有 CF_API_TOKEN（Cloudflare 令牌，需要 区域 → DNS → 编辑 权限）。' -ForegroundColor Red
+  exit 1
+}
+
 # LAN address for the phone QR code, unless .env sets PUBLIC_URL.
-if ($envText -notmatch '(?m)^PUBLIC_URL=\S+') {
+if ($domain -and $envText -notmatch '(?m)^PUBLIC_URL=\S+') {
+  $env:PUBLIC_URL = if ($httpsPort -eq '443') { "https://$domain" } else { "https://${domain}:$httpsPort" }
+} elseif ($envText -notmatch '(?m)^PUBLIC_URL=\S+') {
   $ip = (Get-NetIPConfiguration |
       Where-Object { $_.IPv4DefaultGateway -and $_.NetAdapter.Status -eq 'Up' } |
       Select-Object -First 1).IPv4Address.IPAddress
@@ -28,6 +39,7 @@ if ($envText -notmatch '(?m)^PUBLIC_URL=\S+') {
 
 $sep = if ($env:KTV_SEPARATOR) { $env:KTV_SEPARATOR } elseif ($envText -match '(?m)^KTV_SEPARATOR=(\w+)') { $Matches[1] } else { 'on' }
 $files = @('-f', 'docker-compose.yml')
+$web = @('app')
 $gpu = if ($env:KTV_GPU) { $env:KTV_GPU } elseif ($envText -match '(?m)^KTV_GPU=(\w+)') { $Matches[1] } else { 'auto' }
 $useGpu = $false
 if ($sep -eq 'off') {
@@ -46,15 +58,22 @@ if ($useGpu) {
   Write-Host '>> 伴奏分离：CPU（较慢，每首几分钟）' -ForegroundColor Yellow
 }
 
+if ($domain) {
+  $files += @('-f', 'docker-compose.https.yml')
+  $web += 'caddy'
+  $shown = if ($httpsPort -eq '443') { "https://$domain" } else { "https://${domain}:$httpsPort" }
+  Write-Host ">> HTTPS：$shown（Caddy 自动申请证书）" -ForegroundColor Cyan
+}
+
 if ($sep -eq 'off') {
   docker compose @files rm -sf separator *> $null
-  docker compose @files up -d --build --no-deps @args app
+  docker compose @files up -d --build --no-deps @args @web
 } else {
   docker compose @files up -d --build @args
 }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$desk = if ($env:PUBLIC_URL) { $env:PUBLIC_URL } else { "http://localhost:$port" }
+$desk = if ($env:PUBLIC_URL) { $env:PUBLIC_URL } elseif ($envText -match '(?m)^PUBLIC_URL=(\S+)') { $Matches[1] } else { "http://localhost:$port" }
 Write-Host ''
 Write-Host '[OK] Netease KTV 已启动' -ForegroundColor Green
 Write-Host "  点歌台：$desk/"

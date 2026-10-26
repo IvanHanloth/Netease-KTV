@@ -1,0 +1,27 @@
+# Netease KTV over HTTPS (see docker-compose.https.yml and the README).
+#   KTV_DOMAIN     the name phones open, e.g. ktv.example.com (a DNS-only A record → this machine's LAN IP)
+#   CF_API_TOKEN   Cloudflare API token with Zone → DNS → Edit on that domain's zone
+
+{
+	servers {
+		# HTTP/1.1 and 2 only: HTTP/3 would need UDP 443 published as well.
+		protocols h1 h2
+	}
+}
+
+{$KTV_DOMAIN} {
+	tls {
+		# The domain resolves to a LAN address, so the certificate is proven through a DNS record
+		# instead of an HTTP request from the internet.
+		dns cloudflare {env.CF_API_TOKEN}
+		# Check that record through public resolvers, not the LAN / router DNS.
+		resolvers 1.1.1.1 1.0.0.1
+	}
+
+	# Everything, WebSocket included, goes to the app. No compression here: audio, stems and MV
+	# are already compressed and are served with Range requests.
+	reverse_proxy app:8686 {
+		# Media streams start playing as data arrives.
+		flush_interval -1
+	}
+}

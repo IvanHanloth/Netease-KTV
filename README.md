@@ -88,7 +88,7 @@ docker compose logs -f separator
 1. 打开点歌台 `http://<本机局域网 IP>:8686`（启动脚本会打印这个地址），点左下角“登录网易云”，用网易云音乐 App 扫码。
 2. 在接电视或投影的那台电脑上打开大屏 `http://localhost:8686/tv`，点一下“开始”。
    - 浏览器要求先点一下才能出声。
-   - 用 localhost 打开才能使用麦克风打分。
+   - 用 localhost 打开才能使用麦克风打分（配置了 HTTPS 后，用 HTTPS 地址打开也可以）。
 3. 手机连同一个 Wi‑Fi，扫大屏上的二维码点歌。
 
 手机打不开时，检查电脑防火墙是否放行了 8686 端口。
@@ -129,6 +129,7 @@ KTV_SEPARATOR_VARIANT=gpu docker compose -f docker-compose.yml -f docker-compose
 
 - `ghcr.io/ivanhanloth/netease-ktv-app`（amd64 / arm64）
 - `ghcr.io/ivanhanloth/netease-ktv-separator`，标签带 `-cpu` 或 `-gpu` 后缀
+- `ghcr.io/ivanhanloth/netease-ktv-caddy`（amd64 / arm64），HTTPS 用；在 `.env` 里设置 `KTV_CADDY_IMAGE=ghcr.io/ivanhanloth/netease-ktv-caddy:latest`，启动前先运行一次 `docker compose ... pull`
 
 ### 发布新版本
 
@@ -156,8 +157,45 @@ GitHub Actions（`.github/workflows/release.yml`）会检查标签和版本号�
 | `AUDIO_LEVEL` | `exhigh` | 音质：`standard` / `higher` / `exhigh` / `lossless` / `hires` |
 | `ENABLE_UNBLOCK` | `false` | 第三方音源，仅用于网易云无音源的歌 |
 | `KTV_GPU` | `auto` | 设为 `on` / `off` 可强制使用或不使用 GPU |
+| `KTV_DOMAIN` / `CF_API_TOKEN` | 空 | 开启 HTTPS，见下一节 |
 
 分离服务器、音质、分离模型、待机音乐、局域网地址、MV 与缓存、第三方音源这些运维选项，也能在后台管理页面 `http://<本机局域网 IP>:8686/admin` 里直接修改；点歌台的“设置”只保留打分相关的选项。
+
+### HTTPS（可选）
+
+有一个托管在 Cloudflare 的域名时，可以让手机和大屏用 `https://ktv.example.com` 访问。好处：
+
+- 任何设备打开大屏都能用麦克风打分，不必在主屏电脑上用 localhost；
+- 手机可以把点歌台“添加到主屏幕”，像 App 一样打开。
+
+证书由 Caddy 通过 Cloudflare DNS 验证自动申请和续期，KTV 不需要暴露到公网。步骤：
+
+1. 在 Cloudflare 给域名添加一条 A 记录，例如 `ktv` → 本机局域网 IP（如 `192.168.1.8`），代理状态选 **仅 DNS**（灰色云朵）。
+   - 在路由器里给这台电脑固定 IP（DHCP 静态分配），否则 IP 变了要回来改记录。
+2. 创建 API 令牌：Cloudflare 控制台 → 我的个人资料 → API 令牌 → 创建令牌 → 使用“编辑区域 DNS”模板，区域资源只选这个域名。
+3. 在 `.env` 里填写：
+
+   ```bash
+   KTV_DOMAIN=ktv.example.com
+   CF_API_TOKEN=你的令牌
+   ```
+
+4. 重新运行启动脚本。
+   - 二维码会自动改成 HTTPS 地址。如果之前在 后台管理 里填过局域网地址，把它清空或改成 HTTPS 地址。
+   - 第一次申请证书需要一两分钟，进度可以用 `docker logs -f netease-ktv-caddy-1` 查看。
+
+注意事项：
+
+- **手机打不开、提示找不到域名**：很多路由器开启了“DNS 重绑定保护”，会拦截解析到内网 IP 的公网域名。在路由器里把这个域名加入白名单（OpenWrt：网络 → DHCP/DNS → 重绑定保护），或者让手机使用公共 DNS。
+- **443 端口被占用**（例如 Windows 上的 IIS 或其他程序）：设置 `KTV_HTTPS_PORT=8443`，地址变成 `https://ktv.example.com:8443`。记得在防火墙里放行这个端口。
+- `http://<局域网 IP>:8686` 仍然可以访问，不支持新证书的老电视盒子可以继续用它。
+- 不要给这个域名开启带 `includeSubDomains` 的 HSTS，否则浏览器会拒绝用 http 打开它。
+- 令牌只给这一个域名的 DNS 编辑权限，`.env` 不要分享给别人。
+- 证书保存在 Docker 卷 `caddy-data` 里，重启不会重新申请。停止时要带上 HTTPS 配置，Caddy 才会一起停止：
+
+  ```bash
+  docker compose -f docker-compose.yml -f docker-compose.https.yml down
+  ```
 
 ### 多台分离服务器
 

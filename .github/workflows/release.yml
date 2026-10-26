@@ -7,6 +7,7 @@
 #   ghcr.io/<owner>/netease-ktv-app:<version> and :latest          (linux/amd64, linux/arm64)
 #   ghcr.io/<owner>/netease-ktv-separator:<version>-cpu and :latest-cpu   (linux/amd64)
 #   ghcr.io/<owner>/netease-ktv-separator:<version>-gpu and :latest-gpu   (linux/amd64, NVIDIA CUDA)
+#   ghcr.io/<owner>/netease-ktv-caddy:<version> and :latest        (linux/amd64, linux/arm64; HTTPS front)
 name: Release
 
 on:
@@ -87,6 +88,11 @@ jobs:
             context: ./separator
             platforms: linux/amd64
             variant: gpu
+          - name: caddy
+            image: netease-ktv-caddy
+            context: ./caddy
+            platforms: linux/amd64,linux/arm64
+            variant: ''
     steps:
       - uses: actions/checkout@v4
         with:
@@ -101,7 +107,7 @@ jobs:
           df -h /
 
       - uses: docker/setup-qemu-action@v3
-        if: contains(matrix.platforms, 'arm64')
+        if: contains(matrix.platforms, 'arm64') && matrix.name != 'caddy'
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
@@ -157,6 +163,7 @@ jobs:
             echo '```bash'
             echo "docker pull ghcr.io/$owner/netease-ktv-app:$v"
             echo "docker pull ghcr.io/$owner/netease-ktv-separator:$v-cpu   # 或 $v-gpu（NVIDIA 显卡）"
+            echo "docker pull ghcr.io/$owner/netease-ktv-caddy:$v           # 可选：HTTPS（KTV_CADDY_IMAGE）"
             echo '```'
             echo
             echo "不想在本机构建镜像时，用预构建镜像启动（KTV_VERSION 默认 latest）："
