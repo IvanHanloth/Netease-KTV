@@ -1,4 +1,4 @@
-import type { PitchTrack } from '@shared/types'
+import type { LyricLine, Lyrics, PitchTrack } from '@shared/types'
 
 /** Frequency (Hz) → MIDI note number (float). */
 export function hzToMidi(hz: number): number {
@@ -66,6 +66,89 @@ export function bestMatch(
     if (!best || err < best.err) best = { err, ref }
   }
   return best
+}
+
+// ---------- limiting the reference to the lyrics ----------
+//
+// Separation is never perfect: backing vocals / harmonies leak into the vocal stem and show up as
+// reference pitch where nobody is meant to sing (intros, interludes, ad-libs between lines).
+// When the song has lyrics, only the reference inside the sung lyrics is kept.
+
+/** Word-timed lyrics: margin kept before a word starts and after it ends (timing slack, held notes). */
+const WORD_LEAD_S = 0.2
+const WORD_TAIL_S = 0.4
+/** Line-timed lyrics: margin before a line starts (line stamps are rougher than word stamps). */
+const LINE_LEAD_S = 0.5
+/**
+ * Line-timed lyrics only say when a line starts; the server has it last until the next line,
+ * at most 10 s, so the intro, the outro and long interludes are still cut.
+ */
+const lineSpanS = (l: LyricLine) => l.d / 1000
+/** Pauses shorter than this between sung spans stay scored (breaths between words / lines). */
+const BRIDGE_S = 0.8
+/**
+ * A note that starts inside the lyrics is kept to its end, at most this far past them: word
+ * timings often stop early on a held last word. Notes that only start in a gap are dropped.
+ */
+const HOLD_S = 2
+/**
+ * If the lyrics would drop more than this share of the voiced reference, they probably don't
+ * match this audio (another version, wrong timing): the reference is then left as it is.
+ */
+const MAX_DROPPED = 0.5
+
+/** Time spans (seconds, sorted and merged) in which the lyrics are being sung. */
+export function lyricSpans(lyrics: Lyrics): [number, number][] {
+  const raw: [number, number][] = []
+  for (const l of lyrics.lines) {
+    if (lyrics.kind === 'yrc' && l.words.length) {
+      for (const w of l.words) if (w.text.trim()) raw.push([w.t / 1000 - WORD_LEAD_S, (w.t + w.d) / 1000 + WORD_TAIL_S])
+    } else {
+      raw.push([l.t / 1000 - LINE_LEAD_S, l.t / 1000 + lineSpanS(l)])
+    }
+  }
+  raw.sort((a, b) => a[0] - b[0])
+  const out: [number, number][] = []
+  for (const s of raw) {
+    const last = out.at(-1)
+    if (last && s[0] - last[1] < BRIDGE_S) last[1] = Math.max(last[1], s[1])
+    else out.push([s[0], s[1]])
+  }
+  return out
+}
+
+/**
+ * The reference with every frame outside the sung lyrics made silent, so it is neither scored
+ * nor drawn. Returned unchanged without lyrics, or when the lyrics don't seem to fit the audio.
+ */
+export function limitToLyrics(track: PitchTrack, lyrics: Lyrics | undefined): PitchTrack {
+  if (!lyrics || lyrics.kind === 'none' || !lyrics.lines.length) return track
+  const keep = new Uint8Array(track.midi.length)
+  for (const [a, b] of lyricSpans(lyrics)) {
+    const i0 = Math.max(0, Math.ceil(a / track.hop))
+    const i1 = Math.min(keep.length - 1, Math.floor(b / track.hop))
+    for (let i = i0; i <= i1; i++) keep[i] = 1
+  }
+  // Let held notes run on: a voiced stretch that is kept where it leaves the lyrics continues.
+  const hold = Math.round(HOLD_S / track.hop)
+  for (let i = 1, left = 0; i < keep.length; i++) {
+    if (keep[i]) left = hold
+    else if (left > 0 && track.midi[i] !== null && track.midi[i - 1] !== null && keep[i - 1]) {
+      keep[i] = 1
+      left--
+    } else left = 0
+  }
+  let voiced = 0
+  let dropped = 0
+  const midi = track.midi.map((m, i) => {
+    if (m === null) return null
+    voiced++
+    if (keep[i]) return m
+    dropped++
+    return null
+  })
+  if (!dropped || dropped > voiced * MAX_DROPPED) return track
+  return { ...track, midi }
 }
 
 export interface RefNote {

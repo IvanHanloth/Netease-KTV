@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import type { LyricLine } from '@shared/types'
+import type { Lyrics } from '@shared/types'
 import { api } from '../lib/api'
 import { currentLineIndex } from '../lib/lyrics'
 import type { AudioEngine } from './engine'
@@ -10,6 +10,7 @@ import {
   buildNotes,
   buildScoreMask,
   DEFAULT_TOLERANCE,
+  limitToLyrics,
   noteAt,
   rating,
   ScoreKeeper,
@@ -53,7 +54,7 @@ export function useScoring({
   songKey,
   hasPitch,
   pitchKey,
-  lines,
+  lyrics,
   tolerance = DEFAULT_TOLERANCE,
 }: {
   engine: AudioEngine
@@ -65,18 +66,22 @@ export function useScoring({
   hasPitch: boolean
   /** Current key shift in semitones. */
   pitchKey: number
-  lines: LyricLine[] | undefined
+  /** Line ratings follow its lines; the reference is limited to the sung lyrics. */
+  lyrics: Lyrics | undefined
   /** Semitones of error that still earn full credit (settings.scoreTolerance). */
   tolerance?: number
 }) {
   const wanted = active && hasPitch && songId !== null
-  const { data: pitch, isError: pitchError } = useQuery({
+  const { data: rawPitch, isError: pitchError } = useQuery({
     queryKey: ['pitch', songId],
     queryFn: () => api.pitch(songId!),
     enabled: wanted,
     staleTime: Infinity,
     retry: false,
   })
+  // Leaked backing vocals outside the lyrics are neither scored nor drawn.
+  const pitch = useMemo(() => (rawPitch ? limitToLyrics(rawPitch, lyrics) : undefined), [rawPitch, lyrics])
+  const lines = lyrics?.lines
   const notes = useMemo(() => (pitch ? buildNotes(pitch) : []), [pitch])
   const mask = useMemo(() => (pitch ? buildScoreMask(pitch, notes) : null), [pitch, notes])
   const toleranceRef = useRef(tolerance)

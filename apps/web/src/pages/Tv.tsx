@@ -589,7 +589,7 @@ export default function Tv() {
     songKey,
     hasPitch: !!track?.hasPitch,
     pitchKey: appliedKey, // match the audio actually playing
-    lines: lyricsData?.lines,
+    lyrics: lyricsData,
     tolerance: scoreTolerance,
   })
   finishRef.current = () => {
