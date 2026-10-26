@@ -58,12 +58,60 @@ export async function call<B = any>(name: string, params: Record<string, unknown
   }
 }
 
+/**
+ * NetEase's neapi config (gorilla/algorithm/record) is a zstd frame whose final block is not
+ * flagged as last. fzstd accepts that, but Node's built-in zstd, which the library uses on
+ * Node 22.15+, fails with "unexpected end of file". So the key never gets cached and every start
+ * logs a stack trace. Returns a copy with the flag set when the data ends exactly at the end of an
+ * unflagged block, else null.
+ */
+export function terminateZstdFrame(buf: Buffer): Buffer | null {
+  if (buf.length < 6 || buf.readUInt32LE(0) !== 0xfd2fb528) return null
+  const fhd = buf[4]!
+  const singleSegment = (fhd >> 5) & 1
+  const dictIdBytes = [0, 1, 2, 4][fhd & 3]!
+  const contentSizeBytes = [singleSegment, 2, 4, 8][fhd >> 6]!
+  let pos = 5 + (singleSegment ? 0 : 1) + dictIdBytes + contentSizeBytes
+  while (pos + 3 <= buf.length) {
+    const header = buf.readUIntLE(pos, 3)
+    if (header & 1) return null // already terminated: the problem is something else
+    const type = (header >> 1) & 3
+    const end = pos + 3 + (type === 1 ? 1 : header >> 3) // RLE blocks carry one byte
+    if (end === buf.length) {
+      const out = Buffer.from(buf)
+      out[pos]! |= 1
+      return out
+    }
+    pos = end
+  }
+  return null
+}
+
+function patchZstd(): void {
+  const zstd = require('@neteasecloudmusicapienhanced/api/util/zstd.js') as { decompress: (b: Buffer) => Buffer }
+  const decompress = zstd.decompress
+  zstd.decompress = (input) => {
+    try {
+      return decompress(input)
+    } catch (err) {
+      const fixed = terminateZstdFrame(Buffer.from(input))
+      if (!fixed) throw err
+      return decompress(fixed)
+    }
+  }
+}
+
 let initialized = false
 
 /** Registers an anonymous device token and fetches encryption keys, like the library's own server does. */
 export async function initNcm(): Promise<void> {
   if (initialized) return
   initialized = true
+  try {
+    patchZstd()
+  } catch (err) {
+    console.warn('[ncm] zstd patch skipped:', (err as Error).message)
+  }
   try {
     const generateConfig = require('@neteasecloudmusicapienhanced/api/generateConfig.js') as () => Promise<void>
     await generateConfig()
