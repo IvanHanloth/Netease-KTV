@@ -524,16 +524,6 @@ export function ScreenRoleControl({
   )
 }
 
-export const SCORE_PREF = 'ktv.scoring'
-
-export function readScorePref() {
-  try {
-    return localStorage.getItem(SCORE_PREF) === '1'
-  } catch {
-    return false
-  }
-}
-
 export type ScoringStatus = 'off' | 'loading' | 'on' | 'error'
 
 /** Why scoring isn't working, if it isn't (null: fine, or off). */

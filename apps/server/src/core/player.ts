@@ -26,6 +26,7 @@ let player: PlayerState = {
   micVolume: 0.7,
   reverb: 0.3,
   micOn: false,
+  scoreOn: false,
 }
 
 // ---------- persistence ----------
@@ -57,6 +58,7 @@ function savePlayer(): void {
     micVolume: player.micVolume,
     reverb: player.reverb,
     micOn: player.micOn,
+    scoreOn: player.scoreOn,
   })
 }
 
@@ -79,6 +81,7 @@ export function loadPlayer(getSong: (id: number) => Song | undefined): void {
       micVolume: saved.micVolume ?? player.micVolume,
       reverb: saved.reverb ?? player.reverb,
       micOn: saved.micOn ?? player.micOn,
+      scoreOn: saved.scoreOn ?? player.scoreOn,
       position: saved.position ?? 0,
       playing: false,
       positionAt: Date.now(),
@@ -238,6 +241,7 @@ export function command(cmd: PlayerCommand): void {
       if (typeof cmd.micVolume === 'number') player.micVolume = clamp(cmd.micVolume, 0, 1)
       if (typeof cmd.reverb === 'number') player.reverb = clamp(cmd.reverb, 0, 1)
       if (typeof cmd.micOn === 'boolean') player.micOn = cmd.micOn
+      if (typeof cmd.scoreOn === 'boolean') player.scoreOn = cmd.scoreOn
       player = { ...player }
       emitPlayer()
       return

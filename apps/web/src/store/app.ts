@@ -8,6 +8,8 @@ import type {
   PlayerCommand,
   PlayerState,
   RtcSignal,
+  ScreenCommand,
+  ScreenInfo,
   ServerMessage,
 } from '@shared/types'
 import { withToken } from '../lib/api'
@@ -15,6 +17,7 @@ import { handlePong, startClockSync, stopClockSync } from '../lib/clock'
 
 type CommandListener = (command: PlayerCommand) => void
 type RtcListener = (from: number, signal: RtcSignal) => void
+type ScreenCommandListener = (command: ScreenCommand) => void
 
 const defaultPlayer: PlayerState = {
   current: null,
@@ -32,6 +35,7 @@ const defaultPlayer: PlayerState = {
   micVolume: 0.7,
   reverb: 0.3,
   micOn: false,
+  scoreOn: false,
 }
 
 export const emptyState: AppState = {
@@ -49,6 +53,10 @@ interface Store {
   ready: boolean
   /** TV pages only: whether this page is the one TV allowed to play audio (null = not told yet). */
   tvActive: boolean | null
+  /** TV pages only: this 大屏's number (大屏 N). */
+  tvNumber: number | null
+  /** Everyone but the TV: the open 大屏 (点歌台 control panel). */
+  screens: ScreenInfo[]
   /** Bumped on every `{type:'scores'}` message so leaderboard queries refetch. */
   scoresVersion: number
   /** Bumped on every `{type:'history'}` message so 点歌记录 refetches. */
@@ -68,6 +76,8 @@ export const useApp = create<Store>((set) => ({
   connected: false,
   ready: false,
   tvActive: null,
+  tvNumber: null,
+  screens: [],
   scoresVersion: 0,
   historyVersion: 0,
   sync: null,
@@ -91,7 +101,9 @@ export const useApp = create<Store>((set) => ({
         case 'tv':
           return { state: { ...st, tvOnline: msg.online } }
         case 'tvRole':
-          return { tvActive: msg.active }
+          return { tvActive: msg.active, ...(msg.number ? { tvNumber: msg.number } : {}) }
+        case 'screens':
+          return { screens: msg.screens }
         case 'scores':
           return { scoresVersion: s.scoresVersion + 1 }
         case 'history':
@@ -117,6 +129,9 @@ let retryTimer: number | undefined
 let started = false
 const commandListeners = new Set<CommandListener>()
 const rtcListeners = new Set<RtcListener>()
+const screenCommandListeners = new Set<ScreenCommandListener>()
+/** Sent with every hello (a 大屏's own id). */
+let helloExtra: { screenKey?: string } = {}
 const outbox: ClientMessage[] = []
 
 function wsUrl() {
@@ -141,7 +156,7 @@ function open() {
   ws.onopen = () => {
     retry = 0
     useApp.getState().setConnected(true)
-    ws.send(JSON.stringify({ type: 'hello', role } satisfies ClientMessage))
+    ws.send(JSON.stringify({ type: 'hello', role, ...helloExtra } satisfies ClientMessage))
     while (outbox.length) ws.send(JSON.stringify(outbox.shift()))
     syncClock()
   }
@@ -158,6 +173,10 @@ function open() {
     }
     if (msg.type === 'command') {
       commandListeners.forEach((l) => l(msg.command))
+      return
+    }
+    if (msg.type === 'screenCommand') {
+      screenCommandListeners.forEach((l) => l(msg.command))
       return
     }
     if (msg.type === 'rtc') {
@@ -178,10 +197,11 @@ function open() {
 }
 
 /** Start (once) the shared connection with the given role. */
-export function connect(r: ClientRole) {
+export function connect(r: ClientRole, extra: { screenKey?: string } = {}) {
   role = r
+  helloExtra = extra
   if (started) {
-    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'hello', role }))
+    if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify({ type: 'hello', role, ...helloExtra } satisfies ClientMessage))
     syncClock()
     return
   }
@@ -216,6 +236,19 @@ export function onCommand(listener: CommandListener) {
   return () => {
     commandListeners.delete(listener)
   }
+}
+
+/** Commands for this 大屏 from the 点歌台 control panel. */
+export function onScreenCommand(listener: ScreenCommandListener) {
+  screenCommandListeners.add(listener)
+  return () => {
+    screenCommandListeners.delete(listener)
+  }
+}
+
+/** Send a command to one 大屏 (by its connection id). */
+export function sendScreenCommand(to: number, command: ScreenCommand): boolean {
+  return sendMessage({ type: 'screenCommand', to, command })
 }
 
 /** WebRTC signalling relayed by the server (耳返 microphone return). */

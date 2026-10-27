@@ -16,14 +16,16 @@ import { useScoring } from '../player/useScoring'
 import { useMicMixer } from '../player/useMicMixer'
 import { MicReturnHost } from '../lib/micReturn'
 import { DEFAULT_TOLERANCE } from '../player/scoring'
-import { connect, livePosition, onCommand, sendCommand, sendMessage, useApp } from '../store/app'
+import { connect, livePosition, onCommand, onScreenCommand, sendCommand, sendMessage, useApp } from '../store/app'
+import type { ScreenMic } from '@shared/types'
 import { Icon } from '../components/icons'
 import { Spinner } from '../components/ui'
 import { PitchLane } from '../components/PitchLane'
 import { LineRatingPop, ScoreOverlay, type ScoreResult } from '../components/ScoreOverlay'
 import { vocalModeCommand, type VocalMode } from '../components/PlayerModes'
 import { Ambient, IdleAmbient, Vignette } from './tv/background'
-import { Controls, ControlsArea, Header, MvTitle, Progress, QrCard, SCORE_PREF, ScoreToggle, fadeCls, readScorePref, readScreenVolume, saveScreenVolume, scoreHint, singerOf } from './tv/chrome'
+import { Controls, ControlsArea, Header, MvTitle, Progress, QrCard, ScoreToggle, fadeCls, readScreenVolume, saveScreenVolume, scoreHint, singerOf } from './tv/chrome'
+import { IdentifyOverlay, screenKey } from './tv/identify'
 import { LyricsView, TwoLineLyrics } from './tv/lyrics'
 import { MvBackdrop, MvScreen, NextMvPreloader } from './tv/mv'
 import { IdleScreen, Osd, PreparingScreen, START_HOLD_MS, START_MAX_WAIT_MS, StartingScreen, UpNextPanel, upNextVisible, useDelayedFlag, useIdle, useOsd } from './tv/screens'
@@ -122,25 +124,22 @@ export default function Tv() {
   }, [engine, ownVolume])
   const isMainRef = useRef(isMain)
   isMainRef.current = isMain
-  const [scoreOn, setScoreOn] = useState(readScorePref)
+  // 演唱评分 is a shared switch (the 点歌台 control panel sets it too); the 主屏 scores.
+  const scoreOn = useApp((s) => s.state.player.scoreOn)
   const [scoreResult, setScoreResult] = useState<ScoreResult | null>(null)
   const finishRef = useRef<() => ScoreResult | null>(() => null)
   const toggleScore = useCallback(() => {
-    setScoreOn((v) => {
-      try {
-        localStorage.setItem(SCORE_PREF, v ? '0' : '1')
-      } catch {
-        /* storage unavailable */
-      }
-      return !v
-    })
+    sendCommand({ action: 'set', scoreOn: !useApp.getState().state.player.scoreOn })
   }, [])
   const clearScoreResult = useCallback(() => {
     setScoreResult(null)
     setStartGate((g) => (g ? { ...g, since: performance.now() } : g))
   }, [])
 
-  useEffect(() => connect('tv'), [])
+  useEffect(() => connect('tv', { screenKey: screenKey() }), [])
+  const tvNumber = useApp((s) => s.tvNumber)
+  // 定位 from the 点歌台: this 大屏 shows its number big for a few seconds.
+  const [identifyAt, setIdentifyAt] = useState(0)
   useEffect(() => {
     document.title = '大屏 · Netease KTV'
   }, [])
@@ -650,10 +649,17 @@ export default function Tv() {
     return () => window.clearTimeout(t)
   }, [songKey, playingAudio])
 
-  /** Allow sound on this page (needs a click / key press). False when the browser refused. */
+  /**
+   * Allow sound on this page (needs a click / key press). False when the browser refused — or,
+   * asked from the 点歌台, when it is still waiting for a click on this screen after a moment.
+   */
   const unlockAudio = async () => {
     try {
-      await engine.unlock()
+      const ok = await Promise.race([
+        engine.unlock().then(() => true),
+        new Promise<boolean>((r) => window.setTimeout(() => r(false), 1500)),
+      ])
+      if (!ok) return false
       setUnlocked(true)
       return true
     } catch {
@@ -687,6 +693,63 @@ export default function Tv() {
     await unlockAudio() // if refused, the 点击开始 overlay asks for a click
     claimMain()
   }
+
+  // Commands from the 点歌台 control panel for this 大屏.
+  const remoteRef = useRef({ takeOver, unlockAudio, mic, setScreenVolume })
+  remoteRef.current = { takeOver, unlockAudio, mic, setScreenVolume }
+  useEffect(
+    () =>
+      onScreenCommand((c) => {
+        const r = remoteRef.current
+        switch (c.action) {
+          case 'claim':
+            void r.takeOver()
+            break
+          case 'identify':
+            setIdentifyAt(Date.now())
+            break
+          case 'set':
+            if (c.displayMode && ownModeRef.current) setLocalMode(c.displayMode)
+            if (typeof c.volume === 'number') r.setScreenVolume(c.volume)
+            if (c.muted === true) setMuted(true)
+            // Sound needs this page's audio unlocked; without a click here it may stay muted.
+            if (c.muted === false) void r.unlockAudio().then((ok) => ok && setMuted(false))
+            break
+          case 'micDevice':
+            r.mic.toggleDevice(c.deviceId)
+            break
+        }
+      }),
+    [],
+  )
+
+  // Tell the 点歌台 what this 大屏 is doing (its control panel lists every 大屏).
+  const micReport = useMemo<ScreenMic | null>(
+    () =>
+      isMain
+        ? {
+            status: mic.status,
+            devices: mic.devices.map((d) => ({ id: d.deviceId, label: d.label })),
+            selected: mic.selected,
+            errors: Object.fromEntries(mic.errors),
+          }
+        : null,
+    [isMain, mic.status, mic.devices, mic.selected, mic.errors],
+  )
+  useEffect(() => {
+    if (!connected || tvActive === null) return
+    sendMessage({
+      type: 'screen',
+      state: {
+        unlocked,
+        displayMode,
+        muted: mirror && !(multiAudio && !muted),
+        volume: screenVolume,
+        mic: micReport,
+        scoreIssue: isMain ? scoreWarn : null,
+      },
+    })
+  }, [connected, tvActive, unlocked, displayMode, mirror, multiAudio, muted, screenVolume, micReport, isMain, scoreWarn])
 
   const duration = useMemo(
     () => (playingAudio && !mirror ? engine.duration : (cur?.song.duration ?? 0) / 1000),
@@ -841,6 +904,7 @@ export default function Tv() {
       <UpNextPanel shown={upNextShown} mvMode={mvMode} />
       <Osd msg={osd} />
       <ScoreOverlay result={scoreResult} onDone={clearScoreResult} />
+      <IdentifyOverlay at={identifyAt} number={tvNumber} main={isMain} />
 
       {!connected && (
         <div className="glass absolute top-[calc(1rem+var(--tb-h))] left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full px-4 py-2 text-sm text-warn">
@@ -866,6 +930,7 @@ export default function Tv() {
                 <Icon name="play" size={48} />
               </span>
               <span className="text-[clamp(28px,2.6vw,48px)] font-black">点击开始 KTV</span>
+              {tvNumber !== null && <span className="text-[clamp(14px,1.1vw,20px)] font-semibold text-accent-soft">大屏 {tvNumber} · 主屏</span>}
               <span className="text-[clamp(14px,1.1vw,20px)] text-fg-2">或按遥控器的确认键 / 回车</span>
             </button>
             <p className="absolute bottom-[6vh] left-1/2 m-0 -translate-x-1/2 text-center text-[clamp(14px,1.1vw,20px)] whitespace-nowrap text-muted">

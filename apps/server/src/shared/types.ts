@@ -131,7 +131,49 @@ export interface PlayerState {
   reverb: number
   /** The 主屏 microphone is switched on (which input devices it uses is set on that 大屏). */
   micOn: boolean
+  /** 演唱评分 on the 主屏. */
+  scoreOn: boolean
 }
+
+export type MicErrorCode = 'insecure' | 'denied' | 'unavailable'
+
+/** A 大屏's microphone, as it reports it (only the 主屏 opens one). */
+export interface ScreenMic {
+  status: 'off' | 'starting' | 'on' | 'error'
+  /** Physical inputs; '' (系统默认) is implied. Labels are empty before the first permission. */
+  devices: { id: string; label: string }[]
+  selected: string[]
+  errors: Record<string, MicErrorCode>
+}
+
+/** What a 大屏 reports about itself. */
+export interface ScreenReport {
+  /** Sound is allowed on it (someone clicked 开始 / 取消静音 there). */
+  unlocked: boolean
+  /** What it shows (its own mode unless it is the 主屏 or 多大屏协同 is on). */
+  displayMode: DisplayMode
+  /** Not the 主屏: silent (多大屏播放 off, or not unmuted). */
+  muted: boolean
+  /** Its own volume (used while it isn't the 主屏), 0..1. */
+  volume: number
+  mic: ScreenMic | null
+  /** 主屏 with 评分 on: why scoring isn't working right now (null: it is, or it's off). */
+  scoreIssue?: string | null
+}
+
+/** One open 大屏, for the 点歌台 control panel. `id` addresses it, `number` is what people see. */
+export interface ScreenInfo extends ScreenReport {
+  id: number
+  number: number
+  main: boolean
+}
+
+/** Sent to one 大屏 (from the 点歌台 control panel). */
+export type ScreenCommand =
+  | { action: 'claim' }
+  | { action: 'identify' }
+  | { action: 'set'; displayMode?: DisplayMode; muted?: boolean; volume?: number }
+  | { action: 'micDevice'; deviceId: string }
 
 export interface SeparatorStatus {
   online: boolean
@@ -433,13 +475,15 @@ export type PlayerCommand =
       micVolume?: number
       reverb?: number
       micOn?: boolean
+      scoreOn?: boolean
     }
 
 export type ClientRole = 'tv' | 'desk' | 'remote' | 'admin' | 'ear'
 
 /** Messages sent by browsers over the WebSocket. */
 export type ClientMessage =
-  | { type: 'hello'; role: ClientRole }
+  /** `screenKey`: a 大屏's own id (kept in its browser), so it keeps its number across reloads. */
+  | { type: 'hello'; role: ClientRole; screenKey?: string }
   | { type: 'command'; command: PlayerCommand }
   /**
    * Sent only by the TV, ~1/s and on every state change. `at` (server clock, ms) is when the
@@ -464,6 +508,10 @@ export type ClientMessage =
    * From a 耳返: to the TV `to` (or the 主屏 when omitted). From a TV: to the 耳返 `to`.
    */
   | { type: 'rtc'; to?: number; signal: RtcSignal }
+  /** A 大屏 describes itself (on every change). */
+  | { type: 'screen'; state: ScreenReport }
+  /** 点歌台 → the 大屏 with connection id `to`. */
+  | { type: 'screenCommand'; to: number; command: ScreenCommand }
 
 /**
  * - want: a 耳返 asks for the 主屏 microphone; the TV answers with an offer or `unavailable`.
@@ -491,7 +539,7 @@ export type ServerMessage =
    * Sent to TV connections only. Exactly one TV is active (plays audio, reports position,
    * receives commands); the others must stay silent until they send `claim`.
    */
-  | { type: 'tvRole'; active: boolean }
+  | { type: 'tvRole'; active: boolean; number?: number }
   /** The leaderboard changed (new score or reset): refetch GET /api/scores. */
   | { type: 'scores' }
   /** 点歌记录 changed. */
@@ -506,6 +554,10 @@ export type ServerMessage =
   | { type: 'sync'; sync: PlaybackSync }
   /** To TVs: the 主屏's 待机音乐 (other 大屏 show and play the same song in step). */
   | { type: 'idle'; idle: IdleSync | null }
+  /** To every client but the 大屏: the open 大屏, in number order. */
+  | { type: 'screens'; screens: ScreenInfo[] }
+  /** To one 大屏: a command from the 点歌台 control panel. */
+  | { type: 'screenCommand'; command: ScreenCommand }
   /** Relayed WebRTC signalling; `from` is the sender's connection id (0 = the server). */
   | { type: 'rtc'; from: number; signal: RtcSignal }
 

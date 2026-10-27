@@ -10,7 +10,7 @@ import { livePosition, sendCommand, useApp } from '../store/app'
 import { Icon } from './icons'
 import { DisplayModeButton, VocalModeButton } from './PlayerModes'
 import { IdleVolumeControl } from './IdleVolume'
-import { MicControls } from './MicControls'
+import { ControlPanelLauncher } from './ControlPanel'
 import { ConfirmDialog, Cover, dotColor, EmptyNote, Eq, IconButton, ProgressBar } from './ui'
 
 export function useNow(interval = 1000) {
@@ -259,8 +259,9 @@ export function QueuePanel() {
           </div>
         </>
       )}
-      <div className="shrink-0 rounded-[20px] border border-white/8 bg-white/[0.03] p-4">
-        <MicControls />
+      {/* Everything the 大屏 control bar can do, and the 大屏 themselves. */}
+      <div className="mt-auto shrink-0">
+        <ControlPanelLauncher />
       </div>
       <ConfirmDialog
         open={confirmClear}

@@ -2,7 +2,8 @@ import type { FastifyInstance } from 'fastify'
 import { hub } from '../core/hub.js'
 import * as player from '../core/player.js'
 import { serverNow } from '../clock.js'
-import type { ClientMessage, ClientRole, IdleSync, PlaybackSync, ServerMessage } from '../shared/types.js'
+import { kv } from '../db.js'
+import type { ClientMessage, ClientRole, IdleSync, PlaybackSync, ScreenInfo, ScreenReport, ServerMessage } from '../shared/types.js'
 import { clientMessageSchema, commandSchema } from './schemas.js'
 
 /**
@@ -14,6 +15,47 @@ import { clientMessageSchema, commandSchema } from './schemas.js'
 interface TvConn {
   id: number
   send: (msg: ServerMessage) => void
+  /** 大屏 N, shown to people. */
+  number: number
+  /** The page's own id (kept in its browser): the same screen gets the same number back. */
+  key?: string
+  report?: ScreenReport
+}
+
+const NUMBERS_KEY = 'screenNumbers'
+
+/** The number a 大屏 had before if it is free, otherwise the lowest free one. */
+function assignNumber(tv: TvConn): void {
+  const taken = new Set(tvs.filter((t) => t !== tv && t.number > 0).map((t) => t.number))
+  const saved = tv.key ? kv.get<Record<string, number>>(NUMBERS_KEY)?.[tv.key] : undefined
+  let n = saved && !taken.has(saved) ? saved : 1
+  while (taken.has(n)) n++
+  tv.number = n
+  if (tv.key && saved !== n) {
+    const all = kv.get<Record<string, number>>(NUMBERS_KEY) ?? {}
+    all[tv.key] = n
+    // Forget the oldest keys once there are many (browsers that are long gone).
+    const keys = Object.keys(all)
+    for (const k of keys.slice(0, Math.max(0, keys.length - 64))) delete all[k]
+    kv.set(NUMBERS_KEY, all)
+  }
+}
+
+const DEFAULT_REPORT: ScreenReport = { unlocked: false, displayMode: 'stage', muted: true, volume: 1, mic: null }
+
+function screensList(): ScreenInfo[] {
+  return tvs
+    .map((t) => ({ ...(t.report ?? DEFAULT_REPORT), id: t.id, number: t.number, main: t.id === activeTv }))
+    .sort((a, b) => a.number - b.number)
+}
+
+/** Every client but the 大屏 hears about the open 大屏 (the 点歌台 control panel lists them). */
+function broadcastScreens(): void {
+  const msg: ServerMessage = { type: 'screens', screens: screensList() }
+  for (const c of conns.values()) {
+    const r = c.role()
+    if (r && r !== 'tv') c.send(msg)
+  }
 }
 
 const tvs: TvConn[] = []
@@ -31,7 +73,8 @@ let activeTv: number | null = null
 let nextId = 1
 
 function announceRoles(): void {
-  for (const tv of tvs) tv.send({ type: 'tvRole', active: tv.id === activeTv })
+  for (const tv of tvs) tv.send({ type: 'tvRole', active: tv.id === activeTv, number: tv.number })
+  broadcastScreens()
 }
 
 /** Another 大屏 became the 主屏 (or the 主屏 left): its 待机音乐 holds where it was. */
@@ -51,6 +94,7 @@ function syncTvCount(): void {
 
 function addTv(tv: TvConn): void {
   if (!tvs.includes(tv)) tvs.push(tv)
+  assignNumber(tv)
   if (activeTv === null) {
     activeTv = tv.id
     mainChanged()
@@ -76,7 +120,7 @@ function removeTv(tv: TvConn): void {
 
 function claim(tv: TvConn): void {
   if (!tvs.includes(tv) || activeTv === tv.id) {
-    tv.send({ type: 'tvRole', active: activeTv === tv.id })
+    tv.send({ type: 'tvRole', active: activeTv === tv.id, number: tv.number })
     return
   }
   activeTv = tv.id
@@ -94,7 +138,7 @@ export async function registerWs(app: FastifyInstance) {
     const send = (msg: ServerMessage) => {
       if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(msg))
     }
-    const tv: TvConn = { id: nextId++, send }
+    const tv: TvConn = { id: nextId++, send, number: 0 }
     const isActiveTv = () => role === 'tv' && activeTv === tv.id
     conns.set(tv.id, { role: () => role, send })
 
@@ -129,11 +173,15 @@ export async function registerWs(app: FastifyInstance) {
       switch (msg.type) {
         case 'hello':
           send({ type: 'state', state: player.snapshot() })
-          if (msg.role === 'tv') addTv(tv)
-          else if (role === 'tv') removeTv(tv)
           role = msg.role
           roles.set(key, role)
-          if (role === 'tv') send({ type: 'tvRole', active: activeTv === tv.id })
+          if (role === 'tv') {
+            tv.key = msg.screenKey
+            addTv(tv)
+          } else {
+            removeTv(tv)
+            send({ type: 'screens', screens: screensList() })
+          }
           if (role === 'ear' || role === 'tv') {
             const sync = player.latestSync()
             if (sync) send({ type: 'sync', sync })
@@ -164,6 +212,22 @@ export async function registerWs(app: FastifyInstance) {
         case 'idleReport':
           if (isActiveTv()) player.idleReport(msg.songId, msg.position, msg.playing, msg.at)
           break
+        case 'screen':
+          if (role === 'tv') {
+            tv.report = msg.state
+            broadcastScreens()
+          }
+          break
+        case 'screenCommand': {
+          // From a 点歌台 / remote to one 大屏. 设为主屏 happens here, and the screen is told too
+          // so it can try to allow sound (a browser may still want a click on it).
+          if (role === 'tv') break
+          const target = tvs.find((t) => t.id === msg.to)
+          if (!target) break
+          if (msg.command.action === 'claim') claim(target)
+          target.send({ type: 'screenCommand', command: msg.command })
+          break
+        }
         case 'rtc': {
           // 耳返 → a TV (the 主屏 unless one is named); TV → a 耳返. Nothing else is relayed.
           const toId = role === 'ear' ? (msg.to ?? activeTv) : role === 'tv' ? msg.to : undefined
