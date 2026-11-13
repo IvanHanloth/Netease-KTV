@@ -171,10 +171,10 @@ export function NavButton({
       className={clsx(
         'flex w-full items-center gap-3 rounded-xl px-3 text-left transition-colors hover:bg-white/5',
         indent ? 'h-10 pl-11 text-sm' : 'h-11 text-[15px]',
-        active ? 'bg-white/7 font-semibold text-fg' : indent ? 'text-[#B4B4BE]' : 'text-[#C8C8D0]',
+        active ? 'bg-accent/14 font-semibold text-[#FFD1DD] hover:bg-accent/18' : indent ? 'text-[#B4B4BE]' : 'text-[#C8C8D0]',
       )}
     >
-      {icon && <Icon name={icon} size={20} className={active ? 'text-accent' : undefined} />}
+      {icon && <Icon name={icon} size={20} />}
       <span className="truncate">{label}</span>
     </button>
   )
@@ -243,13 +243,11 @@ export function Sidebar({
   view,
   go,
   onLogin,
-  onSettings,
   onImport,
 }: {
   view: View
   go: (v: View) => void
   onLogin: () => void
-  onSettings: () => void
   onImport: () => void
 }) {
   const { loggedIn, playlists } = useMyPlaylists()
@@ -262,14 +260,6 @@ export function Sidebar({
         {DISCOVER_NAV.map((n) => (
           <NavButton key={n.kind} icon={n.icon} label={n.label} active={view.kind === n.kind} onClick={() => go({ kind: n.kind })} />
         ))}
-        <Link
-          to="/tv"
-          target="_blank"
-          className="flex h-11 items-center gap-3 rounded-xl px-3 text-[15px] text-[#C8C8D0] hover:bg-white/5"
-        >
-          <Icon name="tv" size={20} />
-          打开大屏
-        </Link>
       </div>
       <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-1">
         <div className="flex flex-col gap-1">
@@ -296,10 +286,19 @@ export function Sidebar({
         />
       </div>
       <div className="flex flex-col gap-2.5">
-        {fullscreen.supported && (
-          <NavButton icon={fullscreen.on ? 'shrink' : 'expand'} label={fullscreen.on ? '退出全屏' : '全屏'} onClick={fullscreen.toggle} />
-        )}
-        <NavButton icon="sliders" label="设置" onClick={onSettings} />
+        <div className="flex flex-col gap-1">
+          <Link
+            to="/tv"
+            target="_blank"
+            className="flex h-11 items-center gap-3 rounded-xl px-3 text-[15px] text-[#C8C8D0] hover:bg-white/5"
+          >
+            <Icon name="tv" size={20} />
+            打开大屏
+          </Link>
+          {fullscreen.supported && (
+            <NavButton icon={fullscreen.on ? 'shrink' : 'expand'} label={fullscreen.on ? '退出全屏' : '全屏'} onClick={fullscreen.toggle} />
+          )}
+        </div>
         <AccountCard onLogin={onLogin} />
       </div>
     </nav>
@@ -310,13 +309,11 @@ export function MobileTopBar({
   view,
   go,
   onLogin,
-  onSettings,
   onImport,
 }: {
   view: View
   go: (v: View) => void
   onLogin: () => void
-  onSettings: () => void
   onImport: () => void
 }) {
   const { data: account } = useAccount()
@@ -354,20 +351,12 @@ export function MobileTopBar({
               onClick={fullscreen.toggle}
               aria-label={fullscreen.on ? '退出全屏' : '全屏'}
               title={fullscreen.on ? '退出全屏' : '全屏'}
-              // The narrowest phones have no room for it next to 登录 and 设置.
+              // The narrowest phones have no room for it next to 登录.
               className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-fg-2 min-[400px]:flex"
             >
               <Icon name={fullscreen.on ? 'shrink' : 'expand'} size={18} />
             </button>
           )}
-          <button
-            type="button"
-            onClick={onSettings}
-            aria-label="设置"
-            className="flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-fg-2"
-          >
-            <Icon name="sliders" size={18} />
-          </button>
         </div>
       </div>
       <nav aria-label="主导航" className="-mx-1 flex gap-2 overflow-x-auto px-1">

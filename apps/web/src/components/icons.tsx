@@ -205,6 +205,18 @@ const paths = {
       <path d="M8 21h8M12 17v4" />
     </>
   ),
+  screens: (
+    <>
+      <rect x="2.5" y="6" width="11" height="8" rx="1.5" />
+      <rect x="10.5" y="10" width="11" height="8" rx="1.5" />
+    </>
+  ),
+  locate: (
+    <>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+    </>
+  ),
   chevronLeft: <path d="m15 6-6 6 6 6" />,
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
   refresh: (

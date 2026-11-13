@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
-import type { Song } from '@shared/types'
+import type { QueueItem, Song } from '@shared/types'
 import { artistsText } from '../lib/format'
 import { rating, type RatingTone } from '../player/scoring'
 import type { LineRating } from '../player/useScoring'
+import { useApp } from '../store/app'
 import { Cover } from './ui'
 
 export const toneGradient: Record<RatingTone, string> = {
@@ -88,15 +89,42 @@ function CountUp({ to, run }: { to: number; run: boolean }) {
   return <>{Math.round(v)}</>
 }
 
-/** End-of-song result card. Purely visual: never blocks playback or the next song. */
+const SHOW_MS = 4500
+
+/** Three dots that light up one by one while the result is on screen (the next song starts after). */
+function CountdownDots({ run }: { run: boolean }) {
+  const [lit, setLit] = useState(run ? 1 : 3)
+  useEffect(() => {
+    if (!run) return
+    const ts = [1, 2].map((i) => window.setTimeout(() => setLit(i + 1), (SHOW_MS / 3) * i))
+    return () => ts.forEach((t) => window.clearTimeout(t))
+  }, [run])
+  return (
+    <span className="flex shrink-0 gap-[1.1vh]" aria-hidden="true">
+      {[0, 1, 2].map((i) => (
+        <span
+          key={i}
+          className={'h-[1.7vh] w-[1.7vh] rounded-full transition-colors duration-300 ' + (i < lit ? 'bg-accent' : 'bg-white/20')}
+        />
+      ))}
+    </span>
+  )
+}
+
+/**
+ * End-of-song result screen: the score, then 即将开始 with the next song in the queue.
+ * Purely visual: never blocks playback or the next song.
+ */
 export function ScoreOverlay({ result, onDone }: { result: ScoreResult | null; onDone: () => void }) {
   const reduce = useReducedMotion()
   const id = result?.id
   useEffect(() => {
     if (id === undefined) return
-    const t = setTimeout(onDone, 4500)
+    const t = setTimeout(onDone, SHOW_MS)
     return () => clearTimeout(t)
   }, [id, onDone])
+  // The song after the one just scored: the head of the queue at the moment the result appears.
+  const next = useMemo<QueueItem | null>(() => (id === undefined ? null : (useApp.getState().state.queue[0] ?? null)), [id])
   const r = result ? rating(result.score) : null
   return (
     <AnimatePresence>
@@ -107,49 +135,84 @@ export function ScoreOverlay({ result, onDone }: { result: ScoreResult | null; o
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.4 }}
-          className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center bg-ink-2/55 backdrop-blur-sm"
+          className="pointer-events-none absolute inset-0 z-30 overflow-hidden bg-[#07070B]/95"
           role="status"
           aria-live="polite"
         >
-          <motion.div
-            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 30, scale: 0.92 }}
+          <span
+            aria-hidden="true"
+            className="absolute top-[46%] left-1/2 h-[92vh] w-[78vw] -translate-x-1/2 -translate-y-1/2 rounded-full"
+            style={{ background: 'radial-gradient(ellipse, rgba(255,77,126,0.22) 0%, rgba(255,77,126,0) 62%)' }}
+          />
+
+          <motion.section
+            aria-label="本曲得分"
+            initial={reduce ? { opacity: 0 } : { opacity: 0, y: 30, scale: 0.94 }}
             animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0, scale: 1 }}
             transition={{ type: 'spring', stiffness: 260, damping: 24 }}
-            className="glass flex flex-col items-center gap-5 rounded-[36px] px-[5vw] py-[5vh] text-center shadow-[0_40px_120px_rgba(0,0,0,0.55)]"
+            className="absolute top-[10vh] left-1/2 flex w-[52vw] -translate-x-1/2 flex-col items-center gap-[1.7vh] text-center"
           >
-            <div className="flex items-center gap-4">
-              <Cover song={result.song} px={160} className="h-16 w-16 rounded-2xl" />
-              <div className="flex min-w-0 flex-col items-start gap-1">
-                <span className="text-sm tracking-[0.14em] text-muted">本曲得分</span>
-                <span className="max-w-[36vw] truncate text-[clamp(18px,1.4vw,28px)] font-bold">
-                  {result.song.name} · <span className="font-normal text-fg-2">{artistsText(result.song)}</span>
+            <div className="flex items-center gap-[1.7vh]">
+              <Cover song={result.song} px={160} className="h-[6.7vh] w-[6.7vh] shrink-0 rounded-[1.7vh]" />
+              <div className="flex min-w-0 flex-col items-start gap-[0.4vh]">
+                <span className="text-[2vh] tracking-[0.2em] text-fg-2">本曲得分</span>
+                <span className="max-w-[40vw] truncate text-[2.6vh] font-extrabold">
+                  {result.song.name} · {artistsText(result.song)}
                 </span>
               </div>
             </div>
-            <div className="num text-[clamp(96px,11vw,200px)] leading-none font-black tabular-nums" style={gradientText(r.tone)}>
+            <div
+              className="num text-[27.8vh] leading-[0.95] font-black tracking-[-0.02em] text-white tabular-nums"
+              style={{ textShadow: '0 20px 80px rgba(255,77,126,0.55)' }}
+            >
               <CountUp to={result.score} run={!reduce} />
             </div>
-            <div className="text-[clamp(28px,2.6vw,52px)] font-black tracking-[0.08em] italic" style={gradientText(r.tone)}>
-              {r.label}
+            <div className="flex items-center gap-[1.7vh]">
+              <span className="num text-[5.9vh] font-black tracking-[0.12em] text-accent">{r.label}</span>
+              {result.rank === 1 && (result.plays ?? 0) > 1 && (
+                <span className="inline-flex h-[4.8vh] items-center rounded-full bg-[#FBBF24] px-[2vh] text-[2.4vh] font-black whitespace-nowrap text-[#2A1A00]">
+                  新纪录
+                </span>
+              )}
             </div>
             {result.rank !== undefined && (
-              <motion.div
+              <motion.span
                 initial={reduce ? { opacity: 0 } : { opacity: 0, y: 10 }}
                 animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
                 transition={{ duration: 0.35 }}
-                className="flex flex-col items-center gap-2"
+                className="text-[2.8vh] whitespace-nowrap text-fg-2"
               >
-                {result.rank === 1 && (result.plays ?? 0) > 1 && (
-                  <span className="rounded-full px-4 py-1 text-[clamp(14px,1.1vw,20px)] font-black tracking-[0.2em] whitespace-nowrap text-ink shadow-[0_10px_30px_rgba(255,181,71,0.45)]" style={{ backgroundImage: toneGradient.perfect }}>
-                    新纪录
-                  </span>
-                )}
-                <span className="num text-[clamp(15px,1.15vw,22px)] whitespace-nowrap text-fg-2">
-                  {result.singer ? `${result.singer} · ` : ''}本曲第 {result.rank} 名 · 最高 {Math.round(result.best ?? result.score)} 分
-                </span>
-              </motion.div>
+                {result.singer ? `${result.singer} · ` : ''}本曲第 <span className="num font-extrabold">{result.rank}</span> 名 · 最高{' '}
+                <span className="num font-extrabold">{Math.round(result.best ?? result.score)}</span> 分
+              </motion.span>
             )}
-          </motion.div>
+          </motion.section>
+
+          {next && (
+            <motion.section
+              aria-label="即将开始"
+              initial={reduce ? { opacity: 0 } : { opacity: 0, y: 24 }}
+              animate={reduce ? { opacity: 1 } : { opacity: 1, y: 0 }}
+              transition={{ duration: 0.45, delay: reduce ? 0 : 0.5 }}
+              className="absolute bottom-[8.9vh] left-1/2 flex w-[54vw] -translate-x-1/2 items-center gap-[2.6vh] rounded-[3.3vh] border border-white/12 bg-white/6 py-[2.4vh] pr-[3.3vh] pl-[2.4vh]"
+            >
+              <Cover song={next.song} px={240} className="h-[11vh] w-[11vh] shrink-0 rounded-[2.2vh]" />
+              <span className="flex min-w-0 grow flex-col gap-[0.7vh]">
+                <span className="text-[2vh] tracking-[0.2em] text-accent-soft">即将开始</span>
+                <span className="truncate text-[4.1vh] font-black">{next.song.name}</span>
+                <span className="truncate text-[2.4vh] text-fg-2">
+                  {artistsText(next.song)}
+                  {next.addedBy && (
+                    <>
+                      {' '}
+                      · 演唱：<span className="font-bold text-fg">{next.addedBy}</span>，请拿起麦克风
+                    </>
+                  )}
+                </span>
+              </span>
+              <CountdownDots run={!reduce} />
+            </motion.section>
+          )}
         </motion.div>
       )}
     </AnimatePresence>

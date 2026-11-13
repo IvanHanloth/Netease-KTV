@@ -185,10 +185,9 @@ export function ImportedPlaylistsNav({
           type="button"
           onClick={onImport}
           title="导入网易云歌单到本设备"
-          className="flex h-8 items-center gap-1 rounded-lg px-2 text-xs whitespace-nowrap text-fg-2 hover:bg-white/6 hover:text-fg"
+          className="flex h-7 items-center gap-1 rounded-lg border border-dashed border-white/18 px-2.5 text-xs whitespace-nowrap text-fg-2 hover:border-white/30 hover:text-fg"
         >
-          <Icon name="plus" size={14} />
-          导入
+          + 导入
         </button>
       </div>
       {list.length === 0 ? (

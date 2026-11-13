@@ -311,13 +311,15 @@ export default function Ear() {
     }
   }, [started])
 
-  async function start() {
+  async function start(): Promise<boolean> {
     try {
       await ear.unlock()
       setStarted(true)
       document.documentElement.requestFullscreen?.().catch(() => {})
+      return true
     } catch {
       setStarted(false)
+      return false
     }
   }
 
@@ -342,7 +344,18 @@ export default function Ear() {
                   ? { kind: 'calibrating' }
                   : { kind: 'synced', driftMs: drift }
 
-  if (!started) return <StartScreen onStart={start} />
+  if (!started)
+    return (
+      <StartScreen
+        prefs={prefs}
+        setPrefs={setPrefs}
+        onStart={start}
+        // 测试蓝牙延迟 right away: unlock the audio (this click), then open the measurement.
+        onCalibrate={() => {
+          void start().then((ok) => ok && setCalibrating(true))
+        }}
+      />
+    )
 
   return (
     <div className="fixed inset-0 flex flex-col overflow-hidden bg-ink text-fg select-none">
@@ -408,45 +421,100 @@ export default function Ear() {
 
 // ---------------- start ----------------
 
-function StartScreen({ onStart }: { onStart: () => void }) {
+/** What each part means, on the start page. */
+const PART_HINTS: Record<(typeof PARTS)[number]['id'], { title: string; text: string }> = {
+  vocals: { title: '人声', text: '原唱的主唱人声，跟着学唱' },
+  backing: { title: '伴奏', text: '和主屏一样的伴奏' },
+  mic: { title: '主屏麦克风', text: '听到自己的声音（带混响）' },
+}
+
+function StartScreen({
+  prefs,
+  setPrefs,
+  onStart,
+  onCalibrate,
+}: {
+  prefs: Prefs
+  setPrefs: (patch: Partial<Prefs>) => void
+  onStart: () => void
+  onCalibrate: () => void
+}) {
   return (
-    <div className="fixed inset-0 flex flex-col overflow-x-hidden overflow-y-auto bg-ink px-6 pt-[max(16px,env(safe-area-inset-top))] pb-[max(24px,env(safe-area-inset-bottom))] text-fg">
+    <div className="fixed inset-0 flex flex-col overflow-x-hidden overflow-y-auto bg-ink px-5 pt-[max(16px,env(safe-area-inset-top))] pb-[max(24px,env(safe-area-inset-bottom))] text-fg">
       <div
         aria-hidden="true"
-        className="pointer-events-none absolute -top-40 left-1/2 h-[520px] w-[520px] -translate-x-1/2 rounded-full opacity-30 blur-[30px]"
-        style={{ background: 'radial-gradient(circle, #8B5CF6 0%, rgba(0,0,0,0) 65%)' }}
+        className="pointer-events-none absolute -top-32 left-1/2 h-[560px] w-[560px] -translate-x-1/2 rounded-full"
+        style={{ background: 'radial-gradient(circle, rgba(139,92,246,0.24) 0%, rgba(139,92,246,0) 62%)' }}
       />
-      <BackButton />
-      <div className="relative m-auto flex w-full max-w-sm flex-col items-center gap-7 py-8 text-center">
-        <div className="flex h-20 w-20 items-center justify-center rounded-[24px] bg-[linear-gradient(135deg,#FF4D7E_0%,#8B5CF6_100%)] text-white shadow-[0_20px_60px_rgba(139,92,246,0.45)]">
-          <Icon name="headphones" size={38} strokeWidth={2} />
-        </div>
-        <div className="flex flex-col gap-2">
-          <h1 className="m-0 text-[30px] font-black tracking-[0.02em]">移动耳返</h1>
+      <BackButton boxed />
+      <div className="relative mx-auto flex w-full max-w-sm flex-1 flex-col">
+        <div className="mt-7 flex flex-col items-center gap-3.5 text-center">
+          <div className="flex h-20 w-20 items-center justify-center rounded-[24px] bg-[linear-gradient(135deg,#FF4D7E_0%,#8B5CF6_100%)] text-white">
+            <Icon name="headphones" size={40} strokeWidth={2} />
+          </div>
+          <h1 className="m-0 text-[32px] font-black">移动耳返</h1>
           <p className="m-0 text-[15px] leading-6 text-muted">戴上耳机，跟着主屏一起唱</p>
         </div>
-        <ul className="m-0 flex w-full list-none flex-col gap-3 p-0 text-left text-sm leading-6 text-fg-2">
-          <Feature icon="user" text="单独听主唱人声、原唱或伴奏，和主屏同步播放" />
-          <Feature icon="mic" text="把主屏的麦克风（带混响）也送进耳机" />
-          <Feature icon="clock" text="耳机里早了或晚了，可以前后微调几百毫秒" />
-          <Feature icon="lyrics" text="同时是一个小提词器，屏幕保持常亮" />
-        </ul>
+
+        <section aria-labelledby="ear-parts" className="mt-8 flex flex-col gap-2.5">
+          <span id="ear-parts" className="text-[13px] text-muted">
+            保留的音轨
+          </span>
+          {PARTS.map((part) => {
+            const on = prefs[part.id]
+            const hint = PART_HINTS[part.id]
+            return (
+              <button
+                key={part.id}
+                type="button"
+                aria-pressed={on}
+                onClick={() => setPrefs({ [part.id]: !on })}
+                className={
+                  'flex min-h-16 items-center gap-3.5 rounded-[18px] border px-4 py-2.5 text-left transition-colors ' +
+                  (on ? 'border-accent/55 bg-accent/10' : 'border-white/10 bg-white/[0.03] hover:bg-white/[0.06]')
+                }
+              >
+                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                  <span className="text-base font-bold">{hint.title}</span>
+                  <span className="text-xs text-muted">{hint.text}</span>
+                </span>
+                <span
+                  aria-hidden="true"
+                  className={
+                    'flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border-2 text-accent-ink ' +
+                    (on ? 'border-accent bg-accent' : 'border-white/30')
+                  }
+                >
+                  {on && <Icon name="check" size={14} strokeWidth={3} />}
+                </span>
+              </button>
+            )
+          })}
+        </section>
+
+        <div className="min-h-8 flex-1" />
         <button
           type="button"
           onClick={onStart}
-          className="flex h-14 w-full items-center justify-center gap-2 rounded-2xl bg-accent text-[17px] font-bold text-accent-ink shadow-[0_14px_36px_rgba(255,77,126,0.4)]"
+          className="flex h-[58px] w-full items-center justify-center gap-2.5 rounded-[18px] bg-accent text-lg font-extrabold text-accent-ink"
         >
           <Icon name="play" size={20} />
           开始
         </button>
-        <p className="m-0 text-xs leading-5 text-faint">蓝牙耳机比主屏晚？开始后用“测量蓝牙延迟”自动调好。</p>
+        <button
+          type="button"
+          onClick={onCalibrate}
+          className="mx-auto mt-3 h-11 px-3 text-[13px] text-muted underline underline-offset-4 hover:text-fg-2"
+        >
+          测试蓝牙延迟
+        </button>
       </div>
     </div>
   )
 }
 
 /** Back to the remote: the browser's back when we came from it, otherwise to /m without a new entry. */
-function BackButton() {
+function BackButton({ boxed }: { boxed?: boolean }) {
   const nav = useNavigate()
   const loc = useLocation()
   return (
@@ -454,19 +522,13 @@ function BackButton() {
       type="button"
       aria-label="返回遥控"
       onClick={() => (loc.key !== 'default' ? nav(-1) : nav('/m', { replace: true }))}
-      className="relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-fg-2 hover:bg-white/8"
+      className={
+        'relative flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-fg-2 hover:bg-white/8' +
+        (boxed ? ' rounded-[14px] bg-white/6 text-fg' : '')
+      }
     >
       <Icon name="chevronLeft" size={22} />
     </button>
-  )
-}
-
-function Feature({ icon, text }: { icon: IconName; text: string }) {
-  return (
-    <li className="flex items-start gap-3 rounded-2xl border border-white/7 bg-white/[0.03] px-4 py-3">
-      <Icon name={icon} size={18} className="mt-[3px] shrink-0 text-accent-soft" />
-      {text}
-    </li>
   )
 }
 

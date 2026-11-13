@@ -7,7 +7,6 @@ import { connect } from '../store/app'
 import { QueuePanel } from '../components/QueuePanel'
 import { Leaderboard } from '../components/Leaderboard'
 import { LoginDialog } from '../components/LoginDialog'
-import { SettingsDialog } from '../components/SettingsDialog'
 import { ImportPlaylistDialog } from '../components/ImportPlaylist'
 import { MobileTopBar, QueueChip, QueueDrawer, Sidebar, useMediaQuery, useView } from './desk/nav'
 import { SearchBox, SeparatorChip } from './desk/search'
@@ -16,7 +15,6 @@ import { AlbumView, ArtistView, HistoryView, PageActions, PlaylistView, Recommen
 export default function Desk() {
   const [view, go] = useView()
   const [loginOpen, setLoginOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
   const [importOpen, setImportOpen] = useState(false)
   const wide = useMediaQuery('(min-width: 1280px)')
   const lg = useMediaQuery('(min-width: 1024px)')
@@ -121,7 +119,6 @@ export default function Desk() {
               view={view}
               go={go}
               onLogin={() => setLoginOpen(true)}
-              onSettings={() => setSettingsOpen(true)}
               onImport={() => setImportOpen(true)}
             />
           </aside>
@@ -130,7 +127,6 @@ export default function Desk() {
             view={view}
             go={go}
             onLogin={() => setLoginOpen(true)}
-            onSettings={() => setSettingsOpen(true)}
             onImport={() => setImportOpen(true)}
           />
         )}
@@ -150,7 +146,6 @@ export default function Desk() {
       </div>
       {lg && !wide && <QueueDrawer open={queueOpen} onClose={() => setQueueOpen(false)} />}
       <LoginDialog open={loginOpen} onClose={() => setLoginOpen(false)} />
-      <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
       <ImportPlaylistDialog
         open={importOpen}
         onClose={() => setImportOpen(false)}

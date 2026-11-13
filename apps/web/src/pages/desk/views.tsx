@@ -1,7 +1,7 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import clsx from 'clsx'
-import type { PlaylistSummary } from '@shared/types'
+import type { PlaylistSummary, Song } from '@shared/types'
 import { api, withFreshData } from '../../lib/api'
 import { errorText, toast, useAccount, useHistory } from '../../lib/hooks'
 import { Icon } from '../../components/icons'
@@ -90,10 +90,7 @@ export function RecommendView({ go }: { go: (v: View) => void }) {
     <>
       <section className="flex flex-col gap-4">
         <div className="flex items-start justify-between gap-3">
-          <div className="flex flex-col gap-1.5">
-            <h1 className="m-0 text-[34px] font-bold tracking-[0.01em]">今晚想唱点什么？</h1>
-            <p className="m-0 text-[15px] text-muted">从日推、歌单或搜索开始点歌，点过的歌会在后台提前生成伴奏</p>
-          </div>
+          <h1 className="m-0 text-[34px] font-bold tracking-[0.01em]">今晚想唱点什么？</h1>
           <PageActions />
         </div>
         <div role="group" aria-label="快速搜索" className="flex flex-wrap gap-2.5">
@@ -115,13 +112,7 @@ export function RecommendView({ go }: { go: (v: View) => void }) {
         <ErrorNote error={q.error} retry={() => q.refetch()} retrying={q.isFetching} />
       ) : (
         <>
-          <Section title={q.data?.daily ? '每日推荐' : '热门推荐'}>
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-5">
-              {songs.slice(0, 6).map((s) => (
-                <RecCard key={s.id} song={s} />
-              ))}
-            </div>
-          </Section>
+          <RecRow title={q.data?.daily ? '每日推荐' : '热门推荐'} songs={songs.slice(0, 6)} />
           {songs.length > 6 && (
             <Section title="热门可唱">
               <div className="overflow-x-auto">
@@ -133,6 +124,66 @@ export function RecommendView({ go }: { go: (v: View) => void }) {
         </>
       )}
     </>
+  )
+}
+
+/** 每日推荐: big covers in one row; when they don't fit, the row scrolls sideways (arrows or swipe). */
+function RecRow({ title, songs }: { title: string; songs: Song[] }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const [edge, setEdge] = useState({ start: true, end: true })
+  const measure = () => {
+    const el = ref.current
+    if (!el) return
+    setEdge({ start: el.scrollLeft <= 2, end: el.scrollLeft + el.clientWidth >= el.scrollWidth - 2 })
+  }
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el) return
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [songs.length])
+  const page = (dir: 1 | -1) => {
+    const el = ref.current
+    if (el) el.scrollBy({ left: dir * el.clientWidth * 0.8, behavior: 'smooth' })
+  }
+  const arrow = (dir: 1 | -1, disabled: boolean) => (
+    <button
+      type="button"
+      onClick={() => page(dir)}
+      disabled={disabled}
+      aria-label={dir < 0 ? '上一页' : '下一页'}
+      className="flex h-9 w-9 items-center justify-center rounded-full bg-white/6 text-fg-2 transition-colors hover:bg-white/10 hover:text-fg disabled:opacity-30 disabled:hover:bg-white/6"
+    >
+      <Icon name="chevronLeft" size={18} className={dir > 0 ? 'rotate-180' : undefined} />
+    </button>
+  )
+  const scrolls = !(edge.start && edge.end)
+  return (
+    <Section
+      title={title}
+      action={
+        scrolls && (
+          <div className="flex items-center gap-1.5">
+            {arrow(-1, edge.start)}
+            {arrow(1, edge.end)}
+          </div>
+        )
+      }
+    >
+      <div
+        ref={ref}
+        onScroll={measure}
+        className="-mx-1 flex snap-x snap-mandatory scroll-px-1 gap-5 overflow-x-auto px-1 pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
+        {songs.map((s) => (
+          <div key={s.id} className="w-[150px] shrink-0 snap-start sm:w-[168px]">
+            <RecCard song={s} />
+          </div>
+        ))}
+      </div>
+    </Section>
   )
 }
 
@@ -347,7 +398,6 @@ export function HistoryView() {
         <PageActions>{songs.length > 0 && <span className="num mr-2 text-sm text-muted">最近 {songs.length} 首</span>}</PageActions>
       }
     >
-      <p className="m-0 -mt-1 text-sm text-muted">最近点过的 50 首歌，最新的在最前面。再点一次就会回到最前面。</p>
       {q.isLoading ? (
         <Loading />
       ) : q.isError && !q.data ? (

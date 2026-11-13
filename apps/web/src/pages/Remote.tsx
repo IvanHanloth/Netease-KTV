@@ -1,23 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query'
+import { AnimatePresence, motion } from 'motion/react'
 import clsx from 'clsx'
 import { Link } from 'react-router'
-import type { PlayerCommand, Song } from '@shared/types'
-import { KEY_MAX, KEY_MIN, singerName } from '@shared/constants'
+import type { PlayerCommand, QueueItem, Song } from '@shared/types'
+import { KEY_MAX, KEY_MIN } from '@shared/constants'
 import { api } from '../lib/api'
-import { artistsText, fmtMs, fmtTime } from '../lib/format'
-import { errorText, toast, useDebounced, useHistory, useLiveValue, useSettings, useStatusOf } from '../lib/hooks'
+import { artistsText, fmtTime, queueStatusText } from '../lib/format'
+import {
+  errorText,
+  runAction,
+  shuffleQueue,
+  toast,
+  useDebounced,
+  useHistory,
+  useIsPending,
+  useLiveValue,
+  useSettings,
+  useStatusOf,
+} from '../lib/hooks'
+import { useDragReorder } from '../lib/useDragReorder'
 import { stopPreview } from '../lib/preview'
 import { connect, livePosition, sendCommand, useApp } from '../store/app'
 import { Icon, type IconName } from '../components/icons'
 import { MicControls } from '../components/MicControls'
-import { Cover, Dialog, EmptyNote, Eq, IconButton, ProgressBar, QueryError, Range, Spinner, StatusPill } from '../components/ui'
+import { Cover, Dialog, dotColor, EmptyNote, IconButton, ProgressBar, QueryError, Range, Spinner, StatusPill } from '../components/ui'
 import { Leaderboard } from '../components/Leaderboard'
 import { NICKNAME_MAX, useNickname } from '../lib/nickname'
 import { DisplayModeToggle, TrackModeToggle } from '../components/PlayerModes'
 import { IdleVolumeControl } from '../components/IdleVolume'
 import { SongActions } from '../components/SongTable'
-import { NowSingingCard, QueueList, ShuffleButton, useNow } from '../components/QueuePanel'
 import { ImportedPlaylistChips, ImportPlaylistDialog } from '../components/ImportPlaylist'
 import { removeImportedPlaylist, useImportedPlaylists, type ImportedPlaylist } from '../lib/importedPlaylists'
 
@@ -28,41 +40,23 @@ function command(c: PlayerCommand) {
   if (!sendCommand(c)) toast('连接中断，这次操作没有发出', 'error')
 }
 
-function RoundButton({
-  icon,
-  label,
-  onClick,
-  primary,
-}: {
-  icon: IconName
-  label: string
-  onClick: () => void
-  primary?: boolean
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={onClick}
-      className={clsx(
-        'flex items-center justify-center rounded-full transition-transform active:scale-95',
-        primary
-          ? 'h-16 w-16 bg-accent text-accent-ink shadow-[0_10px_28px_rgba(255,77,126,0.45)]'
-          : 'h-12 w-12 bg-white/8 text-fg active:bg-white/14',
-      )}
-    >
-      <Icon name={icon} size={primary ? 26 : 20} strokeWidth={1.9} />
-    </button>
-  )
+function useTick(interval = 1000) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), interval)
+    return () => clearInterval(t)
+  }, [interval])
+  return now
 }
 
-function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShowQueue: () => void }) {
+const keyLabel = (k: number) => (k > 0 ? '+' + k : String(k))
+
+function RemoteTab({ onPickSong }: { onPickSong: () => void }) {
   const player = useApp((s) => s.state.player)
   const tvOnline = useApp((s) => s.state.tvOnline)
   const track = useApp((s) => (player.current ? s.state.tracks[player.current.song.id] : undefined))
-  const queue = useApp((s) => s.state.queue)
   const statusOf = useStatusOf()
-  const now = useNow(1000)
+  const now = useTick(1000)
   const cur = player.current
   const dur = cur ? cur.song.duration / 1000 : 0
   // Never shown past the end, whatever the server's line says.
@@ -70,84 +64,63 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
   const hasStems = !!track?.hasStems
   const [music, setMusic] = useLiveValue(Math.round(player.musicVolume * 100), (v) => ({ action: 'set', musicVolume: v / 100 }), command)
   const idleOn = useSettings().data?.idleEnabled ?? false
-  const setKey = (k: number) => command({ action: 'set', key: Math.max(KEY_MIN, Math.min(KEY_MAX, k)) })
   const volLabel = hasStems && player.trackMode === 'karaoke' ? '伴奏音量' : '音量'
+  const [keyOpen, setKeyOpen] = useState(false)
 
   return (
-    <div className="flex flex-col gap-3.5">
+    <div className="flex flex-col gap-6 pb-2">
+      <div className="flex justify-end">
+        <NicknameChip />
+      </div>
       {!tvOnline && (
-        <div className="flex items-center gap-2 rounded-2xl border border-[rgba(251,191,36,0.25)] bg-[rgba(251,191,36,0.08)] px-4 py-3 text-[13px] text-warn">
+        <div className="-mt-2 flex items-center gap-2 rounded-2xl bg-[rgba(251,191,36,0.08)] px-4 py-3 text-[13px] text-warn">
           <Icon name="tv" size={16} />
           大屏未打开：在电视或电脑浏览器打开 /tv 并点击开始
         </div>
       )}
-      <section
-        aria-label="正在演唱"
-        className="rounded-3xl border border-white/10 bg-[linear-gradient(135deg,rgba(255,77,126,0.2)_0%,rgba(123,47,247,0.16)_100%)] p-4"
-      >
-        {cur ? (
-          <>
-            <div className="flex items-center gap-3.5">
-              <Cover song={cur.song} px={160} className="h-16 w-16 rounded-2xl shadow-[0_10px_24px_rgba(0,0,0,0.35)]" />
-              <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
-                <span className="flex items-center gap-2 text-xs tracking-[0.12em] text-[#FFC2D1]">
-                  {player.playing && <Eq color="#FFC2D1" />}
-                  {player.playing ? '正在演唱' : '已暂停'}
-                </span>
-                <span className="truncate text-lg font-bold">{cur.song.name}</span>
-                <span className="truncate text-[13px] text-fg-2">
-                  {artistsText(cur.song)}
-                  {hasStems ? ' · 伴奏保留和声' : track?.status === 'ready' ? ' · 原曲' : ''}
-                </span>
-              </div>
+
+      {cur ? (
+        <section aria-label="正在演唱" className="flex flex-col items-center px-3 text-center">
+          <Cover song={cur.song} px={480} className="h-44 w-44 rounded-[28px]" />
+          <span className="mt-5 max-w-full truncate text-2xl font-extrabold">{cur.song.name}</span>
+          <span className="mt-1.5 max-w-full truncate text-sm text-muted">
+            {artistsText(cur.song)}
+            {cur.addedBy && ` · ${cur.addedBy}在唱`}
+          </span>
+          {track && track.status !== 'ready' ? (
+            <div className="mt-5 flex items-center gap-2.5 text-xs text-fg-2">
+              <StatusPill status={statusOf(cur.song)} />
             </div>
-            {track && track.status !== 'ready' ? (
-              <div className="mt-3.5 flex items-center gap-2.5 text-xs text-fg-2">
-                <StatusPill status={statusOf(cur.song)} />
-              </div>
-            ) : (
-              <div className="num mt-3.5 flex items-center gap-2.5 text-xs text-fg-2">
-                <span>{fmtTime(pos)}</span>
-                <ProgressBar value={dur ? pos / dur : 0} color="#FFFFFF" className="flex-1 bg-white/18" />
-                <span>{fmtTime(dur)}</span>
-              </div>
-            )}
-            <div className="mt-3 flex items-center justify-center gap-7">
-              <RoundButton icon="replay" label="重唱" onClick={() => command({ action: 'restart' })} />
-              <RoundButton
-                icon={player.playing ? 'pause' : 'play'}
-                label={player.playing ? '暂停' : '播放'}
-                primary
-                onClick={() => command({ action: 'toggle' })}
-              />
-              <RoundButton icon="next" label="切歌" onClick={() => command({ action: 'next' })} />
+          ) : (
+            <div className="num mt-5 flex w-full items-center gap-2.5 text-xs text-subtle">
+              <span>{fmtTime(pos)}</span>
+              <ProgressBar value={dur ? pos / dur : 0} color="#FF4D7E" className="flex-1 bg-white/10" />
+              <span>{fmtTime(dur)}</span>
             </div>
-          </>
-        ) : (
-          <div className="flex flex-col items-center gap-3 py-3 text-sm text-fg-2">
-            还没有在唱的歌
-            <button type="button" onClick={onPickSong} className="h-11 rounded-full bg-accent px-6 font-semibold text-accent-ink">
-              去点歌
+          )}
+          <div className="mt-5 flex items-center justify-center gap-12">
+            <TransportButton icon="replay" label="重唱" onClick={() => command({ action: 'restart' })} />
+            <button
+              type="button"
+              aria-label={player.playing ? '暂停' : '播放'}
+              onClick={() => command({ action: 'toggle' })}
+              className="flex h-[72px] w-[72px] items-center justify-center rounded-full bg-accent text-accent-ink transition-transform active:scale-95"
+            >
+              <Icon name={player.playing ? 'pause' : 'play'} size={28} />
             </button>
+            <TransportButton icon="next" label="切歌" onClick={() => command({ action: 'next' })} />
           </div>
-        )}
-      </section>
+        </section>
+      ) : (
+        <div className="flex flex-col items-center gap-3 py-10 text-sm text-fg-2">
+          还没有在唱的歌
+          <button type="button" onClick={onPickSong} className="h-11 rounded-full bg-accent px-6 font-semibold text-accent-ink">
+            去点歌
+          </button>
+        </div>
+      )}
 
-      <Link
-        to="/ear"
-        className="flex items-center gap-3.5 rounded-3xl border border-white/8 bg-white/4 p-4 active:bg-white/8"
-      >
-        <span className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#FF4D7E_0%,#8B5CF6_100%)] text-white">
-          <Icon name="headphones" size={22} />
-        </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-          <span className="text-[15px] font-semibold">移动耳返</span>
-          <span className="truncate text-xs text-muted">在手机上听人声或原唱，同时当提词器</span>
-        </span>
-        <Icon name="chevronLeft" size={18} className="rotate-180 text-muted" />
-      </Link>
-
-      <section aria-label="调音" className="flex flex-col gap-3.5 rounded-3xl border border-white/8 bg-white/4 p-4">
+      <section aria-label="调节" className="flex flex-col gap-5">
         {cur && (
           <div className="flex flex-col gap-2">
             <TrackModeToggle stretch />
@@ -155,113 +128,284 @@ function RemoteTab({ onPickSong, onShowQueue }: { onPickSong: () => void; onShow
           </div>
         )}
         {!cur && idleOn && <IdleVolumeControl send={command} />}
-        <label className="flex flex-col gap-1.5">
-          <span className="flex items-center justify-between text-sm">
-            <span className="flex items-center gap-2">
-              <Icon name="volume" size={18} />
-              {volLabel}
-            </span>
-            <span className="num text-[#C8C8D0]">{music}%</span>
-          </span>
-          <Range label={volLabel} value={music} onChange={setMusic} />
-        </label>
-        <div className="border-t border-white/8 pt-3.5">
-          <MicControls send={command} />
-        </div>
-        <div className="flex items-center justify-between">
-          <span className="text-sm">升降调</span>
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              aria-label="降调"
-              onClick={() => setKey(player.key - 1)}
-              disabled={player.key <= KEY_MIN}
-              className="flex h-11 w-11 items-center justify-center rounded-[14px] bg-white/8 active:bg-white/14 disabled:opacity-40"
-            >
-              <Icon name="minus" size={18} strokeWidth={2.2} />
-            </button>
-            <span aria-live="polite" className="num w-12 text-center text-xl font-semibold text-accent">
-              {player.key > 0 ? '+' + player.key : player.key}
-            </span>
-            <button
-              type="button"
-              aria-label="升调"
-              onClick={() => setKey(player.key + 1)}
-              disabled={player.key >= KEY_MAX}
-              className="flex h-11 w-11 items-center justify-center rounded-[14px] bg-white/8 active:bg-white/14 disabled:opacity-40"
-            >
-              <Icon name="plus" size={18} strokeWidth={2.2} />
-            </button>
-            <button
-              type="button"
-              onClick={() => setKey(0)}
-              className="h-11 rounded-[14px] border border-white/12 px-3 text-[13px] text-[#C8C8D0]"
-            >
-              原调
-            </button>
+        <div className="flex items-center gap-3.5 px-1">
+          <Icon name="volume" size={20} className="shrink-0 text-muted" />
+          <div className="min-w-0 flex-1">
+            <Range label={volLabel} value={music} onChange={setMusic} />
           </div>
+          <span className="num w-10 shrink-0 text-right text-[13px] text-muted">{music}%</span>
+        </div>
+        <MicControls send={command} />
+        <div className="grid grid-cols-2 gap-2.5">
+          <button
+            type="button"
+            onClick={() => setKeyOpen(true)}
+            aria-haspopup="dialog"
+            className="flex h-12 items-center justify-between rounded-[14px] bg-white/4 px-4 text-sm text-muted active:bg-white/8"
+          >
+            升降调
+            <span className="num text-[15px] font-bold text-fg">{player.key === 0 ? '原调' : keyLabel(player.key)}</span>
+          </button>
+          <Link
+            to="/ear"
+            className="flex h-12 items-center justify-center gap-2 rounded-[14px] bg-white/4 text-sm font-semibold text-fg active:bg-white/8"
+          >
+            <Icon name="headphones" size={18} />
+            移动耳返
+          </Link>
         </div>
       </section>
+      <KeySheet open={keyOpen} onClose={() => setKeyOpen(false)} value={player.key} />
+    </div>
+  )
+}
 
-      <section aria-label="接下来" className="flex flex-col gap-1.5">
-        <div className="flex items-center justify-between px-0.5">
-          <h2 className="m-0 text-[15px] font-semibold">接下来</h2>
-          {queue.length > 0 && (
-            <button type="button" onClick={onShowQueue} className="-my-2 -mr-2 flex h-10 items-center gap-0.5 px-2 text-[13px] text-muted active:text-fg">
-              全部 {queue.length} 首
-              <Icon name="chevronLeft" size={14} className="rotate-180" />
-            </button>
-          )}
+function TransportButton({ icon, label, onClick }: { icon: IconName; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      className="flex h-12 w-12 items-center justify-center rounded-full text-fg-2 transition-transform active:scale-95 active:bg-white/8"
+    >
+      <Icon name={icon} size={24} strokeWidth={1.9} />
+    </button>
+  )
+}
+
+/** 升降调 fine control, opened from the cell on the 遥控 tab. */
+function KeySheet({ open, onClose, value }: { open: boolean; onClose: () => void; value: number }) {
+  const setKey = (k: number) => command({ action: 'set', key: Math.max(KEY_MIN, Math.min(KEY_MAX, k)) })
+  return (
+    <Dialog open={open} onClose={onClose} title="升降调" width={380} sheet>
+      <div className="flex flex-col items-center gap-5 pb-2">
+        <div className="flex items-center gap-6">
+          <button
+            type="button"
+            aria-label="降调"
+            onClick={() => setKey(value - 1)}
+            disabled={value <= KEY_MIN}
+            className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/8 active:bg-white/14 disabled:opacity-40"
+          >
+            <Icon name="minus" size={22} strokeWidth={2.2} />
+          </button>
+          <span aria-live="polite" className="num w-16 text-center text-3xl font-bold text-accent">
+            {keyLabel(value)}
+          </span>
+          <button
+            type="button"
+            aria-label="升调"
+            onClick={() => setKey(value + 1)}
+            disabled={value >= KEY_MAX}
+            className="flex h-14 w-14 items-center justify-center rounded-2xl bg-white/8 active:bg-white/14 disabled:opacity-40"
+          >
+            <Icon name="plus" size={22} strokeWidth={2.2} />
+          </button>
         </div>
-        {queue.length === 0 ? (
-          <p className="m-0 py-4 text-center text-[13px] text-muted">{cur ? '这首唱完就没有了，去点歌吧' : '还没有点歌'}</p>
-        ) : (
-          queue.slice(0, 3).map((q) => {
-            const st = statusOf(q.song)
-            return (
-              <div key={q.uid} className="flex items-center gap-3 px-1 py-2">
-                <Cover song={q.song} px={100} className="h-[42px] w-[42px] rounded-[10px]" />
-                <div className="flex min-w-0 flex-1 flex-col gap-1">
-                  <span className="truncate text-sm font-semibold">{q.song.name}</span>
-                  {st.kind === 'proc' || st.kind === 'download' ? (
-                    <div className="flex items-center gap-2 text-xs text-warn">
-                      <ProgressBar value={st.progress ?? 0} className="w-24" />
-                      {st.label}
-                    </div>
-                  ) : (
-                    <span className="truncate text-xs text-muted">
-                      {artistsText(q.song)} · {st.label}
-                      {singerName(q.addedBy) && <span className="text-[#FFC2D1]"> · {q.addedBy}</span>}
-                    </span>
-                  )}
-                </div>
-                <span className="num text-[13px] text-subtle">{fmtMs(q.song.duration)}</span>
-              </div>
-            )
-          })
+        <button
+          type="button"
+          onClick={() => setKey(0)}
+          disabled={value === 0}
+          className="h-11 rounded-xl px-5 text-sm text-fg-2 active:bg-white/8 disabled:opacity-40"
+        >
+          回到原调
+        </button>
+      </div>
+    </Dialog>
+  )
+}
+
+// ---------- 已点 ----------
+
+const safe = (key: string, fn: () => Promise<unknown>) => runAction(key, fn)
+
+/** 正在演唱 on the 已点 tab. */
+function NowCard() {
+  const player = useApp((s) => s.state.player)
+  const now = useTick(1000)
+  const cur = player.current
+  if (!cur)
+    return (
+      <div className="rounded-[22px] border border-dashed border-white/12 p-5 text-center text-sm text-muted">还没有在唱的歌，点一首开始吧</div>
+    )
+  const dur = cur.song.duration / 1000
+  const pos = Math.min(livePosition(player, now), dur > 0 ? dur : Infinity)
+  return (
+    <section aria-label="正在演唱" className="flex items-center gap-3 rounded-[22px] border border-[rgba(255,77,126,0.22)] bg-[#1A1622] p-3.5">
+      <Cover song={cur.song} px={160} className="h-[54px] w-[54px] shrink-0 rounded-[14px]" />
+      <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+        <span className="truncate text-xs tracking-[0.1em] text-[#FF8FAB]">
+          {player.playing ? '正在演唱' : '已暂停'}
+          {cur.addedBy && ` · ${cur.addedBy}`}
+        </span>
+        <span className="truncate text-[17px] font-extrabold">{cur.song.name}</span>
+        <span className="num text-xs text-muted">
+          {fmtTime(pos)} / {fmtTime(dur)}
+        </span>
+      </span>
+      <button
+        type="button"
+        aria-label={player.playing ? '暂停' : '播放'}
+        onClick={() => command({ action: 'toggle' })}
+        className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-accent text-accent-ink active:scale-95"
+      >
+        <Icon name={player.playing ? 'pause' : 'play'} size={20} />
+      </button>
+    </section>
+  )
+}
+
+type HandleProps = ReturnType<ReturnType<typeof useDragReorder<QueueItem>>['handleProps']>
+
+function QueueRow({
+  item,
+  index,
+  dragging,
+  rowRef,
+  handle,
+}: {
+  item: QueueItem
+  index: number
+  dragging: boolean
+  rowRef: (el: HTMLElement | null) => void
+  handle: HandleProps
+}) {
+  const statusOf = useStatusOf()
+  const st = statusOf(item.song)
+  const busy = st.kind === 'proc' || st.kind === 'download'
+  return (
+    <motion.li
+      ref={rowRef}
+      layout
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0, scale: dragging ? 1.03 : 1 }}
+      exit={{ opacity: 0, x: 24 }}
+      transition={{ duration: 0.2 }}
+      className={clsx(
+        'relative flex items-center gap-2.5 rounded-[18px] border py-2.5 pr-1.5 pl-1',
+        dragging ? 'z-10 border-white/22 bg-[#22222E] shadow-[0_16px_36px_rgba(0,0,0,0.55)]' : 'border-white/6 bg-[#14141C]',
+      )}
+    >
+      <button
+        type="button"
+        {...handle}
+        aria-label={`拖动排序 ${item.song.name}（方向键上下移动）`}
+        className={clsx(
+          'flex h-11 w-7 shrink-0 touch-none items-center justify-center rounded-lg text-faint',
+          dragging && 'text-fg',
         )}
-      </section>
+      >
+        <Icon name="grip" size={18} />
+      </button>
+      <Cover song={item.song} px={100} className="h-[46px] w-[46px] shrink-0 rounded-xl" />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <span className="truncate text-[15px] font-semibold">{item.song.name}</span>
+        <span className="truncate text-xs text-muted">
+          <span style={{ color: st.kind === 'error' ? '#FF8FAB' : busy ? '#FCD34D' : dotColor[st.kind] }}>{queueStatusText(st)}</span>
+          {item.addedBy && ` · ${item.addedBy}`}
+        </span>
+        {busy && <ProgressBar value={st.progress ?? 0} className="w-full" />}
+      </div>
+      {st.kind === 'error' && (
+        <button
+          type="button"
+          onClick={() => safe(`track:retry:${item.song.id}`, () => api.retryTrack(item.song.id))}
+          className="h-11 shrink-0 rounded-xl border border-[rgba(255,143,171,0.4)] px-3 text-[13px] text-[#FF8FAB]"
+        >
+          重试
+        </button>
+      )}
+      <IconButton
+        icon="top"
+        label={`置顶 ${item.song.name}`}
+        size={44}
+        iconSize={18}
+        disabled={index === 0}
+        onClick={() => safe(`queue:top:${item.uid}`, () => api.queueTop(item.uid))}
+      />
+      <IconButton
+        icon="x"
+        label={`删除 ${item.song.name}`}
+        size={44}
+        iconSize={18}
+        onClick={() => safe(`queue:remove:${item.uid}`, () => api.queueRemove(item.uid))}
+      />
+    </motion.li>
+  )
+}
+
+const queueKey = (q: QueueItem) => q.uid
+const commitOrder = (uids: string[]) => api.queueReorder(uids)
+const reorderFailed = (e: unknown) => toast(`排序失败：${errorText(e)}`, 'error')
+
+function QueueList() {
+  const queue = useApp((s) => s.state.queue)
+  const { ordered, dragKey, rowRef, handleProps } = useDragReorder(queue, queueKey, commitOrder, reorderFailed)
+  if (!queue.length) return <EmptyNote>后面还没有歌，去点歌吧</EmptyNote>
+  return (
+    <ol aria-label="接下来" className={clsx('m-0 flex list-none flex-col gap-2 p-0', dragKey && 'select-none')}>
+      <AnimatePresence initial={false}>
+        {ordered.map((item, i) => (
+          <QueueRow key={item.uid} item={item} index={i} dragging={dragKey === item.uid} rowRef={rowRef(item.uid)} handle={handleProps(item.uid)} />
+        ))}
+      </AnimatePresence>
+    </ol>
+  )
+}
+
+function QueueTab() {
+  const queue = useApp((s) => s.state.queue)
+  const current = useApp((s) => s.state.player.current)
+  const shuffling = useIsPending('queue:shuffle')
+  const count = queue.length + (current ? 1 : 0)
+  return (
+    <div className="flex flex-col gap-3.5">
+      <h1 className="m-0 text-[26px] font-black">
+        已点 {count > 0 && <span className="num text-[#FF8FAB]">{count}</span>}
+      </h1>
+      <NowCard />
+      <div className="flex items-center justify-between px-0.5 pt-1">
+        <h2 className="m-0 text-[13px] font-normal text-muted">接下来</h2>
+        <button
+          type="button"
+          disabled={queue.length < 2 || shuffling}
+          onClick={() => void shuffleQueue(queue.length)}
+          className="-my-2 flex h-10 items-center gap-1.5 rounded-xl border border-white/12 px-3.5 text-sm text-fg-2 disabled:opacity-40"
+        >
+          <Icon name="shuffle" size={16} />
+          随机
+        </button>
+      </div>
+      <QueueList />
     </div>
   )
 }
 
 function SongList({ songs }: { songs: Song[] }) {
+  const statusOf = useStatusOf()
   return (
-    <div className="@container flex flex-col">
-      {songs.map((s, i) => (
-        <div key={s.id + '-' + i} className="flex items-center gap-3 py-2">
-          <Cover song={s} px={100} className="h-12 w-12 rounded-xl" />
-          <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span className="truncate text-[15px] font-semibold">{s.name}</span>
-            <span className="flex items-center gap-1.5 truncate text-xs text-muted">
-              {s.mvId > 0 && <span className="num rounded border border-white/25 px-1 text-[10px] font-bold text-fg-2">MV</span>}
-              {artistsText(s)}
-            </span>
-          </div>
-          <SongActions song={s} touch />
-        </div>
-      ))}
-    </div>
+    <ul className="@container m-0 flex list-none flex-col p-0">
+      {songs.map((s, i) => {
+        const st = statusOf(s)
+        const busy = st.kind === 'proc' || st.kind === 'download'
+        return (
+          <li key={s.id + '-' + i} className={clsx('flex min-h-[66px] items-center gap-3 border-b border-white/5 py-2', st.kind === 'vip' && 'opacity-60')}>
+            <Cover song={s} px={100} className="h-12 w-12 shrink-0 rounded-xl" />
+            <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+              <span className="truncate text-[15px] font-semibold">{s.name}</span>
+              <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted">
+                {s.mvId > 0 && <span className="num shrink-0 rounded border border-white/25 px-1 text-[10px] font-bold text-fg-2">MV</span>}
+                <span className="truncate">
+                  {artistsText(s)}
+                  {busy && <span className="text-warn"> · {st.label}</span>}
+                </span>
+              </span>
+            </div>
+            <SongActions song={s} touch />
+          </li>
+        )
+      })}
+    </ul>
   )
 }
 
@@ -365,14 +509,14 @@ function SearchTab({ search, setSearch }: { search: SearchState; setSearch: (pat
   const songs = useMemo(() => results.data?.pages.flatMap((p) => p.songs) ?? [], [results.data])
   return (
     <div className="flex flex-col gap-3">
-      <label className="flex h-12 items-center gap-2.5 rounded-2xl border border-white/8 bg-white/6 px-4 focus-within:border-white/20">
-        <Icon name="search" size={18} className="text-muted" />
+      <label className="flex h-[50px] items-center gap-2.5 rounded-2xl border border-white/10 bg-[#17171F] px-3.5 focus-within:border-white/22">
+        <Icon name="search" size={19} className="text-muted" />
         <span className="sr-only-x">搜索</span>
         <input
           type="search"
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder="搜索歌曲、歌手"
+          placeholder="搜索歌曲、歌手、一句歌词"
           enterKeyHint="search"
           className="h-full min-w-0 flex-1 border-0 bg-transparent text-base text-fg outline-none placeholder:text-subtle"
         />
@@ -412,11 +556,8 @@ function SearchTab({ search, setSearch }: { search: SearchState; setSearch: (pat
         <ImportedPlaylistTracks playlist={openPl} onBack={() => setOpenPl(null)} />
       ) : (
         <>
-          <div className="flex flex-col gap-2">
-            <h2 className="m-0 px-0.5 text-[15px] font-semibold">临时歌单</h2>
-            <ImportedPlaylistChips onOpen={setOpenPl} onImport={() => setImportOpen(true)} />
-          </div>
-          <div role="tablist" aria-label="歌曲列表" className="flex items-center gap-2 px-0.5">
+          <ImportedPlaylistChips onOpen={setOpenPl} onImport={() => setImportOpen(true)} />
+          <div role="tablist" aria-label="歌曲列表" className="grid h-[42px] grid-cols-2 rounded-[14px] bg-white/5 p-1">
             {(
               [
                 ['rec', rec.data?.daily ? '每日推荐' : '热门推荐'],
@@ -430,8 +571,8 @@ function SearchTab({ search, setSearch }: { search: SearchState; setSearch: (pat
                 aria-selected={list === k}
                 onClick={() => setList(k)}
                 className={clsx(
-                  'h-10 rounded-full px-4 text-[15px] transition-colors',
-                  list === k ? 'bg-white/10 font-semibold text-fg' : 'text-muted',
+                  'rounded-[10px] text-sm transition-colors',
+                  list === k ? 'bg-fg font-bold text-ink' : 'text-fg-2',
                 )}
               >
                 {label}
@@ -509,56 +650,23 @@ export default function Remote() {
   ]
   return (
     <div className="relative mx-auto flex h-full max-w-[560px] flex-col overflow-hidden bg-ink text-fg">
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute -top-[260px] -left-[120px] h-[560px] w-[560px] rounded-full opacity-[0.32] blur-[16px]"
-        style={{ background: 'radial-gradient(circle, #FF4D7E 0%, rgba(0,0,0,0) 62%)' }}
-      />
-      <div
-        aria-hidden="true"
-        className="pointer-events-none absolute top-[120px] -right-[200px] h-[420px] w-[420px] rounded-full opacity-[0.22] blur-[16px]"
-        style={{ background: 'radial-gradient(circle, #6D4BFF 0%, rgba(0,0,0,0) 60%)' }}
-      />
-      <header className="relative flex items-center justify-between px-5 pt-[max(22px,env(safe-area-inset-top))] pb-3.5">
-        <div className="flex flex-col gap-1">
-          <h1 className="m-0 text-[22px] font-bold">Netease KTV</h1>
-          <span className="flex items-center gap-1.5 text-[13px] text-muted">
-            <span
-              aria-hidden="true"
-              className="h-[7px] w-[7px] rounded-full"
-              style={{ background: connected ? '#4ADE80' : '#FBBF24', boxShadow: connected ? '0 0 8px #4ADE80' : undefined }}
-            />
-            {connected ? `已连接 · ${location.host}` : '正在连接…'}
-          </span>
-        </div>
-        <NicknameChip />
-      </header>
       {showBanner && (
         <div
           role="status"
-          className="relative mx-5 mb-2 flex items-center gap-2 rounded-2xl border border-[rgba(251,191,36,0.25)] bg-[rgba(251,191,36,0.1)] px-3.5 py-2.5 text-[13px] text-warn"
+          className="absolute inset-x-5 top-[max(12px,env(safe-area-inset-top))] z-20 flex items-center gap-2 rounded-2xl bg-[#2A2414] px-3.5 py-2.5 text-[13px] text-warn"
         >
           <Spinner size={14} />
           连接中断，正在重连…
         </div>
       )}
 
-      <main ref={mainRef} className="relative min-h-0 flex-1 overflow-y-auto px-5 pb-6">
-        {tab === 'remote' && <RemoteTab onPickSong={() => switchTab('search')} onShowQueue={() => switchTab('queue')} />}
+      <main ref={mainRef} className="relative min-h-0 flex-1 overflow-y-auto px-5 pt-[max(20px,env(safe-area-inset-top))] pb-6">
+        {tab === 'remote' && <RemoteTab onPickSong={() => switchTab('search')} />}
         {tab === 'search' && <SearchTab search={search} setSearch={setSearch} />}
-        {tab === 'queue' && (
-          <div className="flex flex-col gap-3">
-            {current && <NowSingingCard />}
-            <div className="flex items-center justify-between">
-              <h2 className="m-0 px-0.5 text-[15px] font-semibold">接下来</h2>
-              <ShuffleButton count={queue.length} className="-mr-2" />
-            </div>
-            <QueueList />
-          </div>
-        )}
+        {tab === 'queue' && <QueueTab />}
         {tab === 'rank' && (
           <div className="flex flex-col gap-3">
-            <h2 className="m-0 px-0.5 text-[15px] font-semibold">K 歌排行</h2>
+            <h1 className="m-0 text-[26px] font-black">K 歌排行</h1>
             <Leaderboard />
           </div>
         )}
@@ -566,7 +674,7 @@ export default function Remote() {
 
       <nav
         aria-label="底部导航"
-        className="relative grid h-[calc(64px+env(safe-area-inset-bottom))] shrink-0 grid-cols-4 border-t border-white/8 bg-ink/85 px-3 pb-[env(safe-area-inset-bottom)] backdrop-blur-xl"
+        className="relative grid h-[calc(64px+env(safe-area-inset-bottom))] shrink-0 grid-cols-4 bg-ink px-3 pb-[env(safe-area-inset-bottom)]"
       >
         {tabs.map((t) => (
           <button
@@ -576,7 +684,7 @@ export default function Remote() {
             aria-current={tab === t.id ? 'page' : undefined}
             className={clsx(
               'flex flex-col items-center justify-center gap-1 text-xs whitespace-nowrap',
-              tab === t.id ? 'font-semibold text-accent' : 'text-muted',
+              tab === t.id ? 'font-bold text-accent' : 'text-subtle',
             )}
           >
             <Icon name={t.icon} size={22} />
@@ -613,11 +721,10 @@ function NicknameChip() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="flex h-10 max-w-[45%] shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-white/6 px-3.5 text-[13px] whitespace-nowrap text-fg-2"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[#23232E] text-[13px] font-bold text-fg"
         aria-label={nickname ? `昵称：${nickname}，点击修改` : '设置昵称'}
       >
-        <Icon name={nickname ? 'user' : 'pen'} size={15} />
-        <span className="truncate">{nickname || '设置昵称'}</span>
+        {nickname ? Array.from(nickname)[0] : <Icon name="pen" size={16} />}
       </button>
       <Dialog open={open} onClose={close} title="你的昵称" width={380}>
         <form
