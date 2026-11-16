@@ -44,6 +44,7 @@ export const emptyState: AppState = {
   tracks: {},
   separator: { online: false, pending: 0 },
   tvOnline: false,
+  recording: null,
 }
 
 interface Store {
@@ -114,6 +115,8 @@ export const useApp = create<Store>((set) => ({
           return { idleSync: msg.idle }
         case 'settings':
           return { settingsVersion: s.settingsVersion + 1 }
+        case 'recording':
+          return { state: { ...st, recording: msg.offer } }
         default:
           return {}
       }

@@ -226,9 +226,14 @@ export function PreparingScreen({
       detail = '前面还有歌曲在处理'
       break
     case 'separating':
-      title = '正在生成伴奏'
       progress = track.progress
-      detail = 'AI 正在去除主唱、保留和声'
+      if (track.stemOrigin === 'official') {
+        title = '正在获取官方伴奏'
+        detail = '网易云随心唱的伴奏和人声分轨'
+      } else {
+        title = '正在生成伴奏'
+        detail = 'AI 正在去除主唱、保留和声'
+      }
       break
     case 'unavailable':
       title = '这首歌无法播放'

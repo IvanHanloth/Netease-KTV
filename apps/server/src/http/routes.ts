@@ -21,6 +21,7 @@ import type { IdleMusic, MvInfo, Song, Stem } from '../shared/types.js'
 import { sendError } from './errors.js'
 import { commandSchema } from './schemas.js'
 import { adminRoutes } from './adminRoutes.js'
+import { recordRoutes } from './recordRoutes.js'
 import { proxy, sendFile } from './stream.js'
 
 const id = z.coerce.number().int().positive()
@@ -273,6 +274,7 @@ export async function registerRoutes(app: FastifyInstance) {
         scoreTolerance: z.number().min(0.3).max(3).optional(),
         multiScreenSync: z.boolean().optional(),
         multiScreenAudio: z.boolean().optional(),
+        recordEnabled: z.boolean().optional(),
       })
       .parse(req.body)
     return { ...updateSettings(body, listUnblockSources()), unblockSourceOptions: listUnblockSources() }
@@ -280,4 +282,6 @@ export async function registerRoutes(app: FastifyInstance) {
 
   // 后台管理 (/admin): every ops endpoint lives under one prefix, in its own plugin.
   await app.register(adminRoutes, { prefix: '/api/admin' })
+  // 录制: its own plugin (it takes raw audio uploads).
+  await app.register(recordRoutes, { prefix: '/api/recordings' })
 }

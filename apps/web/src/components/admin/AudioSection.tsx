@@ -42,12 +42,12 @@ export function AudioSection({ draft, set }: { draft: AdminSettings; set: SetFn 
 }
 
 /** Default separation model (each server can override it). Saved with the rest of the draft. */
-export function ModelSection({ draft, set }: { draft: AdminSettings; set: SetFn }) {
+export function ModelSection({ draft, set, title = '默认分离模型' }: { draft: AdminSettings; set: SetFn; title?: string }) {
   const preset = MODELS.some((m) => m.value === draft.separatorModel)
   const [custom, setCustom] = useState(!preset)
   return (
     <>
-      <Card title="默认分离模型">
+      <Card title={title}>
         <div role="radiogroup" aria-label="分离模型" className="flex flex-col gap-2">
           {MODELS.map((m) => (
             <ChoiceCard
@@ -73,7 +73,7 @@ export function ModelSection({ draft, set }: { draft: AdminSettings; set: SetFn 
           />
         )}
         <p className="m-0 text-xs leading-5 text-muted">
-          karaoke 类模型只去掉主唱、保留和声，唱起来不空。换模型后，第一次分离会先下载模型文件。需要保存。
+          karaoke 类模型只去掉主唱、保留和声，唱起来不空。分离服务器可以在“分离服务器”里单独指定模型。换模型后，第一次分离会先下载模型文件。需要保存。
         </p>
       </Card>
     </>

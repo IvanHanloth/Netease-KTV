@@ -8,6 +8,7 @@ import { pruneApiCache } from './apiCache.js'
 import { config } from './config.js'
 import { hub } from './core/hub.js'
 import { startPipeline } from './core/pipeline.js'
+import { startRecordings } from './core/recordings.js'
 import { loadPlayer, priorityIds } from './core/player.js'
 import { getSettings } from './settings.js'
 import { clearMediaKind, syncAllTracksFromDisk } from './core/storage.js'
@@ -27,6 +28,7 @@ async function main() {
   loadPlayer(getCachedSong)
   // Files may have gone missing while the server was down (or a dir was removed by hand).
   syncAllTracksFromDisk()
+  startRecordings()
   await initNcm()
 
   if (!(await ffmpegAvailable())) {

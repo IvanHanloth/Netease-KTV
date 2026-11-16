@@ -211,6 +211,12 @@ const paths = {
       <rect x="10.5" y="10" width="11" height="8" rx="1.5" />
     </>
   ),
+  record: (
+    <>
+      <circle cx="12" cy="12" r="8.5" />
+      <circle cx="12" cy="12" r="3.6" fill="currentColor" stroke="none" />
+    </>
+  ),
   locate: (
     <>
       <circle cx="12" cy="12" r="3" />

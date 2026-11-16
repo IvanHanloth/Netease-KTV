@@ -4,6 +4,7 @@ import { serverNow } from '../clock.js'
 import type { AppState, IdleSync, PlaybackSync, PlayerCommand, PlayerState, QueueItem, QueuePosition, Song } from '../shared/types.js'
 import { ANONYMOUS, KEY_MAX, KEY_MIN } from '../shared/constants.js'
 import { hub } from './hub.js'
+import { currentOffer } from './recordings.js'
 
 const PLAYER_KEY = 'player'
 
@@ -122,6 +123,7 @@ export function snapshot(): AppState {
     tracks: hub.tracksRecord(),
     separator: hub.separator,
     tvOnline: hub.tvOnline,
+    recording: currentOffer(),
   }
 }
 

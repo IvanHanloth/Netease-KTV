@@ -25,6 +25,8 @@ export const SETTING_LIMITS = {
   cacheLimitGB: { min: 1, max: 500 },
   scoreTolerance: { min: 0.3, max: 3 },
   idleSongs: { max: 100 },
+  recordQrSeconds: { min: 15, max: 300 },
+  recordKeepHours: { min: 1, max: 720 },
 } as const
 
 /** The requester shown when nobody set a nickname. */

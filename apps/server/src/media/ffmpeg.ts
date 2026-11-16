@@ -28,6 +28,18 @@ export async function probeDuration(file: string): Promise<number> {
   }
 }
 
+/** Channel count of the first audio stream, or 0 when ffprobe fails. */
+export async function probeChannels(file: string): Promise<number> {
+  try {
+    const { code, stdout } = await run(config.ffprobe, [
+      '-v', 'error', '-select_streams', 'a:0', '-show_entries', 'stream=channels', '-of', 'default=nw=1:nk=1', file,
+    ])
+    return code === 0 ? Number(stdout.trim()) || 0 : 0
+  } catch {
+    return 0
+  }
+}
+
 let rubberband: boolean | null = null
 
 async function hasRubberband(): Promise<boolean> {
@@ -159,6 +171,40 @@ export function renderPitchLater(input: string, output: string, semitones: numbe
 export async function extractAnalysisWav(input: string, output: string): Promise<void> {
   const { code, stderr } = await run(config.ffmpeg, ['-y', '-v', 'error', '-i', input, '-vn', '-ac', '1', '-ar', '11025', '-t', '900', output])
   if (code !== 0) throw new Error(`ffmpeg: ${stderr.slice(-300)}`)
+}
+
+/**
+ * Run a longer ffmpeg job (a 录制 render) with progress: `onProgress` gets 0..1 of `duration`
+ * seconds of output. `cwd` lets filters refer to files by bare name (paths with a drive letter
+ * break the subtitles filter's option syntax on Windows).
+ */
+export function ffmpegJob(
+  args: string[],
+  opts: { cwd?: string; duration?: number; onProgress?: (p: number) => void } = {},
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(config.ffmpeg, ['-y', '-v', 'error', '-nostats', '-progress', 'pipe:1', ...args], {
+      windowsHide: true,
+      cwd: opts.cwd,
+    })
+    let stderr = ''
+    let buf = ''
+    child.stdout.on('data', (d: Buffer) => {
+      buf += d.toString()
+      let i: number
+      while ((i = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, i).trim()
+        buf = buf.slice(i + 1)
+        const m = /^out_time_us=(\d+)/.exec(line)
+        if (m && opts.duration && opts.onProgress) opts.onProgress(Math.min(1, Number(m[1]) / 1e6 / opts.duration))
+      }
+    })
+    child.stderr.on('data', (d: Buffer) => {
+      stderr = (stderr + d.toString()).slice(-2000)
+    })
+    child.on('error', reject)
+    child.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg 失败：${stderr.trim().slice(-400)}`))))
+  })
 }
 
 export async function ffmpegAvailable(): Promise<boolean> {

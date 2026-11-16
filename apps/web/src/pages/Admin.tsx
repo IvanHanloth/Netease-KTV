@@ -9,21 +9,25 @@ import { holdUpdates } from '../lib/pwa'
 import { Icon, type IconName } from '../components/icons'
 import { Spinner } from '../components/ui'
 import { IdleSection } from '../components/admin/IdleSection'
+import { RecordSection } from '../components/admin/RecordSection'
 import { SeparatorsSection } from '../components/admin/SeparatorsSection'
 import { StorageSection } from '../components/admin/StorageSection'
 import { Card } from '../components/admin/parts'
-import { AudioSection, ModelSection } from '../components/admin/AudioSection'
+import { AudioSection } from '../components/admin/AudioSection'
+import { StemSection } from '../components/admin/StemSection'
 import { NetworkSection } from '../components/admin/NetworkSection'
 import { Overview } from '../components/admin/OverviewSection'
 import { UnblockSection } from '../components/admin/UnblockSection'
 
-type SectionId = 'overview' | 'separators' | 'audio' | 'idle' | 'network' | 'storage' | 'unblock'
+type SectionId = 'overview' | 'stems' | 'separators' | 'audio' | 'idle' | 'record' | 'network' | 'storage' | 'unblock'
 
 const SECTIONS: { id: SectionId; label: string; icon: IconName; keys: (keyof AdminSettings)[] }[] = [
   { id: 'overview', label: '运行状态', icon: 'info', keys: [] },
-  { id: 'separators', label: '分离服务器', icon: 'server', keys: ['separatorModel'] },
+  { id: 'stems', label: '伴奏来源', icon: 'mic', keys: ['stemSource', 'stemFallback', 'separatorModel'] },
+  { id: 'separators', label: '分离服务器', icon: 'server', keys: [] },
   { id: 'audio', label: '下载音质', icon: 'wave', keys: ['audioLevel'] },
   { id: 'idle', label: '待机音乐', icon: 'note', keys: ['idleEnabled', 'idleSongs'] },
+  { id: 'record', label: '录制', icon: 'record', keys: ['recordEnabled', 'recordQrSeconds', 'recordKeepHours'] },
   { id: 'network', label: '网络', icon: 'globe', keys: ['publicUrl'] },
   { id: 'storage', label: '视频与缓存', icon: 'database', keys: ['mvPreload', 'mvResolution', 'cacheLimitGB'] },
   { id: 'unblock', label: '第三方音源', icon: 'link', keys: ['unblockEnabled', 'unblockSources'] },
@@ -186,18 +190,19 @@ export default function Admin() {
             ) : section === 'overview' ? (
               <Overview go={go} />
             ) : section === 'separators' ? (
-              <>
-                <SeparatorsSection />
-                {draft && <ModelSection draft={draft} set={set} />}
-              </>
+              <SeparatorsSection />
             ) : !draft ? (
               <div className="flex justify-center py-16 text-muted">
                 <Spinner size={24} />
               </div>
+            ) : section === 'stems' ? (
+              <StemSection draft={draft} set={set} />
             ) : section === 'audio' ? (
               <AudioSection draft={draft} set={set} />
             ) : section === 'idle' ? (
               <IdleSection draft={draft} set={set} />
+            ) : section === 'record' ? (
+              <RecordSection draft={draft} set={set} />
             ) : section === 'network' ? (
               <NetworkSection draft={draft} set={set} />
             ) : section === 'storage' ? (
@@ -250,9 +255,11 @@ export default function Admin() {
 
 const SECTION_INTRO: Record<SectionId, string> = {
   overview: '服务、账号、存储和在线设备的当前状态，每 5 秒刷新。',
+  stems: '伴唱用的伴奏和原唱用的人声从哪里来。只影响之后新处理的歌，已经处理好的不会重做。',
   separators: '可以接入多台分离服务器一起处理点歌，本机不一定要运行分离服务。改动立即生效。',
   audio: '影响新下载的歌曲；已经下载好的不会重新下载。',
   idle: '没人点歌时，主屏小声循环播放的音乐。',
+  record: '把每首歌的演唱录下来，唱完扫码带走。录音只存在这台主机上，到时间自动删除。',
   network: '手机扫码点歌用的地址。',
   storage: 'MV 下载和本地缓存的空间管理。清理操作立即生效，不需要保存。',
   unblock: '只给网易云完全没有音源的歌兜底，默认关闭。',

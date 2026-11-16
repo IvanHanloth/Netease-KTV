@@ -13,10 +13,12 @@ import {
   originalPath,
   pitchPath,
   stemPath,
+  stemsAreOfficial,
 } from '../media/files.js'
+import { fetchOfficialStems } from '../media/official.js'
 import { resolveAudio, UnavailableError } from '../media/resolve.js'
 import { getCachedSong, getSong } from '../ncm/service.js'
-import type { AudioSource, Song } from '../shared/types.js'
+import type { AudioSource, Song, StemSource } from '../shared/types.js'
 import {
   chooseSeparationNode,
   clusterOnline,
@@ -40,7 +42,13 @@ import { singleFlight } from '../util.js'
  *   idle -> downloading -> queued -> separating -> ready
  * Downloads and separation run independently so the next song can download while the
  * separator nodes are busy; separations are spread over all nodes (see ../separator.ts).
+ *
+ * 伴奏来源 = official: a queued song first tries NetEase's own 随心唱 stems (../media/official.ts,
+ * shown as separating with stemOrigin 'official'). Without them it goes back to queued for AI
+ * separation, or plays the original when the AI fallback is off.
  */
+
+const stemOrigin = (songId: number): StemSource => (stemsAreOfficial(songId) ? 'official' : 'ai')
 
 const bootAt = Date.now()
 
@@ -55,12 +63,12 @@ function reconcile(songId: number): void {
   const track = hub.getTrack(songId)
   // Stems that appeared after the song was marked "original only".
   if (track.status === 'ready' && !track.hasStems && hasStems(songId)) {
-    hub.setTrack(songId, { hasStems: true, hasPitch: hasPitch(songId), message: undefined })
+    hub.setTrack(songId, { hasStems: true, hasPitch: hasPitch(songId), stemOrigin: stemOrigin(songId), message: undefined })
     return
   }
   if (track.status !== 'idle') return
   if (hasStems(songId)) {
-    hub.setTrack(songId, { status: 'ready', progress: 1, hasStems: true, hasPitch: hasPitch(songId) })
+    hub.setTrack(songId, { status: 'ready', progress: 1, hasStems: true, hasPitch: hasPitch(songId), stemOrigin: stemOrigin(songId) })
   }
   else if (findOriginal(songId)) hub.setTrack(songId, { status: 'queued', progress: 0, hasStems: false })
 }
@@ -134,7 +142,7 @@ async function separateOne(songId: number, node: SeparatorNodeConfig): Promise<v
     return
   }
   // Claim the song synchronously so the dispatcher does not hand it out twice.
-  hub.setTrack(songId, { status: 'separating', progress: 0, message: undefined }, false)
+  hub.setTrack(songId, { status: 'separating', progress: 0, stemOrigin: 'ai', message: undefined }, false)
   // No await before separateOnNode: it reserves the node slot synchronously, so the dispatcher's
   // next pick in the same pass already sees this node as busy.
   const song = getCachedSong(songId)
@@ -162,6 +170,7 @@ async function separateOne(songId: number, node: SeparatorNodeConfig): Promise<v
       progress: 1,
       hasStems: true,
       hasPitch: hasPitch(songId),
+      stemOrigin: 'ai',
       message: undefined,
     })
     void enforceCacheLimit()
@@ -186,9 +195,63 @@ async function separateOne(songId: number, node: SeparatorNodeConfig): Promise<v
       status: 'ready',
       progress: 1,
       hasStems: false,
+      stemOrigin: undefined,
       message: `伴奏生成失败，将播放原曲：${(err as Error).message}`,
     })
   }
+}
+
+/** Songs that already had their 随心唱 lookup this session (found, missing or failed). */
+const officialTried = new Set<number>()
+let officialBusy = false
+
+function wantsOfficial(songId: number): boolean {
+  return getSettings().stemSource === 'official' && !officialTried.has(songId) && hub.getTrack(songId).source !== 'unblock'
+}
+
+/** One song's 随心唱 stems (one at a time: they are ~20 MB downloads from NetEase). */
+async function officialOne(songId: number): Promise<void> {
+  officialTried.add(songId)
+  officialBusy = true
+  hub.setTrack(songId, { status: 'separating', progress: 0, stemOrigin: 'official', message: undefined }, false)
+  let found = false
+  let failure: string | undefined
+  try {
+    found = await busySong(
+      songId,
+      fetchOfficialStems(songId, (p) => hub.setTrack(songId, { progress: p }, false)),
+    )
+  } catch (err) {
+    failure = (err as Error).message
+    console.warn(`[pipeline] official stems for ${songId} failed:`, failure)
+  } finally {
+    officialBusy = false
+  }
+  invalidateScan()
+  if (found && hasStems(songId)) {
+    console.info(`[pipeline] ${songId}: 使用网易云随心唱伴奏`)
+    attempts.delete(songId)
+    hub.setTrack(songId, {
+      status: 'ready',
+      progress: 1,
+      hasStems: true,
+      hasPitch: hasPitch(songId),
+      stemOrigin: 'official',
+      message: undefined,
+    })
+    void enforceCacheLimit()
+  } else if (getSettings().stemFallback) {
+    hub.setTrack(songId, { status: 'queued', progress: 0, stemOrigin: undefined }, false)
+  } else {
+    hub.setTrack(songId, {
+      status: 'ready',
+      progress: 1,
+      hasStems: false,
+      stemOrigin: undefined,
+      message: failure ? `获取官方伴奏失败，将播放原曲：${failure}` : '这首歌没有官方伴奏，将播放原曲',
+    })
+  }
+  hub.emit('work-separate')
 }
 
 const pitchTried = new Set<number>()
@@ -225,12 +288,19 @@ async function pitchOne(songId: number): Promise<void> {
  */
 function separateLoop(): void {
   releaseUnqueued()
+  // Songs waiting for their 随心唱 lookup while another one is running are skipped this pass.
+  const skip = new Set<number>()
   for (;;) {
-    const id = nextWith('queued')
+    const id = priorityIds().find((x) => hub.getTrack(x).status === 'queued' && !skip.has(x))
     if (id === undefined) {
-      const pid = !pitchBusy && clusterOnline() ? nextNeedingPitch() : undefined
+      const pid = !pitchBusy && clusterOnline() && !skip.size ? nextNeedingPitch() : undefined
       if (pid !== undefined) void pitchOne(pid)
       return
+    }
+    if (wantsOfficial(id)) {
+      if (officialBusy) skip.add(id)
+      else void officialOne(id)
+      continue
     }
     const durationMs = getCachedSong(id)?.duration ?? 0
     const choice = chooseSeparationNode(durationMs)
@@ -293,6 +363,7 @@ export function ensureOriginal(songId: number): Promise<void> {
 /** Forget what this session learned about a song's files (they were removed or are redone). */
 function forgetSong(songId: number): void {
   pitchTried.delete(songId)
+  officialTried.delete(songId)
   attempts.delete(songId)
   forgetAlignment(songId)
 }

@@ -195,6 +195,17 @@ export function useRemoteUrl() {
   }, [data?.publicUrl])
 }
 
+/** The phone page for a 录制 (encoded into the QR code after a song). */
+export function useRecordingUrl(id: string | null) {
+  const { data } = useSettings()
+  return useMemo(() => {
+    if (!id) return ''
+    const base = (data?.publicUrl || window.location.origin).replace(/\/+$/, '')
+    const token = getToken()
+    return base + '/r/' + id + (token ? '?token=' + encodeURIComponent(token) : '')
+  }, [id, data?.publicUrl])
+}
+
 /** True when the page was opened through localhost, so a QR to it would not work from a phone. */
 export function useIsLocalhostOrigin() {
   const { data } = useSettings()

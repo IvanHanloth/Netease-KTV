@@ -22,6 +22,8 @@ function load(): Settings {
     unblockEnabled: saved.unblockEnabled ?? config.defaults.unblockEnabled,
     unblockSources: saved.unblockSources ?? config.defaults.unblockSources,
     audioLevel: saved.audioLevel ?? config.defaults.audioLevel,
+    stemSource: saved.stemSource ?? config.defaults.stemSource,
+    stemFallback: saved.stemFallback ?? config.defaults.stemFallback,
     separatorModel: saved.separatorModel ?? config.defaults.separatorModel,
     // Empty means "not set in the UI": fall back to PUBLIC_URL (filled in by the start scripts).
     publicUrl: saved.publicUrl || config.defaults.publicUrl,
@@ -34,6 +36,9 @@ function load(): Settings {
     multiScreenAudio: saved.multiScreenAudio ?? config.defaults.multiScreenAudio,
     idleEnabled: saved.idleEnabled ?? config.defaults.idleEnabled,
     idleSongs: saved.idleSongs ?? config.defaults.idleSongs,
+    recordEnabled: saved.recordEnabled ?? config.defaults.recordEnabled,
+    recordQrSeconds: saved.recordQrSeconds ?? config.defaults.recordQrSeconds,
+    recordKeepHours: saved.recordKeepHours ?? config.defaults.recordKeepHours,
   }
 }
 
@@ -44,6 +49,8 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
     next.unblockSources = patch.unblockSources.filter((s) => allowedSources.includes(s))
   }
   if (patch.audioLevel && LEVELS.includes(patch.audioLevel)) next.audioLevel = patch.audioLevel
+  if (patch.stemSource === 'official' || patch.stemSource === 'ai') next.stemSource = patch.stemSource
+  if (typeof patch.stemFallback === 'boolean') next.stemFallback = patch.stemFallback
   if (typeof patch.separatorModel === 'string') next.separatorModel = patch.separatorModel.trim()
   if (typeof patch.publicUrl === 'string') next.publicUrl = patch.publicUrl.trim().replace(/\/$/, '')
   if (typeof patch.scoringEnabled === 'boolean') next.scoringEnabled = patch.scoringEnabled
@@ -62,6 +69,13 @@ export function updateSettings(patch: Partial<Settings>, allowedSources: string[
   if (typeof patch.idleEnabled === 'boolean') next.idleEnabled = patch.idleEnabled
   if (Array.isArray(patch.idleSongs)) {
     next.idleSongs = [...new Set(patch.idleSongs.filter((id) => Number.isInteger(id) && id > 0))].slice(0, SETTING_LIMITS.idleSongs.max)
+  }
+  if (typeof patch.recordEnabled === 'boolean') next.recordEnabled = patch.recordEnabled
+  if (typeof patch.recordQrSeconds === 'number' && Number.isFinite(patch.recordQrSeconds)) {
+    next.recordQrSeconds = Math.round(clampTo(patch.recordQrSeconds, SETTING_LIMITS.recordQrSeconds))
+  }
+  if (typeof patch.recordKeepHours === 'number' && Number.isFinite(patch.recordKeepHours)) {
+    next.recordKeepHours = Math.round(clampTo(patch.recordKeepHours, SETTING_LIMITS.recordKeepHours))
   }
   kv.set(KEY, next)
   current = null

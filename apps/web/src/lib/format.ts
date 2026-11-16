@@ -61,9 +61,13 @@ export function deriveStatus(song: Song, track: TrackState | undefined, inQueue:
     case 'ready':
       if (track.source === 'unblock') return { kind: 'third', label: '第三方音源' }
       if (!track.hasStems) return { kind: 'original', label: '仅原曲' }
-      return { kind: 'ready', label: '已就绪' }
+      return { kind: 'ready', label: track.stemOrigin === 'official' ? '官方伴奏' : '已就绪' }
     case 'separating':
-      return { kind: 'proc', label: '分离中 ' + pct(track.progress), progress: track.progress }
+      return {
+        kind: 'proc',
+        label: (track.stemOrigin === 'official' ? '获取伴奏 ' : '分离中 ') + pct(track.progress),
+        progress: track.progress,
+      }
     case 'downloading':
       return { kind: 'download', label: '下载中 ' + pct(track.progress), progress: track.progress }
     case 'queued':

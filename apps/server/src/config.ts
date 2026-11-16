@@ -35,6 +35,8 @@ export const config = {
     unblockEnabled: bool(process.env.ENABLE_UNBLOCK, false),
     unblockSources: list(process.env.UNBLOCK_SOURCES, ['unm']),
     audioLevel: (process.env.AUDIO_LEVEL ?? 'exhigh') as 'exhigh',
+    stemSource: (process.env.STEM_SOURCE === 'ai' ? 'ai' : 'official') as 'official' | 'ai',
+    stemFallback: bool(process.env.STEM_FALLBACK, true),
     separatorModel: process.env.SEPARATOR_MODEL ?? '',
     publicUrl: process.env.PUBLIC_URL ?? '',
     scoringEnabled: bool(process.env.SCORING_ENABLED, true),
@@ -47,6 +49,9 @@ export const config = {
     idleEnabled: bool(process.env.IDLE_MUSIC, true),
     // Tony Anderson – 1993
     idleSongs: [2755842309],
+    recordEnabled: bool(process.env.RECORD_ENABLED, false),
+    recordQrSeconds: Number(process.env.RECORD_QR_SECONDS ?? 60) || 60,
+    recordKeepHours: Number(process.env.RECORD_KEEP_HOURS ?? 24) || 24,
   },
   /** Allowed difference between NetEase duration and unblock audio duration. */
   unblockDurationTolerance: Number(process.env.UNBLOCK_DURATION_TOLERANCE ?? 3000),
@@ -59,4 +64,6 @@ export const paths = {
   mediaRoot: () => path.join(config.dataDir, 'media'),
   mvRoot: () => path.join(config.dataDir, 'mv'),
   tmp: () => path.join(config.dataDir, 'tmp'),
+  /** recordings/<id>/: meta.json, the uploaded takes and the renders. */
+  recordings: () => path.join(config.dataDir, 'recordings'),
 }

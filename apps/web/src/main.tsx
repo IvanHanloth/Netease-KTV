@@ -25,6 +25,7 @@ const Tv = lazy(() => import('./pages/Tv'))
 const Remote = lazy(() => import('./pages/Remote'))
 const Admin = lazy(() => import('./pages/Admin'))
 const Ear = lazy(() => import('./pages/Ear'))
+const Rec = lazy(() => import('./pages/Rec'))
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -82,6 +83,7 @@ const router = createBrowserRouter([
   { path: '/m', element: page(<Remote />) },
   { path: '/admin', element: page(<Admin />) },
   { path: '/ear', element: page(<Ear />) },
+  { path: '/r/:id', element: page(<Rec />) },
   { path: '*', element: page(<Desk />) },
 ])
 

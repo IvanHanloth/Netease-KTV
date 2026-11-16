@@ -9,7 +9,8 @@ import type { MediaCacheKind, MvResolution, Stem } from '../shared/types.js'
  * The on-disk layout of the media cache, in one place:
  *
  *   media/<songId>/original.<ext>             原曲 (download)
- *   media/<songId>/instrumental.flac, vocals.flac   伴奏 / 人声 (separation)
+ *   media/<songId>/instrumental.flac, vocals.flac   伴奏 / 人声 (AI separation, or NetEase 随心唱)
+ *   media/<songId>/stems.official             marker: the stems are NetEase's own 随心唱 tracks
  *   media/<songId>/pitch.json, mv_align.json  评分音高 / MV 对齐 (analysis)
  *   media/<songId>/pitch/<stem>_<±key>.flac   变调 (ffmpeg)
  *   media/<songId>/.access                    last use (LRU)
@@ -57,6 +58,17 @@ export function pitchPath(songId: number): string {
 
 export function alignPath(songId: number): string {
   return path.join(paths.media(songId), 'mv_align.json')
+}
+
+/** Next to stems that came from NetEase 随心唱 rather than AI separation. */
+const OFFICIAL_MARK = 'stems.official'
+
+export function officialMarkPath(songId: number): string {
+  return path.join(paths.media(songId), OFFICIAL_MARK)
+}
+
+export function stemsAreOfficial(songId: number): boolean {
+  return fs.existsSync(officialMarkPath(songId))
 }
 
 export function hasPitch(songId: number): boolean {
@@ -107,7 +119,7 @@ export function kindOfSongFile(rel: string): MediaCacheKind | null {
   if (rel.startsWith('pitch/')) return name.endsWith('.flac') ? 'pitched' : null
   if (rel.includes('/')) return null
   if (name.startsWith('original.')) return 'original'
-  if (name === 'instrumental.flac' || name === 'vocals.flac') return 'stems'
+  if (name === 'instrumental.flac' || name === 'vocals.flac' || name === OFFICIAL_MARK) return 'stems'
   if (name === 'pitch.json' || name === 'mv_align.json') return 'analysis'
   return null
 }

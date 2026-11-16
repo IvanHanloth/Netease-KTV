@@ -400,7 +400,44 @@ function Home({ open }: { open: (v: View) => void }) {
           </span>
         </span>
       </button>
+      <RecordTile />
     </div>
+  )
+}
+
+/** 录制: every song is recorded on the 主屏, and a QR code after it lets people take it home. */
+function RecordTile() {
+  const settings = useSettings().data
+  const save = useSaveSetting()
+  const on = settings?.recordEnabled ?? false
+  const micOn = useApp((s) => s.state.player.micOn)
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label="录制开关"
+      onClick={() => void save({ recordEnabled: !on })}
+      className={clsx(
+        'col-span-4 flex h-16 items-center gap-3 rounded-[22px] px-3.5 text-left transition-colors',
+        on ? 'bg-accent/16 hover:bg-accent/20' : 'bg-white/7 hover:bg-white/10',
+      )}
+    >
+      <span className={clsx('flex h-9 w-9 shrink-0 items-center justify-center rounded-full', on ? 'bg-accent text-accent-ink' : 'bg-white/12 text-fg-2')}>
+        <Icon name="record" size={18} strokeWidth={on ? 2 : 1.8} />
+      </span>
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className={clsx('text-sm font-bold', on && 'text-[#FFD1DD]')}>录制</span>
+        {on && (
+          <span className={clsx('truncate text-[11px]', micOn ? 'text-accent-soft' : 'text-warn')}>
+            {micOn ? '演唱结束后扫码保存录制' : '麦克风未开启，无法录制'}
+          </span>
+        )}
+      </span>
+      <span aria-hidden="true" className={clsx('relative h-[26px] w-11 shrink-0 rounded-full transition-colors', on ? 'bg-accent' : 'bg-white/16')}>
+        <span className={clsx('absolute top-[3px] h-5 w-5 rounded-full bg-white transition-[left]', on ? 'left-[21px]' : 'left-[3px]')} />
+      </span>
+    </button>
   )
 }
 
@@ -614,7 +651,7 @@ function MicPage() {
             })}
           </div>
         ) : (
-          <p className="m-0 rounded-[18px] bg-white/[0.04] px-3.5 py-3 text-[13px] text-muted">主屏打开后，可以在这里选输入设备。</p>
+          <p className="m-0 rounded-[18px] bg-white/[0.04] px-3.5 py-3 text-[13px] text-muted">无法获取主屏输入设备</p>
         )}
       </section>
       <p className="m-0 flex gap-2 rounded-[14px] bg-white/[0.04] px-3.5 py-3 text-xs leading-relaxed text-muted">

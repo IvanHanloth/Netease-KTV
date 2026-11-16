@@ -19,6 +19,10 @@ import type {
   QrStatus,
   QueueItem,
   QueuePosition,
+  RecordingCreate,
+  RecordingInfo,
+  RecordingOffer,
+  RecordingRenderKind,
   ScoreSubmit,
   ScoreSubmitResult,
   SeparatorNodeView,
@@ -234,6 +238,36 @@ export const api = {
   /** One song's media: some kinds, or everything (its MV included). */
   clearSongCache: (songId: number, kinds?: MediaCacheKind[]) =>
     del<CacheCleared>(`/admin/cache/songs/${songId}${kinds ? `?kinds=${kinds.join(',')}` : ''}`),
+
+  // 录制
+  createRecording: (body: RecordingCreate) => post<{ id: string }>('/recordings', body),
+  finishRecording: (id: string) => post<RecordingOffer>(`/recordings/${id}/finish`),
+  /** Opening the page keeps the recording (`claim`). */
+  recording: (id: string, claim = false) => get<RecordingInfo>(`/recordings/${id}${claim ? '?claim=1' : ''}`),
+  renderRecording: (id: string, kind: RecordingRenderKind) => post<RecordingInfo>(`/recordings/${id}/render`, { kind }),
+}
+
+/** Upload one microphone take (the raw MediaRecorder file); retried a couple of times on network errors. */
+export async function uploadTake(id: string, n: number, blob: Blob): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const res = await fetch(`/api/recordings/${id}/takes/${n}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': blob.type || 'application/octet-stream', ...(token ? { Authorization: 'Bearer ' + token } : {}) },
+        body: blob,
+      })
+      if (res.ok) return
+      if (res.status < 500 || attempt >= 2) throw new ApiError(res.status, '录音上传失败')
+    } catch (e) {
+      if (e instanceof ApiError || attempt >= 2) throw e
+    }
+    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)))
+  }
+}
+
+/** A finished 录制 render, to play (`download` false) or save. */
+export function recordingFileUrl(url: string, download: boolean) {
+  return withToken(url + (download ? '?download=1' : ''))
 }
 
 /** Result of a cache clear: bytes freed (media) or rows removed (data), and the cache now. */

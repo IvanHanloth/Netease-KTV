@@ -68,6 +68,9 @@ export type TrackStatus =
 
 export type AudioSource = 'netease' | 'unblock'
 
+/** Where a song's 伴奏 / 人声 stems come from: NetEase's own 随心唱 tracks, or AI separation. */
+export type StemSource = 'official' | 'ai'
+
 export interface TrackState {
   songId: number
   status: TrackStatus
@@ -76,6 +79,8 @@ export interface TrackState {
   source?: AudioSource
   /** True when instrumental + vocals stems exist; false means only the original can play. */
   hasStems: boolean
+  /** Where the stems came from (while separating too: which step is running). */
+  stemOrigin?: StemSource
   /** True when a reference pitch track (for scoring) exists: GET /api/media/:id/pitch. */
   hasPitch?: boolean
   message?: string
@@ -224,6 +229,8 @@ export interface AppState {
   tracks: Record<number, TrackState>
   separator: SeparatorStatus
   tvOnline: boolean
+  /** The latest song's recording while its QR code is up (null otherwise). */
+  recording: RecordingOffer | null
 }
 
 export interface LyricWord {
@@ -264,6 +271,13 @@ export interface Settings {
   unblockEnabled: boolean
   unblockSources: string[]
   audioLevel: SoundLevel
+  /**
+   * 伴奏来源: official = NetEase 随心唱 stems when the song has them (no harmonies in the 伴奏);
+   * ai = always separate with the model below.
+   */
+  stemSource: StemSource
+  /** With official stems: a song without them is separated by AI (false: it plays the original). */
+  stemFallback: boolean
   separatorModel: string
   /** LAN address used for the phone QR code, e.g. http://192.168.1.8:8686 */
   publicUrl: string
@@ -294,6 +308,15 @@ export interface Settings {
   idleEnabled: boolean
   /** NetEase song ids, played in order and looped. */
   idleSongs: number[]
+  /**
+   * 录制: the 主屏 records the microphone during every song; at the end a QR code lets people take
+   * the mixed result home. Nobody scans before the countdown ends: the recording is deleted.
+   */
+  recordEnabled: boolean
+  /** How long the QR code is offered after a song (s). */
+  recordQrSeconds: number
+  /** How long a recording someone scanned is kept, with its renders (hours). */
+  recordKeepHours: number
 }
 
 /** GET /api/idle */
@@ -305,8 +328,9 @@ export interface IdleMusic {
 export type MvResolution = 480 | 720 | 1080
 
 /** Settings the 点歌台 may change (PUT /api/settings). Everything else is ops-only (PUT /api/admin/settings). */
-export type DeskSettings = Pick<Settings, 'scoringEnabled' | 'scoreTolerance' | 'multiScreenSync' | 'multiScreenAudio'>
-export type AdminSettings = Omit<Settings, keyof DeskSettings>
+export type DeskSettings = Pick<Settings, 'scoringEnabled' | 'scoreTolerance' | 'multiScreenSync' | 'multiScreenAudio' | 'recordEnabled'>
+/** 录制 can be switched in both places (the 控制台 on the night, 后台 as the house default). */
+export type AdminSettings = Omit<Settings, Exclude<keyof DeskSettings, 'recordEnabled'>>
 
 /** GET /api/admin/status */
 export interface AdminStatus {
@@ -560,6 +584,8 @@ export type ServerMessage =
   | { type: 'screenCommand'; command: ScreenCommand }
   /** Relayed WebRTC signalling; `from` is the sender's connection id (0 = the server). */
   | { type: 'rtc'; from: number; signal: RtcSignal }
+  /** The recording offered with a QR code changed (a new one, scanned, or the countdown ended). */
+  | { type: 'recording'; offer: RecordingOffer | null }
 
 /**
  * Where the active TV is, on the server clock: at server time `at` (ms) the TV's speakers were
@@ -584,3 +610,79 @@ export interface IdleSync {
 }
 
 export type Stem = 'instrumental' | 'vocals' | 'original'
+
+// ---------- 录制 ----------
+
+/**
+ * One stretch of a recorded take: from `rec` ms into the take, `dur` ms of microphone that went
+ * with the song from `pos` seconds on (as heard from the speakers).
+ */
+export interface RecordingSegment {
+  rec: number
+  pos: number
+  dur: number
+}
+
+/** One continuous microphone recording (the mic switched off and on again starts a new take). */
+export interface RecordingTake {
+  /** MediaRecorder MIME type, e.g. audio/webm;codecs=opus. */
+  mime: string
+  segments: RecordingSegment[]
+}
+
+/** POST /api/recordings: what the 主屏 says about a finished song before uploading the takes. */
+export interface RecordingCreate {
+  songId: number
+  /** 升降调 the song was sung in (the accompaniment is rendered at that key). */
+  key: number
+  singer?: string
+  takes: RecordingTake[]
+  /** Microphone → recorder delay, subtracted when the voice is placed on the song (ms). */
+  latencyMs: number
+  /** The room's balance while singing (shared player values), so the mix sounds like it did. */
+  micVolume: number
+  musicVolume: number
+}
+
+/** The recording a 大屏 offers with a QR code. */
+export interface RecordingOffer {
+  id: string
+  songName: string
+  artists: string
+  singer?: string
+  /** Epoch ms when the QR code goes away. */
+  expiresAt: number
+  /** Someone opened the link: the recording is kept. */
+  claimed: boolean
+}
+
+export type RecordingRenderKind = 'audio' | 'mv' | 'lyrics'
+
+export interface RecordingRender {
+  status: 'idle' | 'queued' | 'running' | 'ready' | 'error'
+  /** 0..1 while running. */
+  progress: number
+  error?: string
+  /** Download URL once ready. */
+  url?: string
+  /** Size in bytes once ready. */
+  size?: number
+}
+
+/** GET /api/recordings/:id */
+export interface RecordingInfo {
+  id: string
+  song: Song
+  singer?: string
+  createdAt: number
+  /** When it is deleted (epoch ms, server clock). */
+  expiresAt: number
+  /** Time left until then (ms): what pages show, so a phone's own clock doesn't matter. */
+  expiresIn: number
+  claimed: boolean
+  /** The song has an MV to put under the recording. */
+  hasMv: boolean
+  /** The song has timed lyrics for a lyrics video. */
+  hasLyrics: boolean
+  renders: Record<RecordingRenderKind, RecordingRender>
+}

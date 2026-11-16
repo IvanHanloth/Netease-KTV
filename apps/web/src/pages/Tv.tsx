@@ -13,6 +13,7 @@ import { leadSegments, mergeSegments, seekLeadSegments, type LeadSegment } from 
 import { AudioEngine } from '../player/engine'
 import { MirrorClock, type PlaybackClock } from '../lib/playbackSync'
 import { useScoring } from '../player/useScoring'
+import { estimateInputLatency, recordingSupported, skipText, SongRecorder } from '../player/recorder'
 import { useMicMixer } from '../player/useMicMixer'
 import { MicReturnHost } from '../lib/micReturn'
 import { DEFAULT_TOLERANCE } from '../player/scoring'
@@ -21,6 +22,7 @@ import type { ScreenMic } from '@shared/types'
 import { Icon } from '../components/icons'
 import { Spinner } from '../components/ui'
 import { PitchLane } from '../components/PitchLane'
+import { RecBadge, RecordingCard } from './tv/recording'
 import { LineRatingPop, ScoreOverlay, type ScoreResult } from '../components/ScoreOverlay'
 import { vocalModeCommand, type VocalMode } from '../components/PlayerModes'
 import { Ambient, IdleAmbient, Vignette } from './tv/background'
@@ -610,6 +612,66 @@ export default function Tv() {
       ? { id: Date.now(), score: s, song: cur.song, singer: cur.addedBy, tolerance: scoreTolerance }
       : null
   }
+  // 录制: the 主屏 records the microphone through each song; when the song ends it is uploaded and
+  // every 大屏 shows a QR code to take it home (player/recorder.ts, server core/recordings.ts).
+  const recordOn = !!settings?.recordEnabled && isMain && unlocked && recordingSupported()
+  const recordOnRef = useRef(recordOn)
+  recordOnRef.current = recordOn
+  const recorderRef = useRef<SongRecorder | null>(null)
+  const micRef = useRef(mic)
+  micRef.current = mic
+  useEffect(() => {
+    if (!recordOn || !songKey || !cur) return
+    const rec = new SongRecorder(cur.song.id, cur.uid, estimateInputLatency(micRef.current.tap?.ctx))
+    rec.setStream(micRef.current.stream)
+    recorderRef.current = rec
+    const singer = cur.addedBy
+    return () => {
+      recorderRef.current = null
+      // 重唱 (the same song again), 录制 switched off or no longer the 主屏: drop it.
+      const again = useApp.getState().state.player.current?.uid === rec.uid
+      if (again || !recordOnRef.current) return rec.discard()
+      void rec
+        .finish(singer)
+        .then((r) => {
+          // The microphone was on through the song but heard nobody: say why there is no QR code.
+          // (Microphone off or a song skipped early: nothing to explain.)
+          if ('skipped' in r && r.skipped === 'no-voice') showOsd(skipText[r.skipped], 'mic')
+        })
+        .catch((e: unknown) => {
+          console.warn('[录制] 上传失败', e)
+          showOsd('录音上传失败', 'alert')
+        })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [recordOn, songKey])
+  useEffect(() => {
+    recorderRef.current?.setStream(mic.stream)
+    if (mic.tap) recorderRef.current?.setLatency(estimateInputLatency(mic.tap.ctx))
+  }, [mic.stream, mic.tap])
+  useEffect(() => {
+    if (!recordOn || !songKey) return
+    const t = window.setInterval(() => {
+      const rec = recorderRef.current
+      if (!rec) return
+      const playing = engine.playing && engine.loadedKey.startsWith(songKey) && !startGateRef.current
+      const out = engine.outputClock()
+      let level = 0
+      for (const v of micRef.current.levels().values()) level = Math.max(level, v)
+      const p = useApp.getState().state.player
+      rec.tick({
+        playing,
+        position: playing ? out.position + (performance.now() - out.perf) / 1000 : out.position,
+        level,
+        key: parseLoadKey(engine.loadedKey).key,
+        micVolume: p.micVolume,
+        musicVolume: p.musicVolume,
+      })
+    }, 250)
+    return () => window.clearInterval(t)
+  }, [recordOn, songKey, engine])
+  const recordingOffer = useApp((s) => s.state.recording)
+
   const laneShown = scoring.status === 'on'
   // Only the 主屏 scores; 'loading' is not a problem worth a persistent note.
   const scoreWarn =
@@ -904,6 +966,8 @@ export default function Tv() {
       <UpNextPanel shown={upNextShown} mvMode={mvMode} />
       <Osd msg={osd} />
       <ScoreOverlay result={scoreResult} onDone={clearScoreResult} />
+      <RecordingCard offer={recordingOffer} big={!!scoreResult} raised={uiShown && !!cur && !scoreResult} />
+      <RecBadge shown={recordOn && !!cur && !!mic.stream && playingAudio && !scoreResult} />
       <IdentifyOverlay at={identifyAt} number={tvNumber} main={isMain} />
 
       {!connected && (

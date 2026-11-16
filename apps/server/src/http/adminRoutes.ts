@@ -87,6 +87,8 @@ export async function adminRoutes(app: FastifyInstance) {
         unblockEnabled: z.boolean().optional(),
         unblockSources: z.array(z.string()).optional(),
         audioLevel: z.enum(SOUND_LEVELS).optional(),
+        stemSource: z.enum(['official', 'ai']).optional(),
+        stemFallback: z.boolean().optional(),
         separatorModel: z.string().max(200).optional(),
         publicUrl: z.string().max(200).optional(),
         mvPreload: z.boolean().optional(),
@@ -94,6 +96,9 @@ export async function adminRoutes(app: FastifyInstance) {
         cacheLimitGB: z.number().min(SETTING_LIMITS.cacheLimitGB.min).max(SETTING_LIMITS.cacheLimitGB.max).optional(),
         idleEnabled: z.boolean().optional(),
         idleSongs: z.array(z.number().int().positive()).max(SETTING_LIMITS.idleSongs.max).optional(),
+        recordEnabled: z.boolean().optional(),
+        recordQrSeconds: z.number().min(SETTING_LIMITS.recordQrSeconds.min).max(SETTING_LIMITS.recordQrSeconds.max).optional(),
+        recordKeepHours: z.number().min(SETTING_LIMITS.recordKeepHours.min).max(SETTING_LIMITS.recordKeepHours.max).optional(),
       })
       .parse(req.body)
     const sources = listUnblockSources()
